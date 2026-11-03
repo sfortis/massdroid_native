@@ -12,6 +12,7 @@ import io.mockk.unmockkStatic
 import io.mockk.verify
 import java.security.PrivateKey
 import java.security.cert.X509Certificate
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
@@ -20,6 +21,8 @@ import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
+import net.asksakis.massdroidv2.data.websocket.OAuthCallback
+import net.asksakis.massdroidv2.data.websocket.OAuthCallbackBus
 import net.asksakis.massdroidv2.domain.connection.ChosenServer
 import net.asksakis.massdroidv2.domain.connection.ServerCheck
 import net.asksakis.massdroidv2.domain.repository.MaAuthRepository
@@ -48,6 +51,11 @@ class SignInControllerTest {
         coEvery { setClientCertAlias(any()) } answers { alias.value = firstArg() }
     }
     private val context = mockk<Context>(relaxed = true).also { every { it.applicationContext } returns it }
+    private val oauthInProgress = MutableStateFlow(false)
+    private val auth = mockk<MaAuthRepository>(relaxed = true) {
+        every { oauthInProgress } returns this@SignInControllerTest.oauthInProgress
+    }
+    private val bus = OAuthCallbackBus()
     private val keyA = mockk<PrivateKey>()
     private val chainA = arrayOf(mockk<X509Certificate>())
 
@@ -55,7 +63,7 @@ class SignInControllerTest {
     fun tearDown() = unmockkStatic(KeyChain::class)
 
     private fun TestScope.controller(): SignInController {
-        val controller = SignInController.Factory(client, settings, mockk<MaAuthRepository>(relaxed = true), session)
+        val controller = SignInController.Factory(client, settings, auth, session, bus)
             .create(backgroundScope, StandardTestDispatcher(testScheduler))
         // The error is shared while a screen collects it.
         backgroundScope.launch { controller.error.collect {} }
@@ -153,5 +161,116 @@ class SignInControllerTest {
 
         verify { client.clearMtls() }
         assertThat(alias.value).isNull()
+    }
+
+    @Test
+    fun `the Home Assistant page opens for the start and closes when the sign-in ends`() = runTest {
+        coEvery { auth.startHomeAssistantOAuth(homeUrl) } answers {
+            oauthInProgress.value = true
+            "http://ha.lan:8123/auth/authorize"
+        }
+        val controller = controller()
+        backgroundScope.launch { controller.homeAssistantPage.collect {} }
+
+        controller.openHomeAssistantSignIn(homeUrl)
+        runCurrent()
+        assertThat(controller.homeAssistantPage.value).isEqualTo("http://ha.lan:8123/auth/authorize")
+
+        // Cancelled elsewhere, for example by Change server.
+        oauthInProgress.value = false
+        runCurrent()
+        assertThat(controller.homeAssistantPage.value).isNull()
+    }
+
+    @Test
+    fun `a start that fails opens no page`() = runTest {
+        coEvery { auth.startHomeAssistantOAuth(homeUrl) } returns null
+        val controller = controller()
+        backgroundScope.launch { controller.homeAssistantPage.collect {} }
+
+        controller.openHomeAssistantSignIn(homeUrl)
+        runCurrent()
+
+        assertThat(controller.homeAssistantPage.value).isNull()
+    }
+
+    @Test
+    fun `the page's last link reaches the sign-in and cancel ends it`() = runTest {
+        val controller = controller()
+        val received = mutableListOf<OAuthCallback>()
+        backgroundScope.launch { bus.callbacks.collect { received += it } }
+        runCurrent()
+
+        controller.deliverHomeAssistantCallback("musicassistant://auth/callback/n1?code=tok")
+        controller.deliverHomeAssistantCallback("https://ha.lan:8123/auth/authorize")
+        runCurrent()
+        assertThat(received).containsExactly(OAuthCallback("n1", "tok"))
+
+        controller.cancelHomeAssistantSignIn()
+        verify { auth.cancelOAuth() }
+    }
+
+    @Test
+    fun `a start cancelled before it answered never opens its page`() = runTest {
+        val answer = CompletableDeferred<Unit>()
+        coEvery { auth.startHomeAssistantOAuth(homeUrl) } coAnswers {
+            oauthInProgress.value = true
+            answer.await()
+            "http://ha.lan:8123/auth/authorize"
+        }
+        val controller = controller()
+        backgroundScope.launch { controller.homeAssistantPage.collect {} }
+
+        controller.openHomeAssistantSignIn(homeUrl)
+        runCurrent()
+        controller.cancelHomeAssistantSignIn()
+        answer.complete(Unit)
+        runCurrent()
+
+        assertThat(controller.homeAssistantPage.value).isNull()
+        verify { auth.cancelOAuth() }
+    }
+
+    @Test
+    fun `an older start that ends after a newer one opened leaves the newer page`() = runTest {
+        val older = CompletableDeferred<Unit>()
+        coEvery { auth.startHomeAssistantOAuth("http://old:8095") } coAnswers {
+            older.await()
+            null
+        }
+        coEvery { auth.startHomeAssistantOAuth(homeUrl) } answers {
+            oauthInProgress.value = true
+            "http://ha.lan:8123/auth/authorize"
+        }
+        val controller = controller()
+        backgroundScope.launch { controller.homeAssistantPage.collect {} }
+
+        controller.openHomeAssistantSignIn("http://old:8095")
+        runCurrent()
+        controller.openHomeAssistantSignIn(homeUrl)
+        runCurrent()
+        older.complete(Unit)
+        runCurrent()
+
+        assertThat(controller.homeAssistantPage.value).isEqualTo("http://ha.lan:8123/auth/authorize")
+    }
+
+    @Test
+    fun `opening the page drops a success left from an earlier sign-in, and cancel closes the page`() = runTest {
+        coEvery { auth.startHomeAssistantOAuth(homeUrl) } answers {
+            oauthInProgress.value = true
+            "http://ha.lan:8123/auth/authorize"
+        }
+        val controller = controller()
+        backgroundScope.launch { controller.homeAssistantPage.collect {} }
+
+        controller.openHomeAssistantSignIn(homeUrl)
+        verify { session.consumeSuccess() }
+        runCurrent()
+        assertThat(controller.homeAssistantPage.value).isNotNull()
+
+        controller.cancelHomeAssistantSignIn()
+        runCurrent()
+        assertThat(controller.homeAssistantPage.value).isNull()
     }
 }

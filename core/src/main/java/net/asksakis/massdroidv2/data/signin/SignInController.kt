@@ -6,6 +6,7 @@ import android.util.Log
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -21,6 +22,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import net.asksakis.massdroidv2.data.websocket.MaTokenInfo
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
+import net.asksakis.massdroidv2.data.websocket.OAuthCallbackBus
 import net.asksakis.massdroidv2.domain.connection.ChosenServer
 import net.asksakis.massdroidv2.domain.connection.ServerCheck
 import net.asksakis.massdroidv2.domain.connection.ServerRow
@@ -34,10 +36,11 @@ import javax.inject.Inject
 /**
  * The sign-in form of the server chosen in step 1: with a username and password, with the
  * account saved for that server, or through Home Assistant, plus the client certificate for
- * servers behind mutual TLS. The phone's Settings screen, its onboarding and the car's sign-in
- * share it, so all three sign in the same way. Each ViewModel creates one with its own scope
+ * servers behind mutual TLS. The phone's Settings screen and onboarding, the car's sign-in and the
+ * TV's share it, so all of them sign in the same way. Each ViewModel creates one with its own scope
  * through [Factory]; the attempt itself runs in the app-scoped [SignInSession], so leaving the
- * screen does not stop it.
+ * screen does not stop it. The phone opens the Home Assistant sign-in in the browser; the TV and
+ * the car show it inside the app ([homeAssistantPage]).
  */
 class SignInController private constructor(
     private val scope: CoroutineScope,
@@ -45,17 +48,19 @@ class SignInController private constructor(
     private val wsClient: MaWebSocketClient,
     private val settings: SettingsRepository,
     private val auth: MaAuthRepository,
-    private val session: SignInSession
+    private val session: SignInSession,
+    private val callbackBus: OAuthCallbackBus
 ) {
     class Factory @Inject constructor(
         private val wsClient: MaWebSocketClient,
         private val settings: SettingsRepository,
         private val auth: MaAuthRepository,
-        private val session: SignInSession
+        private val session: SignInSession,
+        private val callbackBus: OAuthCallbackBus
     ) {
         /** [io] runs the KeyChain calls; tests pass their own dispatcher. */
         fun create(scope: CoroutineScope, io: CoroutineDispatcher = Dispatchers.IO): SignInController =
-            SignInController(scope, io, wsClient, settings, auth, session)
+            SignInController(scope, io, wsClient, settings, auth, session, callbackBus)
     }
 
     private val formError = MutableStateFlow<String?>(null)
@@ -77,6 +82,19 @@ class SignInController private constructor(
     val providers: StateFlow<List<AuthProviderInfo>> = auth.availableProviders
     val oauthInProgress: StateFlow<Boolean> = auth.oauthInProgress
     val oauthErrors: SharedFlow<String> = auth.oauthErrors
+
+    private val openedPage = MutableStateFlow<String?>(null)
+    // The start whose page [openedPage] waits for; a cancel stops it, so it never opens late.
+    private var pageStart: Job? = null
+
+    /**
+     * The Home Assistant sign-in page that [openHomeAssistantSignIn] opened, while that sign-in
+     * is in progress. The TV and the car show it inside the app, because they have no browser.
+     * It closes when the sign-in completes, fails or is cancelled from anywhere.
+     */
+    val homeAssistantPage: StateFlow<String?> = combine(openedPage, auth.oauthInProgress) { page, inProgress ->
+        page.takeIf { inProgress }
+    }.stateIn(scope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MS), null)
 
     val clientCertAlias: StateFlow<String?> =
         settings.clientCertAlias.stateIn(scope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MS), null)
@@ -157,9 +175,45 @@ class SignInController private constructor(
         return auth.startHomeAssistantOAuth(serverUrl)
     }
 
+    /**
+     * Starts the Home Assistant sign-in to [serverUrl] on a page inside the app; see
+     * [homeAssistantPage]. A start that fails says why through [oauthErrors] and opens nothing.
+     */
+    fun openHomeAssistantSignIn(serverUrl: String) {
+        // The page of an earlier sign-in must not show while this one runs its checks.
+        openedPage.value = null
+        // A success left from an earlier sign-in would close the screen waiting for this one.
+        session.consumeSuccess()
+        pageStart?.cancel()
+        pageStart = scope.launch { openedPage.value = startHomeAssistantOAuth(serverUrl) }
+    }
+
+    /**
+     * Hands the page's last link to the sign-in; see [OAuthCallbackBus.publishLink]. The page
+     * closes when the sign-in ends, not here: a link the sign-in does not accept leaves it in
+     * progress, and the page then stays for BACK to cancel instead of leaving the button
+     * waiting with nothing on screen.
+     */
+    fun deliverHomeAssistantCallback(link: String) {
+        callbackBus.publishLink(link)
+    }
+
+    /** The user left the Home Assistant page, or its start, without signing in. */
+    fun cancelHomeAssistantSignIn() {
+        stopPageStart()
+        auth.cancelOAuth()
+    }
+
+    private fun stopPageStart() {
+        pageStart?.cancel()
+        pageStart = null
+        openedPage.value = null
+    }
+
     /** Abandons the sign-in in progress when the user leaves its server; see [SignInSession.cancel]. */
     fun cancelAttempt() {
         formError.value = null
+        stopPageStart()
         session.cancel()
     }
 

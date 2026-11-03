@@ -3,7 +3,6 @@ package net.asksakis.massdroidv2.data.repository
 import android.util.Log
 import javax.inject.Inject
 import javax.inject.Singleton
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -18,6 +17,7 @@ import kotlinx.coroutines.launch
 import net.asksakis.massdroidv2.data.cache.DiscoverCache
 import net.asksakis.massdroidv2.data.websocket.MaAuthProbe
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
+import net.asksakis.massdroidv2.data.websocket.OAUTH_CALLBACK_SCHEME
 import net.asksakis.massdroidv2.data.websocket.OAuthCallback
 import net.asksakis.massdroidv2.data.websocket.OAuthCallbackBus
 import net.asksakis.massdroidv2.data.websocket.ServerAnswer
@@ -47,7 +47,7 @@ class MaAuthRepositoryImpl @Inject constructor(
         // The return URL is this prefix plus "/<nonce>". MA accepts any return URL that
         // starts with "musicassistant://" and appends the token as ?code=, so the nonce
         // comes back in the path, where a server that only concatenates cannot break it.
-        const val OAUTH_RETURN_URL = "musicassistant://auth/callback"
+        const val OAUTH_RETURN_URL = "$OAUTH_CALLBACK_SCHEME://auth/callback"
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -104,34 +104,43 @@ class MaAuthRepositoryImpl @Inject constructor(
                 return null
             }
         val nonce = newOAuthNonce()
-        val authUrl = probe.fetchAuthorizationUrl(
-            serverUrl = serverUrl,
-            providerId = provider.providerId,
-            returnUrl = "$OAUTH_RETURN_URL/$nonce"
-        )
-        if (authUrl.isNullOrBlank()) {
-            _oauthErrors.tryEmit("Could not start sign-in. Check the server URL and try again.")
-            return null
-        }
-        // The link can send the browser to addresses this phone cannot reach, such as the
-        // server's LAN address while the phone is away (see signInOriginsToCheck). The browser
-        // is not opened on a page that cannot load.
-        val foreignOrigins = signInOriginsToCheck(authUrl, serverUrl)
+        // In progress from here, so the button cannot start a second sign-in and a cancel
+        // during the fetch or the checks below reaches this start.
         _oauthInProgress.value = true
         activeStart = nonce
-        // The checks can take seconds, and the screen that started them may go away
-        // meanwhile (Change server, a rotation). A cancelled start must not leave the button
-        // disabled on "Waiting for sign in" for the rest of the process.
-        val unreachable = try {
-            foreignOrigins.firstOrNull { !probe.answersHttp(it) }
-        } catch (e: CancellationException) {
-            _oauthInProgress.value = false
-            throw e
+        // The fetch and the checks can take seconds, and the screen that started them may go
+        // away meanwhile (Change server, a rotation). A start that is cancelled or throws must
+        // not leave the button disabled on "Waiting for sign in" for the rest of the process.
+        val authUrl: String?
+        val foreignOrigins: List<String>
+        val unreachable: String?
+        var checked = false
+        try {
+            authUrl = probe.fetchAuthorizationUrl(
+                serverUrl = serverUrl,
+                providerId = provider.providerId,
+                returnUrl = "$OAUTH_RETURN_URL/$nonce"
+            )
+            // Cancelled or replaced during the fetch: the newer state, nonce included, stays.
+            if (activeStart != nonce) return null
+            if (authUrl.isNullOrBlank()) {
+                endStart(nonce)
+                _oauthErrors.tryEmit("Could not start sign-in. Check the server URL and try again.")
+                return null
+            }
+            // The link can send the browser to addresses this phone cannot reach, such as the
+            // server's LAN address while the phone is away (see signInOriginsToCheck). The
+            // browser is not opened on a page that cannot load.
+            foreignOrigins = signInOriginsToCheck(authUrl, serverUrl)
+            unreachable = foreignOrigins.firstOrNull { !probe.answersHttp(it) }
+            checked = true
+        } finally {
+            if (!checked) endStart(nonce)
         }
         // Cancelled or replaced during the checks: the newer state, nonce included, stays.
         if (activeStart != nonce) return null
         if (unreachable != null) {
-            _oauthInProgress.value = false
+            endStart(nonce)
             _oauthErrors.tryEmit(unreachableSignInMessage(unreachable))
             return null
         }
@@ -140,6 +149,13 @@ class MaAuthRepositoryImpl @Inject constructor(
         pendingNonce = nonce
         oauthStartedAtMs = System.currentTimeMillis()
         return authUrl
+    }
+
+    /** Ends the start [nonce] without a sign-in, unless a cancel or a newer start owns the state. */
+    private fun endStart(nonce: String) {
+        if (activeStart != nonce) return
+        activeStart = null
+        _oauthInProgress.value = false
     }
 
     override fun cancelOAuth() {

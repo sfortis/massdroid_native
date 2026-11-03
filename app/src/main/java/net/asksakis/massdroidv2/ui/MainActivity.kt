@@ -275,12 +275,7 @@ class MainActivity : ComponentActivity() {
 
     private fun handleOAuthCallback(intent: Intent?) {
         val data = intent?.data ?: return
-        if (data.scheme != "musicassistant" || data.host != "auth") return
-        val code = data.getQueryParameter("code") ?: return
-        if (code.isBlank()) return
-        // The sign-in's nonce is the path segment after "callback"; see OAUTH_RETURN_URL.
-        val state = data.pathSegments.takeIf { it.size == 2 && it[0] == "callback" }?.get(1)
-        oauthCallbackBus.publish(net.asksakis.massdroidv2.data.websocket.OAuthCallback(state, code))
+        oauthCallbackBus.publishLink(data.toString())
     }
 
     // ComponentActivity.dispatchKeyEvent carries a library-group restriction, so lint reads

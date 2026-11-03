@@ -36,12 +36,12 @@ import net.asksakis.massdroidv2.domain.repository.SettingsRepository
  *
  * Nothing is saved until the attempt's own connection, told apart by its generation, is
  * [ConnectionState.Connected]. A failed, timed-out or abandoned attempt connects again to the
- * server used before it. This class is also the only writer of the saved token on the phone:
+ * server used before it. This class is also the only writer of the saved token:
  * it saves the token of every other connection, and forgets a token only when the server
  * refused it ([MaWebSocketClient.rejectedTokens]). The Home Assistant sign-in comes back here
  * too ([MaAuthRepository.completedOAuthSignIns]).
  *
- * The phone (Settings and onboarding) and the car sign in here. The TV keeps its own path.
+ * The phone (Settings and onboarding), the car and the TV sign in here.
  */
 @Singleton
 class SignInSession internal constructor(
@@ -367,12 +367,12 @@ class SignInSession internal constructor(
         val returned = saveLock.withLock { returnTo(previous) }
         val reason = (outcome as? ConnectionState.Error)?.message ?: "The server did not answer."
         val target = displayAddressOf(attempt.url)
-        _error.value = when {
-            returned && previous != null && !sameServer(previous.url, attempt.url) ->
-                "Couldn't sign in to $target. $reason Still using ${displayAddressOf(previous.url)}."
-            previous != null -> "Couldn't sign in to $target. $reason"
-            // A first sign-in: the screen shows the client's own error.
-            else -> null
+        // A first sign-in says why as well: with no server to return to, the attempt's
+        // connection is closed, and that replaces the client's own error with Disconnected.
+        _error.value = if (returned && previous != null && !sameServer(previous.url, attempt.url)) {
+            "Couldn't sign in to $target. $reason Still using ${displayAddressOf(previous.url)}."
+        } else {
+            "Couldn't sign in to $target. $reason"
         }
     }
 

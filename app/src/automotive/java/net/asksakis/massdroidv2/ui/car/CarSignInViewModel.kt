@@ -23,6 +23,7 @@ import net.asksakis.massdroidv2.data.websocket.ConnectionState
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
 import net.asksakis.massdroidv2.domain.connection.ChosenServer
 import net.asksakis.massdroidv2.domain.connection.ServerRow
+import net.asksakis.massdroidv2.domain.model.AuthProviderInfo
 import net.asksakis.massdroidv2.domain.model.CrossfadeMode
 import net.asksakis.massdroidv2.domain.model.QueueChoice
 import net.asksakis.massdroidv2.domain.model.SendspinAudioFormat
@@ -34,8 +35,9 @@ import javax.inject.Inject
 /**
  * The car (AAOS) sign-in and the settings of the car's own player. The sign-in is the phone's
  * [SignInController] and [ServerPicker], so the car picks a server and signs in the way the
- * phone does. It offers a username and password, the account saved for the server, and a
- * client certificate. Home Assistant sign-in is left out, because it needs a browser.
+ * phone does. It offers a username and password, the account saved for the server, Home
+ * Assistant, whose page the car shows inside the app because it has no browser, and a client
+ * certificate.
  */
 @HiltViewModel
 class CarSignInViewModel @Inject constructor(
@@ -103,6 +105,8 @@ class CarSignInViewModel @Inject constructor(
                 if (state is ConnectionState.Connected && _crossfade.value == null) loadCrossfade()
             }
         }
+        // A Home Assistant start that fails says why on the form, as on the phone.
+        viewModelScope.launch { signIn.oauthErrors.collect(signIn::setError) }
     }
 
     fun setAudioFormat(format: SendspinAudioFormat) {
@@ -231,6 +235,20 @@ class CarSignInViewModel @Inject constructor(
      */
     fun login(server: ChosenServer, username: String, password: String): Boolean =
         signIn.login(server, username, password)
+
+    /** The sign-in providers of the server checked last; see [SignInController.providers]. */
+    val providers: StateFlow<List<AuthProviderInfo>> = signIn.providers
+
+    val oauthInProgress: StateFlow<Boolean> = signIn.oauthInProgress
+
+    /** The Home Assistant page to show; see [SignInController.homeAssistantPage]. */
+    val homeAssistantPage: StateFlow<String?> = signIn.homeAssistantPage
+
+    fun openHomeAssistantSignIn(server: ChosenServer) = signIn.openHomeAssistantSignIn(server.url)
+
+    fun deliverHomeAssistantCallback(link: String) = signIn.deliverHomeAssistantCallback(link)
+
+    fun cancelHomeAssistantSignIn() = signIn.cancelHomeAssistantSignIn()
 
     /** Forgets a server used before from the list; see [SignInController.forget]. */
     fun forget(row: ServerRow) = signIn.forget(row)

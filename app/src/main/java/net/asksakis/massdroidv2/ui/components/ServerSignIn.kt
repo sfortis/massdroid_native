@@ -557,8 +557,9 @@ fun SignInStep(
     }
 }
 
+/** The Home Assistant sign-in button, shared by the phone and the car. */
 @Composable
-private fun HomeAssistantSignIn(inProgress: Boolean, onClick: () -> Unit) {
+internal fun HomeAssistantSignIn(inProgress: Boolean, onClick: () -> Unit) {
     MdButton(
         onClick = onClick,
         modifier = Modifier.fillMaxWidth(),

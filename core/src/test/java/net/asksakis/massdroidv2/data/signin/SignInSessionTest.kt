@@ -21,6 +21,7 @@ import net.asksakis.massdroidv2.data.websocket.AuthenticatedSession
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
 import net.asksakis.massdroidv2.data.websocket.MaAuthProbe
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
+import net.asksakis.massdroidv2.data.websocket.OAuthCallbackBus
 import net.asksakis.massdroidv2.data.websocket.RejectedToken
 import net.asksakis.massdroidv2.data.websocket.ServerAnswer
 import net.asksakis.massdroidv2.data.websocket.ServerInfo
@@ -176,6 +177,21 @@ class SignInSessionTest {
         assertThat(connects.last()).isEqualTo(homeUrl to "home token")
         assertThat(session.error.value).startsWith("Couldn't sign in to home:8095.")
         assertThat(session.error.value).doesNotContain("Still using")
+    }
+
+    @Test
+    fun `a first sign-in that fails says why after its connection is closed`() = runTest {
+        // A fresh install, the TV's or the phone's first launch: no server to return to.
+        savedUrl.value = ""
+        val session = session()
+        session.login(officeUrl, "office", "bob", "wrong")
+        runCurrent()
+        serverRefuses()
+        runCurrent()
+
+        assertThat(state.value).isEqualTo(ConnectionState.Disconnected)
+        assertThat(session.error.value)
+            .isEqualTo("Couldn't sign in to office:8095. Authentication failed: wrong password")
     }
 
     @Test
@@ -338,7 +354,7 @@ class SignInSessionTest {
     fun `Sign out completes when the screen that asked for it closes`() = runTest {
         val session = session()
         val screen = CoroutineScope(Job())
-        val controller = SignInController.Factory(client, settings, auth, session).create(screen)
+        val controller = SignInController.Factory(client, settings, auth, session, OAuthCallbackBus()).create(screen)
         controller.signOut()
         screen.cancel()
         runCurrent()

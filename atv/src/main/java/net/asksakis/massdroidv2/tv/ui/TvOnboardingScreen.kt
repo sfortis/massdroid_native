@@ -54,6 +54,9 @@ import androidx.tv.material3.Surface
 import androidx.tv.material3.SurfaceDefaults
 import androidx.tv.material3.Text
 import net.asksakis.massdroidv2.data.discovery.ServerPicker
+import net.asksakis.massdroidv2.data.signin.SavedSignIn
+import net.asksakis.massdroidv2.data.signin.SignInController
+import net.asksakis.massdroidv2.data.websocket.OAUTH_CALLBACK_SCHEME
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
 import net.asksakis.massdroidv2.domain.connection.ChosenServer
 import net.asksakis.massdroidv2.domain.connection.PortChoice
@@ -62,7 +65,10 @@ import net.asksakis.massdroidv2.domain.connection.ServerCheck
 import net.asksakis.massdroidv2.domain.connection.ServerRow
 import net.asksakis.massdroidv2.domain.connection.ServerRowGroup
 import net.asksakis.massdroidv2.domain.connection.displayAddressOf
+import net.asksakis.massdroidv2.domain.connection.sameServer
 import net.asksakis.massdroidv2.tv.R
+import net.asksakis.massdroidv2.ui.shared.HomeAssistantSignInPage
+import net.asksakis.massdroidv2.ui.shared.isWebViewAvailable
 
 private val SCREEN_EDGE = 64.dp
 
@@ -77,22 +83,58 @@ private val LOGO_SIZE = 96.dp
 /**
  * The TV sign-in, in the same two steps as the phone: choose a server, then sign in to it.
  * Other server is a third view in place of the list, because a sheet that grows under a field
- * is hard to reach with a remote. BACK goes one step back.
+ * is hard to reach with a remote. BACK goes one step back. The Home Assistant sign-in page
+ * covers the whole screen while it is open. [onSignedIn] runs once a sign-in sent from this
+ * screen saved its server.
  */
 @Composable
-fun TvOnboardingScreen(viewModel: TvOnboardingViewModel = hiltViewModel()) {
+fun TvOnboardingScreen(onSignedIn: () -> Unit, viewModel: TvOnboardingViewModel = hiltViewModel()) {
     val picker = viewModel.serverPicker
+    val signIn = viewModel.signIn
     val chosen by picker.chosen.collectAsStateWithLifecycle()
+    val homeAssistantPage by signIn.homeAssistantPage.collectAsStateWithLifecycle()
     var choosingOther by rememberSaveable { mutableStateOf(false) }
+    // The server this screen last sent a sign-in to. Only its success closes the screen:
+    // Connected alone is not enough, because a failed switch connects to the previous server.
+    var sentUrl by rememberSaveable { mutableStateOf<String?>(null) }
+    // Leaving the chosen server abandons its sign-in, which then can no longer close the screen.
+    val leaveServer: () -> Unit = {
+        signIn.cancelAttempt()
+        sentUrl = null
+    }
+
+    val succeeded by signIn.succeeded.collectAsStateWithLifecycle()
+    LaunchedEffect(succeeded, sentUrl) {
+        val done = succeeded ?: return@LaunchedEffect
+        val sent = sentUrl ?: return@LaunchedEffect
+        if (sameServer(done, sent)) {
+            signIn.consumeSuccess()
+            onSignedIn()
+        }
+    }
 
     BackHandler(enabled = choosingOther || chosen != null) {
         if (choosingOther) {
             picker.clearTyped()
             choosingOther = false
         } else {
-            viewModel.cancelAttempt()
+            leaveServer()
             picker.changeServer()
         }
+    }
+
+    // What was typed for the chosen server, kept here so it survives the Home Assistant page,
+    // which replaces the form while it is open; null shows what is saved for that server. The
+    // password stays out of the saved state, which the system may write to disk.
+    var typedUsername by rememberSaveable(chosen?.url) { mutableStateOf<String?>(null) }
+    var typedPassword by remember(chosen?.url) { mutableStateOf<String?>(null) }
+    // The form puts the cursor back on the Home Assistant button after its page closes.
+    var pageClosed by remember { mutableStateOf(false) }
+
+    homeAssistantPage?.let { url ->
+        LaunchedEffect(Unit) { pageClosed = true }
+        TvHomeAssistantPage(url, signIn)
+        return
     }
 
     Surface(modifier = Modifier.fillMaxSize()) {
@@ -125,7 +167,7 @@ fun TvOnboardingScreen(viewModel: TvOnboardingViewModel = hiltViewModel()) {
                         choosingOther -> TvOtherServer(
                             picker = picker,
                             onUsed = {
-                                viewModel.clearError()
+                                signIn.clearError()
                                 choosingOther = false
                             },
                             onBack = {
@@ -136,12 +178,25 @@ fun TvOnboardingScreen(viewModel: TvOnboardingViewModel = hiltViewModel()) {
                         server == null -> TvServerList(
                             picker = picker,
                             onPick = { row ->
-                                viewModel.cancelAttempt()
+                                leaveServer()
                                 picker.choose(row.url, row.name)
                             },
                             onOther = { choosingOther = true }
                         )
-                        else -> TvSignIn(viewModel = viewModel, server = server)
+                        else -> TvSignIn(
+                            viewModel = viewModel,
+                            server = server,
+                            typed = TypedSignIn(typedUsername, typedPassword),
+                            onUsername = { typedUsername = it },
+                            onPassword = { typedPassword = it },
+                            focusHomeAssistant = pageClosed,
+                            onFocused = { pageClosed = false },
+                            onSent = { sentUrl = server.url },
+                            onChangeServer = {
+                                leaveServer()
+                                picker.changeServer()
+                            }
+                        )
                     }
                 }
             }
@@ -232,35 +287,62 @@ private fun TvServerButton(row: ServerRow, modifier: Modifier, onClick: () -> Un
     Spacer(Modifier.height(8.dp))
 }
 
-/** Step 2: the chosen server, then the username and password. */
+/**
+ * Step 2: the chosen server, then "Continue as" when the server has a saved account, Home
+ * Assistant when the server offers it, and the username and password.
+ */
 @Composable
-private fun ColumnScope.TvSignIn(viewModel: TvOnboardingViewModel, server: ChosenServer) {
+private fun ColumnScope.TvSignIn(
+    viewModel: TvOnboardingViewModel,
+    server: ChosenServer,
+    typed: TypedSignIn,
+    onUsername: (String) -> Unit,
+    onPassword: (String) -> Unit,
+    focusHomeAssistant: Boolean,
+    onFocused: () -> Unit,
+    onSent: () -> Unit,
+    onChangeServer: () -> Unit
+) {
+    val signIn = viewModel.signIn
     val connection by viewModel.connectionState.collectAsStateWithLifecycle()
-    val error by viewModel.error.collectAsStateWithLifecycle()
-    val attempting by viewModel.attempting.collectAsStateWithLifecycle()
-    val savedUsername by viewModel.savedUsername.collectAsStateWithLifecycle()
+    val error by signIn.error.collectAsStateWithLifecycle()
+    val attemptedUrl by signIn.attemptedUrl.collectAsStateWithLifecycle()
+    val providers by signIn.providers.collectAsStateWithLifecycle()
+    val oauthInProgress by signIn.oauthInProgress.collectAsStateWithLifecycle()
+    val saved by remember(server) { signIn.savedSignIn(server) }.collectAsStateWithLifecycle(SavedSignIn.NONE)
 
-    // Saveable, so a configuration change the activity does not handle (a keyboard plugged in,
-    // an HDMI density change) keeps the form. The password stays out of the saved state, as on
-    // the phone's sign-in form.
-    var username by rememberSaveable { mutableStateOf<String?>(null) }
-    var password by remember { mutableStateOf("") }
     var showPassword by rememberSaveable { mutableStateOf(false) }
-    val shownUsername = username ?: savedUsername.orEmpty()
+    val shownUsername = typed.username ?: saved.username
+    val shownPassword = typed.password ?: saved.password
 
-    val attemptedUrl by viewModel.attemptedUrl.collectAsStateWithLifecycle()
-    // Only the error of a login sent to this server, not one left from another server.
+    val connecting = connection is ConnectionState.Connecting
+    // Only the error of a sign-in sent to this server, not one left from another server.
     val connectionError = (connection as? ConnectionState.Error)?.takeIf { attemptedUrl == server.url }
     val statusMessage = error
         ?: connectionError?.message
-        ?: if (attempting) "Connecting..." else null
+        ?: if (connecting) "Connecting..." else null
     val isError = error != null || connectionError != null
+    // The providers belong to the server checked last, which is this one once it answered.
+    val webView = remember { isWebViewAvailable() }
+    val homeAssistant = webView && server.check is ServerCheck.Found && providers.any { it.isHomeAssistant }
 
+    val continueFocus = remember { FocusRequester() }
     val usernameFocus = remember { FocusRequester() }
     val connectFocus = remember { FocusRequester() }
     val changeFocus = remember { FocusRequester() }
     val tryAgainFocus = remember { FocusRequester() }
-    LaunchedEffect(server.url) { runCatching { usernameFocus.requestFocus() } }
+    val homeAssistantFocus = remember { FocusRequester() }
+    val continueName = saved.continueAs
+    // One press of OK continues with the saved account when there is one.
+    val firstFocus = if (continueName != null) continueFocus else usernameFocus
+    LaunchedEffect(server.url, continueName != null) { runCatching { firstFocus.requestFocus() } }
+    // Launched after the one above, so back from the Home Assistant page its button wins.
+    LaunchedEffect(focusHomeAssistant, homeAssistant) {
+        if (focusHomeAssistant && homeAssistant) {
+            runCatching { homeAssistantFocus.requestFocus() }
+            onFocused()
+        }
+    }
     // Try again leaves the screen while the server is checked again, taking the focus with it,
     // so the focus waits on Change server and then goes where the result leads.
     var retried by remember(server.url) { mutableStateOf(false) }
@@ -269,7 +351,7 @@ private fun ColumnScope.TvSignIn(viewModel: TvOnboardingViewModel, server: Chose
         runCatching {
             when (server.check) {
                 is ServerCheck.Problem -> tryAgainFocus.requestFocus()
-                is ServerCheck.Found -> usernameFocus.requestFocus()
+                is ServerCheck.Found -> firstFocus.requestFocus()
                 else -> changeFocus.requestFocus()
             }
         }
@@ -278,7 +360,9 @@ private fun ColumnScope.TvSignIn(viewModel: TvOnboardingViewModel, server: Chose
     val nextField: () -> Unit = { focusManager.moveFocus(FocusDirection.Down) }
     // Guarded here as well as by the button's enabled flag, because the keyboard's Done
     // reaches it without going through the button.
-    val connect: () -> Unit = { if (!attempting) viewModel.login(server.url, shownUsername, password) }
+    val connect: () -> Unit = {
+        if (!connecting && signIn.login(server, shownUsername, shownPassword)) onSent()
+    }
 
     Surface(
         shape = RoundedCornerShape(12.dp),
@@ -294,13 +378,9 @@ private fun ColumnScope.TvSignIn(viewModel: TvOnboardingViewModel, server: Chose
     }
     Spacer(Modifier.height(8.dp))
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        val change = {
-            viewModel.cancelAttempt()
-            viewModel.serverPicker.changeServer()
-        }
         Button(
-            onClick = change,
-            modifier = Modifier.focusRequester(changeFocus).pointerClick(onClick = change)
+            onClick = onChangeServer,
+            modifier = Modifier.focusRequester(changeFocus).pointerClick(onClick = onChangeServer)
         ) { Text("Change server") }
         if (server.check is ServerCheck.Problem) {
             val again = {
@@ -315,34 +395,82 @@ private fun ColumnScope.TvSignIn(viewModel: TvOnboardingViewModel, server: Chose
     }
 
     Spacer(Modifier.height(20.dp))
+    continueName?.let { name ->
+        val continueAs = {
+            if (!connecting) {
+                signIn.continueAs(server, saved)
+                onSent()
+            }
+        }
+        Button(
+            onClick = continueAs,
+            enabled = !connecting,
+            modifier = Modifier
+                .fillMaxWidth()
+                .focusRequester(continueFocus)
+                .pointerClick(enabled = !connecting, onClick = continueAs)
+        ) { Text("Continue as $name") }
+        Spacer(Modifier.height(12.dp))
+        Text(
+            "Or sign in with another account:",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(12.dp))
+    }
+    if (homeAssistant) {
+        val open = {
+            if (!oauthInProgress) {
+                signIn.openHomeAssistantSignIn(server.url)
+                onSent()
+            }
+        }
+        Button(
+            onClick = open,
+            enabled = !oauthInProgress,
+            modifier = Modifier
+                .fillMaxWidth()
+                .focusRequester(homeAssistantFocus)
+                .pointerClick(enabled = !oauthInProgress, onClick = open)
+        ) { Text(if (oauthInProgress) "Waiting for sign in" else "Sign in with Home Assistant") }
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "or with your Music Assistant account",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(12.dp))
+    }
     TvTextField(
         "Username", shownUsername, KeyboardType.Text, ImeAction.Next, onImeAction = nextField,
-        focusRequester = usernameFocus
-    ) { username = it }
+        focusRequester = usernameFocus,
+        onValueChange = onUsername
+    )
     Spacer(Modifier.height(12.dp))
     // Showing the password changes only how it is drawn. The keyboard is always told this is
     // a password field, so it never learns the password. Done moves the cursor to Connect,
     // which closes the keyboard so the status line is visible, and starts the login.
     TvTextField(
-        "Password", password, KeyboardType.Password, ImeAction.Done,
+        "Password", shownPassword, KeyboardType.Password, ImeAction.Done,
         onImeAction = {
             runCatching { connectFocus.requestFocus() }
             connect()
         },
-        masked = !showPassword
-    ) { password = it }
+        masked = !showPassword,
+        onValueChange = onPassword
+    )
     Spacer(Modifier.height(8.dp))
     ShowPasswordToggle(showPassword) { showPassword = !showPassword }
 
     Spacer(Modifier.height(20.dp))
     Button(
         onClick = connect,
-        enabled = !attempting,
+        enabled = !connecting,
         modifier = Modifier
             .focusRequester(connectFocus)
-            .pointerClick(enabled = !attempting, onClick = connect)
+            .pointerClick(enabled = !connecting, onClick = connect)
     ) {
-        Text(if (attempting) "Connecting..." else "Sign in")
+        Text(if (connecting) "Connecting..." else "Sign in")
     }
 
     if (statusMessage != null) {
@@ -352,6 +480,51 @@ private fun ColumnScope.TvSignIn(viewModel: TvOnboardingViewModel, server: Chose
             style = MaterialTheme.typography.bodyMedium,
             color = if (isError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
         )
+    }
+}
+
+/** What was typed into the sign-in form; null shows what is saved for the server. */
+private class TypedSignIn(val username: String?, val password: String?)
+
+/**
+ * The Home Assistant sign-in page over the whole screen. BACK and Cancel return to the form; a
+ * page that failed to load offers Retry.
+ */
+@Composable
+private fun TvHomeAssistantPage(url: String, signIn: SignInController) {
+    HomeAssistantSignInPage(
+        url = url,
+        callbackScheme = OAUTH_CALLBACK_SCHEME,
+        onCallback = signIn::deliverHomeAssistantCallback,
+        onCancel = signIn::cancelHomeAssistantSignIn,
+        modifier = Modifier.fillMaxSize()
+    ) { message, retry ->
+        val firstButton = remember { FocusRequester() }
+        LaunchedEffect(message) { runCatching { firstButton.requestFocus() } }
+        Surface(modifier = Modifier.fillMaxSize()) {
+            Column(
+                modifier = Modifier.fillMaxSize().padding(horizontal = SCREEN_EDGE),
+                verticalArrangement = Arrangement.Center,
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text(message, style = MaterialTheme.typography.bodyLarge)
+                Spacer(Modifier.height(20.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    val cancel = signIn::cancelHomeAssistantSignIn
+                    retry?.let { again ->
+                        Button(
+                            onClick = again,
+                            modifier = Modifier.focusRequester(firstButton).pointerClick(onClick = again)
+                        ) { Text("Retry") }
+                    }
+                    Button(
+                        onClick = cancel,
+                        modifier = (if (retry == null) Modifier.focusRequester(firstButton) else Modifier)
+                            .pointerClick(onClick = cancel)
+                    ) { Text("Cancel") }
+                }
+            }
+        }
     }
 }
 

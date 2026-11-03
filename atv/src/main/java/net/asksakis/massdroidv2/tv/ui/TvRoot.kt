@@ -89,7 +89,9 @@ fun TvRoot(
     val connected = connection is ConnectionState.Connected
 
     when {
-        connected || (sessionEstablished && hasSavedServer && !changeServer) -> {
+        // Change server stays over a connection, because a failed sign-in connects to the
+        // previous server again while the screen shows why.
+        !changeServer && (connected || (sessionEstablished && hasSavedServer)) -> {
             val nav = rememberNavController()
             val backStackEntry by nav.currentBackStackEntryAsState()
             val route = backStackEntry?.destination?.route
@@ -248,8 +250,8 @@ fun TvRoot(
             // BACK on the server list after Change server goes back to the saved server
             // instead of leaving the app. Composed before the onboarding, whose own BACK
             // (one step back inside it) takes precedence while it has a step to go back to.
-            BackHandler(enabled = hasSavedServer && changeServer) { viewModel.cancelChangeServer() }
-            TvOnboardingScreen()
+            BackHandler(enabled = hasSavedServer && changeServer) { viewModel.closeChangeServer() }
+            TvOnboardingScreen(onSignedIn = viewModel::closeChangeServer)
         }
     }
 }

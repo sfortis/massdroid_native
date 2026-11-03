@@ -13,6 +13,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import net.asksakis.massdroidv2.data.repository.MaAnswerCacheGuard
 import net.asksakis.massdroidv2.data.sendspin.OutputRouteKeys
+import net.asksakis.massdroidv2.data.signin.SignInSession
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
 import net.asksakis.massdroidv2.domain.repository.AcousticRouteCalibration
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
@@ -29,6 +30,7 @@ class TvApp : Application(), ImageLoaderFactory {
 
     @Inject lateinit var wsClient: MaWebSocketClient
     @Inject lateinit var settingsRepository: SettingsRepository
+    @Inject lateinit var signInSession: SignInSession
     @Inject lateinit var maAnswerCacheGuard: MaAnswerCacheGuard
 
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -60,6 +62,9 @@ class TvApp : Application(), ImageLoaderFactory {
             wsClient.markStartupReady()
         }
 
+        // Saves the token of every connection and forgets one the server refused, as on the
+        // phone; the TV signs in through the same session.
+        signInSession.start()
         // Clears the cached MA answers when a connection reaches another MA server.
         maAnswerCacheGuard.start()
 

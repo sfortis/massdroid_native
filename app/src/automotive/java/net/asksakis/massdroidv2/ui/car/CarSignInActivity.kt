@@ -62,16 +62,21 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dagger.hilt.android.AndroidEntryPoint
 import net.asksakis.massdroidv2.data.signin.SavedSignIn
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
+import net.asksakis.massdroidv2.data.websocket.OAUTH_CALLBACK_SCHEME
 import net.asksakis.massdroidv2.domain.AppLinks
+import net.asksakis.massdroidv2.domain.connection.ServerCheck
 import net.asksakis.massdroidv2.domain.connection.displayAddressOf
 import net.asksakis.massdroidv2.domain.connection.sameServer
 import net.asksakis.massdroidv2.domain.model.CrossfadeMode
 import net.asksakis.massdroidv2.domain.model.SendspinAudioFormat
 import net.asksakis.massdroidv2.service.carMediaCenterIntent
 import net.asksakis.massdroidv2.ui.components.ChosenServerCard
+import net.asksakis.massdroidv2.ui.components.HomeAssistantSignIn
 import net.asksakis.massdroidv2.ui.components.OtherServerSheet
 import net.asksakis.massdroidv2.ui.components.ServerList
 import net.asksakis.massdroidv2.ui.components.chooseClientCertificate
+import net.asksakis.massdroidv2.ui.shared.HomeAssistantSignInPage
+import net.asksakis.massdroidv2.ui.shared.isWebViewAvailable
 import net.asksakis.massdroidv2.ui.theme.MassDroidTheme
 import kotlin.math.roundToInt
 
@@ -140,6 +145,9 @@ private fun CarSignInScreen(
     val chosen by picker.chosen.collectAsStateWithLifecycle()
     val typedCheck by picker.typedCheck.collectAsStateWithLifecycle()
     val attemptedUrl by viewModel.attemptedUrl.collectAsStateWithLifecycle()
+    val providers by viewModel.providers.collectAsStateWithLifecycle()
+    val oauthInProgress by viewModel.oauthInProgress.collectAsStateWithLifecycle()
+    val homeAssistantPage by viewModel.homeAssistantPage.collectAsStateWithLifecycle()
 
     // What was typed for the chosen server; null shows what is saved for that server. Keyed by
     // the server, so what was typed for one never reaches the next. The password is kept out of
@@ -183,6 +191,12 @@ private fun CarSignInScreen(
             viewModel.consumeSuccess()
             onClose()
         }
+    }
+
+    // The Home Assistant page covers the screen while it is open; BACK and Cancel return here.
+    homeAssistantPage?.let { url ->
+        CarHomeAssistantPage(url, viewModel)
+        return
     }
 
     val connecting = connection is ConnectionState.Connecting
@@ -297,6 +311,16 @@ private fun CarSignInScreen(
                             )
                             Spacer(Modifier.height(8.dp))
                         }
+                        // The providers belong to the server checked last, which is this one
+                        // once it answered.
+                        val webView = remember { isWebViewAvailable() }
+                        if (webView && server.check is ServerCheck.Found && providers.any { it.isHomeAssistant }) {
+                            HomeAssistantSignIn(inProgress = oauthInProgress) {
+                                viewModel.openHomeAssistantSignIn(server)
+                                sentUrl = server.url
+                            }
+                            Spacer(Modifier.height(12.dp))
+                        }
                         OutlinedTextField(
                             value = username,
                             onValueChange = { typedUsername = it },
@@ -405,6 +429,37 @@ private fun CarSignInScreen(
                         dither = dither,
                         onDither = viewModel::setDither,
                     )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * The Home Assistant sign-in page over the whole screen, which the car shows because it has no
+ * browser. It is reached only from the parked sign-in screen. A page that failed to load
+ * offers Retry and Cancel.
+ */
+@Composable
+private fun CarHomeAssistantPage(url: String, viewModel: CarSignInViewModel) {
+    HomeAssistantSignInPage(
+        url = url,
+        callbackScheme = OAUTH_CALLBACK_SCHEME,
+        onCallback = viewModel::deliverHomeAssistantCallback,
+        onCancel = viewModel::cancelHomeAssistantSignIn,
+        modifier = Modifier.fillMaxSize()
+    ) { message, retry ->
+        Surface(modifier = Modifier.fillMaxSize()) {
+            Column(
+                modifier = Modifier.fillMaxSize().padding(48.dp),
+                verticalArrangement = Arrangement.Center,
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Text(message, style = MaterialTheme.typography.bodyLarge)
+                Spacer(Modifier.height(20.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    retry?.let { again -> Button(onClick = again) { Text("Retry", fontSize = 18.sp) } }
+                    OutlinedButton(onClick = viewModel::cancelHomeAssistantSignIn) { Text("Cancel", fontSize = 18.sp) }
                 }
             }
         }

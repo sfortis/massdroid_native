@@ -27,8 +27,9 @@ import org.junit.Test
 
 /**
  * A Home Assistant sign-in start checks that the phone reaches the addresses the link opens,
- * which can take seconds. A start cancelled during the checks, or replaced by a newer start,
- * must not open the browser or overwrite the newer start's nonce (code check, 2026-11-03).
+ * which can take seconds, after fetching the link itself. A start cancelled during the fetch or
+ * the checks, or replaced by a newer start, must not open the browser or overwrite the newer
+ * start's nonce (code check, 2026-11-03).
  */
 class HomeAssistantOAuthStartTest {
 
@@ -37,10 +38,19 @@ class HomeAssistantOAuthStartTest {
     private val firstCheckHeld = CompletableDeferred<Unit>()
     private val releaseFirstCheck = CompletableDeferred<Unit>()
     private val first = AtomicBoolean(true)
+    private var holdFetch = false
+    private var fetchThrows = false
+    private val fetchHeld = CompletableDeferred<Unit>()
+    private val releaseFetch = CompletableDeferred<Unit>()
     private val probe = mockk<MaAuthProbe> {
         coEvery { identify(serverUrl) } returns
             ServerAnswer.MusicAssistant("2.10.9", listOf(AuthProviderInfo("ha", "homeassistant", true)))
-        coEvery { fetchAuthorizationUrl(serverUrl, "ha", any()) } answers {
+        coEvery { fetchAuthorizationUrl(serverUrl, "ha", any()) } coAnswers {
+            if (fetchThrows) throw IllegalArgumentException("authorization_url is not a string")
+            if (holdFetch) {
+                fetchHeld.complete(Unit)
+                releaseFetch.await()
+            }
             nonces += thirdArg<String>().substringAfterLast('/')
             "http://ha.lan:8123/auth/authorize?n=${nonces.size}"
         }
@@ -74,6 +84,32 @@ class HomeAssistantOAuthStartTest {
         releaseFirstCheck.complete(Unit)
 
         assertThat(withTimeout(WAIT_MS) { start.await() }).isNull()
+        assertThat(repo.oauthInProgress.value).isFalse()
+    }
+
+    @Test
+    fun `a start cancelled while its link is fetched opens nothing`() = runBlocking {
+        holdFetch = true
+        repo.checkServer(serverUrl)
+        val start = async(Dispatchers.Default) { repo.startHomeAssistantOAuth(serverUrl) }
+        withTimeout(WAIT_MS) { fetchHeld.await() }
+        // Already in progress, so the button cannot start a second sign-in meanwhile.
+        assertThat(repo.oauthInProgress.value).isTrue()
+
+        repo.cancelOAuth()
+        releaseFetch.complete(Unit)
+
+        assertThat(withTimeout(WAIT_MS) { start.await() }).isNull()
+        assertThat(repo.oauthInProgress.value).isFalse()
+    }
+
+    @Test
+    fun `a start whose fetch throws leaves the button usable`() = runBlocking {
+        fetchThrows = true
+        repo.checkServer(serverUrl)
+
+        runCatching { repo.startHomeAssistantOAuth(serverUrl) }
+
         assertThat(repo.oauthInProgress.value).isFalse()
     }
 

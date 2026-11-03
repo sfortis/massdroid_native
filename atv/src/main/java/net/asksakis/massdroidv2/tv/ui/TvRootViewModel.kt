@@ -61,10 +61,7 @@ class TvRootViewModel @Inject constructor(
     init {
         viewModelScope.launch {
             wsClient.connectionState.collect { state ->
-                if (state is ConnectionState.Connected) {
-                    _sessionEstablished.value = true
-                    _changeServerRequested.value = false
-                }
+                if (state is ConnectionState.Connected) _sessionEstablished.value = true
             }
         }
         viewModelScope.launch {
@@ -81,8 +78,10 @@ class TvRootViewModel @Inject constructor(
 
     /**
      * Connect, then retry on Error/Disconnected with a bounded backoff until
-     * connected. While the user is changing server, it waits for the next successful
-     * sign-in instead of giving up for the rest of the session.
+     * connected. While the user is changing server, it waits until Change server closes
+     * instead of giving up for the rest of the session. A connection while it is open is
+     * not the end of it: a failed sign-in connects to the previous server again, and the
+     * screen stays to show why.
      *
      * Only this screen's own Change server holds it back. The client's userDisconnected
      * flag outlives the activity: Change server, then leaving the app with BACK and opening
@@ -93,10 +92,7 @@ class TvRootViewModel @Inject constructor(
         while (currentCoroutineContext().isActive) {
             if (_changeServerRequested.value) {
                 // Waits for a sign-in to the new server, or for the user to go back to this one.
-                combine(_changeServerRequested, wsClient.connectionState) { changing, state ->
-                    !changing || state is ConnectionState.Connected
-                }.first { it }
-                _changeServerRequested.value = false
+                _changeServerRequested.first { !it }
                 continue
             }
             when (wsClient.connectionState.value) {
@@ -116,10 +112,10 @@ class TvRootViewModel @Inject constructor(
     fun serverLabel(): String = savedUrl
 
     /**
-     * The user left Change server without signing in anywhere else (BACK on the server
-     * list): the saved server is connected again.
+     * Change server closes: a sign-in from it saved its server, or the user left it with BACK
+     * on the server list. The saved server, the new one or the old one, is connected again.
      */
-    fun cancelChangeServer() {
+    fun closeChangeServer() {
         _changeServerRequested.value = false
     }
 
