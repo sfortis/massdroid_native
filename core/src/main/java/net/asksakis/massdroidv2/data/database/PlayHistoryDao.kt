@@ -352,6 +352,32 @@ interface PlayHistoryDao {
     @Query("DELETE FROM ma_artist_top_tracks WHERE fetched_at < :olderThan")
     suspend fun deleteExpiredArtistTopTracks(olderThan: Long)
 
+    // ---- All MA answer caches ----
+
+    @Query("DELETE FROM ma_similar_artists")
+    suspend fun clearMaSimilarArtists()
+
+    @Query("DELETE FROM ma_similar_track_cache")
+    suspend fun clearMaSimilarTrackCache()
+
+    @Query("DELETE FROM ma_artist_top_tracks")
+    suspend fun clearArtistTopTracks()
+
+    @Query("DELETE FROM artist_track_cache")
+    suspend fun clearArtistTrackCache()
+
+    /**
+     * Drops every cached MA answer. They are keyed by one server's library ids, which name other
+     * artists on another server. They hold no user data, so nothing is lost.
+     */
+    @Transaction
+    suspend fun clearMaAnswerCaches() {
+        clearMaSimilarArtists()
+        clearMaSimilarTrackCache()
+        clearArtistTopTracks()
+        clearArtistTrackCache()
+    }
+
     // ---- Album info cache (MusicBrainz + Wikipedia) ----
 
     @Query("SELECT * FROM album_info WHERE album_key = :albumKey LIMIT 1")

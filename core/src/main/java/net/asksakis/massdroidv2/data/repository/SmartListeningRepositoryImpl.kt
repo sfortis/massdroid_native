@@ -27,6 +27,7 @@ import net.asksakis.massdroidv2.domain.repository.SettingsRepository
 import net.asksakis.massdroidv2.domain.repository.SmartListeningRepository
 import net.asksakis.massdroidv2.domain.repository.aliasesOrEmpty
 import net.asksakis.massdroidv2.domain.recommendation.MediaIdentity
+import net.asksakis.massdroidv2.domain.recommendation.genreKey
 import net.asksakis.massdroidv2.domain.recommendation.TRACK_SUPPRESSION_THRESHOLD
 import net.asksakis.massdroidv2.domain.recommendation.addTrackSignal
 import net.asksakis.massdroidv2.domain.recommendation.effectiveTrackScore
@@ -293,6 +294,17 @@ class SmartListeningRepositoryImpl @Inject constructor(
                 Log.w(TAG, "Blocked-artist expansion stopped at ${row.artistUri}, +$added uri(s); retried on the next connect")
                 return added > 0
             }
+            // A library uri names whatever artist has that id on the server connected now. The
+            // local database outlives a switch to another server, where the same id is usually
+            // another artist; blocking its uris would block that artist under this one's name.
+            // So a server's own uri counts only when the server names the same artist. Provider
+            // uris name the same item on every server and are expanded as before.
+            if (lookup is ArtistAliasLookup.Resolved && isServerLocalUri(row.artistUri) &&
+                !isSameArtist(row.artistName, lookup.artistName)
+            ) {
+                Log.d(TAG, "Blocked-artist expansion skipped ${row.artistUri}: '${row.artistName}' is '${lookup.artistName}' here")
+                continue
+            }
             val aliases = lookup.aliasesOrEmpty()
                 .mapNotNull { MediaIdentity.canonicalArtistKey(uri = it) }
                 .filter { it != row.artistUri }
@@ -547,4 +559,14 @@ class SmartListeningRepositoryImpl @Inject constructor(
             )
         }
     }
+}
+
+/**
+ * Whether a blocked artist's stored name and the name the server gives are the same artist,
+ * compared by [genreKey] (case, accents and punctuation ignored), as the library sync tells a
+ * reused library id from a rename. A missing name on either side is not the same artist.
+ */
+internal fun isSameArtist(blockedName: String?, serverName: String?): Boolean {
+    if (blockedName.isNullOrBlank() || serverName.isNullOrBlank()) return false
+    return genreKey(blockedName) == genreKey(serverName)
 }

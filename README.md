@@ -53,36 +53,29 @@ MassDroid is a full-featured Music Assistant companion app built around music ex
 ## What's New ![NEW](https://img.shields.io/badge/-NEW-brightgreen)
 
 ### Added
-- Now Playing shows a few words about the album or the artist, on the phone and on Android TV.
-- Your settings come back with Android's backup on a new phone. Your password and the phone's speaker identity are never backed up.
-- Android TV: lyrics, "Not for me", the blurred cover behind the full player, and a Smart Listening switch.
-- Android Automotive: a Mixes tab, and Browse moves into Library so every tab fits the screen.
-- "Not for me" also reaches Music Assistant 2.11, and can be undone.
+- A short welcome on first launch, and the app asks for notifications only when a feature needs them.
+- Sign-in lists the Music Assistant servers on your network, on the phone and on Android TV.
+- Each server keeps its own account, with Continue as, recently used servers and Forget.
+- Change server from Settings while you stay signed in.
+- Home shows the Music Assistant rows you choose, in your order.
+- Library can show only album artists and filters albums by type, on the phone and on Android TV.
+- Android TV and Android Automotive: sign in with Home Assistant.
 
 ### Improved
-- The phone speaker supports the newer speaker protocol of Music Assistant 2.10.7 and later.
-- Sorted playlists play in the order you see them on Music Assistant 2.10.7 and later.
-- Smart Mix ends with songs you love, so the music that follows stays in the same style.
-- Android TV: the cursor returns to where you left it, every row lines up, and slow screens show loading and Retry.
-- The app reconnects faster when the phone changes network.
-- The full player uses less battery, and animations stop while the screen is off.
-- A call pauses only the phone when it plays in a group, not the whole group.
-- Release files are smaller.
+- The home screen widget shows the artist on a one-row widget, with a bigger title. (#73)
+- Servers on your network are found more reliably on Android 13 and older.
+- The phone speaker resumes after a Bluetooth or server reconnect only when it should.
+- Android Automotive: signing in, the dock and the notification open the media center.
+- Android TV: the keyboard opens when you press OK.
 
 ### Fixed
-- Next and previous are greyed out when there is nothing to skip to, such as a radio on its own.
-- Android Automotive: the car signs in again by itself after changing networks. (#80)
-- Android Automotive: music started from the car's screens no longer plays nowhere. (#37)
-- The phone joining another speaker's group no longer restarts the group's music.
-- Break sync on a group leader no longer hands the queue to another speaker.
-- A radio no longer shows the previous song's artist.
-- A network drop while signing in no longer signs you out.
-- Sign-in details go only to the server you signed in to.
-- The pull-to-refresh spinner no longer stays on screen.
-- On Xiaomi phones, message text is readable again.
-
-### F-Droid
-- MassDroid and MassDroid TV are now on F-Droid.
+- Typing a server address with a space no longer closes the app.
+- Signing in on the wrong port now says which port Music Assistant uses.
+- A password that starts or ends with a space now signs in.
+- A failed switch to another server keeps you on the server you were using.
+- After switching servers, an artist you blocked on the other server no longer blocks a different artist.
+- Switching between servers no longer erases what the app learned about your artists.
+- Android TV: BACK in a text field acts once, BACK in Change server returns to your server, and reopening the app after Change server reconnects.
 
 ## Screenshots
 

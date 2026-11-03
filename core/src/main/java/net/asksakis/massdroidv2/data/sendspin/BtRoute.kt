@@ -69,3 +69,33 @@ internal fun AudioManager.connectedBtSinkKeys(): List<String> =
         .filter { isBluetoothSink(it.type) }
         .mapNotNull { it.productName?.toString() }
         .map { "bt:$it" }
+
+/**
+ * The Bluetooth sink the output plays to: the device with the id the output stream is bound to
+ * ([routedDeviceId]), else the only connected sink, else null. The id tells apart two sinks with
+ * the same name, which a lookup by name cannot.
+ */
+internal fun AudioManager.routedBluetoothSink(routedDeviceId: Int?): AudioDeviceInfo? {
+    val sinks = getDevices(AudioManager.GET_DEVICES_OUTPUTS).filter { isBluetoothSink(it.type) }
+    return sinks.firstOrNull { routedDeviceId != null && it.id == routedDeviceId } ?: sinks.singleOrNull()
+}
+
+/**
+ * An identity for remembering one Bluetooth device: its MAC address when Android gives a real
+ * one (API 28 and later), else `bt:NAME`, else null. The MAC tells apart two devices with the same
+ * name and works for a device without one. The route keys of the calibration and the car volume
+ * pin stay on the name; this identity is only for recognising the same device again.
+ */
+internal fun bluetoothSinkIdentity(device: AudioDeviceInfo): String? {
+    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+        val address = runCatching { device.address }.getOrNull()
+        if (address != null && isRealMacAddress(address)) return "mac:${address.uppercase()}"
+    }
+    return device.productName?.toString()?.takeIf { it.isNotBlank() }?.let { "bt:$it" }
+}
+
+/** A MAC address that names a device, not the empty or anonymised one Android may return. */
+internal fun isRealMacAddress(address: String): Boolean =
+    MAC_ADDRESS.matches(address) && address != "00:00:00:00:00:00" && !address.equals("02:00:00:00:00:00", ignoreCase = true)
+
+private val MAC_ADDRESS = Regex("([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}")

@@ -1,6 +1,11 @@
 package net.asksakis.massdroidv2.tv.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.focus.focusProperties
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -42,6 +47,10 @@ import androidx.tv.material3.Text
 /**
  * A single-line text field for the TV: a framed box that shows focus, with D-pad UP and DOWN
  * always moving focus out of it and the keyboard's action wired to [onImeAction].
+ *
+ * Moving onto the field focuses only its frame. The keyboard opens when the user presses OK or
+ * clicks it, the way the platform's own TV forms work; before, the keyboard opened on every
+ * pass through a field on the way to the button below it. [focusRequester] focuses the frame.
  */
 @Composable
 internal fun TvTextField(
@@ -55,7 +64,26 @@ internal fun TvTextField(
     onValueChange: (String) -> Unit
 ) {
     var focused by remember { mutableStateOf(false) }
+    var editing by remember { mutableStateOf(false) }
     val focusManager = LocalFocusManager.current
+    val keyboard = LocalSoftwareKeyboardController.current
+    val frameFocus = focusRequester ?: remember { FocusRequester() }
+    val fieldFocus = remember { FocusRequester() }
+    val startEditing = { editing = true }
+    // The field takes the focus only once editing starts, and the keyboard is shown with it.
+    LaunchedEffect(editing) {
+        if (editing) {
+            runCatching { fieldFocus.requestFocus() }
+            keyboard?.show()
+        }
+    }
+    val stopEditing = {
+        editing = false
+        runCatching { frameFocus.requestFocus() }
+    }
+    // Whether this field took the KeyDown of the BACK press still under way, so it takes the
+    // matching KeyUp as well.
+    var backDownTaken by remember { mutableStateOf(false) }
     Column(modifier = Modifier.fillMaxWidth()) {
         Text(
             label,
@@ -66,6 +94,31 @@ internal fun TvTextField(
         Box(
             modifier = Modifier
                 .fillMaxWidth()
+                // BACK with the keyboard already closed ends the editing and leaves the cursor on
+                // the frame, instead of leaving the screen. Both halves of the press are taken,
+                // because TvMainActivity runs the back dispatch on the KeyUp, and a KeyUp left to
+                // it went back a screen as well. Placed ahead of the frame's focus, so it also
+                // sees the KeyUp that arrives after the focus moved from the field to the frame.
+                .onPreviewKeyEvent { event ->
+                    if (event.key != Key.Back) return@onPreviewKeyEvent false
+                    when (event.type) {
+                        KeyEventType.KeyDown -> if (editing) {
+                            backDownTaken = true
+                            stopEditing()
+                            true
+                        } else {
+                            false
+                        }
+                        KeyEventType.KeyUp -> backDownTaken.also { backDownTaken = false }
+                        else -> false
+                    }
+                }
+                .focusRequester(frameFocus)
+                .onFocusChanged { if (!editing) focused = it.isFocused }
+                // OK on the remote, or a click, opens the keyboard.
+                .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {
+                    startEditing()
+                }
                 .background(MaterialTheme.colorScheme.surfaceVariant, MaterialTheme.shapes.small)
                 .border(
                     width = if (focused) 2.dp else 1.dp,
@@ -86,12 +139,28 @@ internal fun TvTextField(
                     imeAction = imeAction,
                     autoCorrectEnabled = false
                 ),
-                keyboardActions = KeyboardActions(onAny = { onImeAction() }),
+                keyboardActions = KeyboardActions(onAny = {
+                    // Back to the frame first, so an action that moves the focus on starts from
+                    // the field's place, and the keyboard closes with the editing.
+                    stopEditing()
+                    onImeAction()
+                }),
                 visualTransformation = if (masked) PasswordVisualTransformation() else VisualTransformation.None,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
-                    .onFocusChanged { focused = it.isFocused }
+                    .focusRequester(fieldFocus)
+                    // Not reachable with the D-pad: only OK or a click on the frame opens it.
+                    .focusProperties { canFocus = editing }
+                    .onFocusChanged {
+                        if (it.isFocused) {
+                            focused = true
+                        } else {
+                            // Leaving the field (UP, DOWN, a tap elsewhere) ends the editing; a
+                            // return to the frame marks it focused again on its own.
+                            focused = false
+                            editing = false
+                        }
+                    }
                     // Compose moves focus out of a text field with UP and DOWN only when the
                     // remote reports itself as a D-pad. Many TV remotes (HDMI-CEC, several
                     // Bluetooth ones) send their arrows as plain keyboard keys, and the field

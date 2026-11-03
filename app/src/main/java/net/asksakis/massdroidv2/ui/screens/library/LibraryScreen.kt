@@ -123,6 +123,8 @@ fun LibraryScreen(
     val displayModesByTab by viewModel.displayModesByTab.collectAsStateWithLifecycle()
     val sortDescending by viewModel.sortDescending.collectAsStateWithLifecycle()
     val favoritesOnly by viewModel.favoritesOnly.collectAsStateWithLifecycle()
+    val albumArtistsOnly by viewModel.albumArtistsOnly.collectAsStateWithLifecycle()
+    val albumTypes by viewModel.albumTypes.collectAsStateWithLifecycle()
 
     val selectedProviders by viewModel.selectedProviders.collectAsStateWithLifecycle()
     val providerCache = LocalProviderManifestCache.current
@@ -809,6 +811,11 @@ fun LibraryScreen(
             // Only the Playlists tab has a type to filter by; null hides the whole group.
             playlistTypeFilter = playlistTypeFilter.takeIf { selectedTab == TAB_PLAYLISTS },
             onPlaylistTypeSelect = { viewModel.setPlaylistTypeFilter(it) },
+            // The album-artist filter belongs to Artists and the album types to Albums.
+            albumArtistsOnly = albumArtistsOnly.takeIf { selectedTab == TAB_ARTISTS },
+            onToggleAlbumArtistsOnly = { viewModel.toggleAlbumArtistsOnly() },
+            albumTypes = albumTypes.takeIf { selectedTab == TAB_ALBUMS },
+            onToggleAlbumType = { viewModel.toggleAlbumType(it) },
             onToggleProvider = { viewModel.toggleProviderFilter(it) },
             onClearProviders = { viewModel.clearProviderFilter() },
             onSortSelect = { viewModel.updateSort(it) },
@@ -855,7 +862,7 @@ private fun LibraryCompactHeader(
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 private fun LibraryControlsSheet(
     isBrowseTab: Boolean,
@@ -868,6 +875,10 @@ private fun LibraryControlsSheet(
     favoritesOnly: Boolean,
     playlistTypeFilter: PlaylistTypeFilter?,
     onPlaylistTypeSelect: (PlaylistTypeFilter) -> Unit,
+    albumArtistsOnly: Boolean?,
+    onToggleAlbumArtistsOnly: () -> Unit,
+    albumTypes: Set<AlbumType>?,
+    onToggleAlbumType: (AlbumType) -> Unit,
     displayMode: LibraryDisplayMode,
     onToggleProvider: (String) -> Unit,
     onClearProviders: () -> Unit,
@@ -955,6 +966,13 @@ private fun LibraryControlsSheet(
                                 onClick = onToggleFavorites,
                                 label = { Text("Favorites only") }
                             )
+                            albumArtistsOnly?.let { selected ->
+                                FilterChip(
+                                    selected = selected,
+                                    onClick = onToggleAlbumArtistsOnly,
+                                    label = { Text("Album artists only") }
+                                )
+                            }
                         }
                     }
                 }
@@ -978,6 +996,33 @@ private fun LibraryControlsSheet(
                     }
                     Text(
                         "Smart playlists are rebuilt by the server each time they play.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
+            albumTypes?.let { selectedTypes ->
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = "Album types",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        AlbumType.entries.forEach { type ->
+                            FilterChip(
+                                selected = type in selectedTypes,
+                                onClick = { onToggleAlbumType(type) },
+                                label = { Text(type.label) }
+                            )
+                        }
+                    }
+                    Text(
+                        "With none chosen, every album shows.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

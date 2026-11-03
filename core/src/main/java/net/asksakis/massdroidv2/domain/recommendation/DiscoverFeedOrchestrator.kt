@@ -7,6 +7,8 @@ import net.asksakis.massdroidv2.data.genre.GenreRepository
 import net.asksakis.massdroidv2.data.genre.LibraryGenreEnricher
 import net.asksakis.massdroidv2.domain.model.Artist
 import net.asksakis.massdroidv2.domain.model.GenreItem
+import net.asksakis.massdroidv2.domain.model.RecommendationFolder
+import net.asksakis.massdroidv2.domain.repository.HomeRowSettingsRepository
 import net.asksakis.massdroidv2.domain.repository.MusicRepository
 import net.asksakis.massdroidv2.domain.repository.PlayHistoryRepository
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
@@ -29,6 +31,7 @@ private const val SUPPRESSED_ARTIST_LOOKBACK_DAYS = 120
 @Singleton
 class DiscoverFeedOrchestrator @Inject constructor(
     musicRepository: MusicRepository,
+    private val homeRowSettings: HomeRowSettingsRepository,
     playHistoryRepository: PlayHistoryRepository,
     private val genreRepository: GenreRepository,
     private val settingsRepository: SettingsRepository,
@@ -117,6 +120,8 @@ class DiscoverFeedOrchestrator @Inject constructor(
             emptyList()
         }
 
+        val homeRows = loadHomeRows(content.serverRows)
+
         val sections = sectionBuilder.buildSections(
             serverFolders = content.enrichedFolders,
             suggestedArtists = discovery.artists,
@@ -124,8 +129,9 @@ class DiscoverFeedOrchestrator @Inject constructor(
             genreItems = genreItems,
             bllGenreScores = bllGenreScores,
             smartPlaylists = content.smartPlaylists,
+            homeRows = homeRows,
         )
-        Log.d(TAG, "Built ${sections.size} sections (${merged.size} artists)")
+        Log.d(TAG, "Built ${sections.size} sections (${merged.size} artists, ${homeRows.size} home rows)")
 
         return DiscoverFeed(
             sections = sections,
@@ -135,5 +141,19 @@ class DiscoverFeedOrchestrator @Inject constructor(
             strictGenreArtists = strictGenreArtists,
             genreItems = genreItems,
         )
+    }
+
+    /**
+     * The server rows the MA user shows on their home screen, in their order, with their items.
+     * Only these rows are fetched, so a hidden row costs nothing.
+     */
+    private suspend fun loadHomeRows(serverRows: List<RecommendationFolder>): List<RecommendationFolder> = try {
+        val layout = homeRowSettings.load()
+        if (layout == null) emptyList() else contentLoader.fillRows(layout.visibleRows(serverRows))
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        Log.e(TAG, "Failed to load the home rows", e)
+        emptyList()
     }
 }

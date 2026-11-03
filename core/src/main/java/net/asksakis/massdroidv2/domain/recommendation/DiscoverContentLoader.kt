@@ -4,6 +4,7 @@ import kotlinx.coroutines.CancellationException
 import net.asksakis.massdroidv2.domain.model.Playlist
 import android.util.Log
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import net.asksakis.massdroidv2.domain.model.Album
 import net.asksakis.massdroidv2.domain.model.GenreItem
@@ -21,6 +22,9 @@ private const val RECENT_TRACKS_QUERY_FACTOR = 5
 private const val RECENT_FAVORITE_ALBUMS_FOLDER_ID_LOCAL = "recent_favorite_albums"
 private const val RECENT_FAVORITE_ALBUMS_TITLE_LOCAL = "Recent Favorite Albums"
 
+/** The server rows the recommendations and the Discover genre data are built from. */
+private val RECOMMENDATION_INPUT_ROWS = setOf("recent_favorite_tracks", "random_albums", "random_artists")
+
 data class DiscoverContentBundle(
     val mergedArtists: List<Artist>,
     val enrichedFolders: List<RecommendationFolder>,
@@ -31,7 +35,9 @@ data class DiscoverContentBundle(
     /** Keyed by [genreKey], like [genreArtists]. */
     val strictGenreArtists: Map<String, List<String>>,
     /** Playlists the server rebuilds when they are played, newest first. */
-    val smartPlaylists: List<Playlist>
+    val smartPlaylists: List<Playlist>,
+    /** Every recommendation row of the server; only the rows the recommendations read hold items. */
+    val serverRows: List<RecommendationFolder> = emptyList()
 )
 
 class DiscoverContentLoader(
@@ -91,7 +97,8 @@ class DiscoverContentLoader(
             genreItems = genreItems,
             genreArtists = genreArtists,
             strictGenreArtists = strictGenreArtists,
-            smartPlaylists = smartPlaylists
+            smartPlaylists = smartPlaylists,
+            serverRows = serverFolders
         )
     }
 
@@ -146,11 +153,34 @@ class DiscoverContentLoader(
         null
     }
 
+    /**
+     * Every recommendation row, with items for the rows the recommendations read: recently
+     * favorited tracks and the random rows. MA 2.10 serves items per row on request; the rows
+     * shown only on the home screen are filled by [fillRows].
+     */
     private suspend fun loadRecommendations(): List<RecommendationFolder> = try {
-        musicRepository.getRecommendations()
+        fillRows(musicRepository.getRecommendationRows()) { it.itemId in RECOMMENDATION_INPUT_ROWS }
+    } catch (e: CancellationException) {
+        throw e
     } catch (e: Exception) {
         Log.e(LOADER_TAG, "Failed to load recommendations", e)
         emptyList()
+    }
+
+    /**
+     * [rows] with the items of every row [wanted] picks that has none yet, fetched in parallel.
+     * A row the server cannot serve stays empty, and the home screen leaves it out.
+     */
+    suspend fun fillRows(
+        rows: List<RecommendationFolder>,
+        wanted: (RecommendationFolder) -> Boolean = { true }
+    ): List<RecommendationFolder> = coroutineScope {
+        rows.map { row ->
+            async {
+                if (row.items.totalCount > 0 || !wanted(row)) row
+                else row.copy(items = musicRepository.getRecommendationItems(row))
+            }
+        }.awaitAll()
     }
 
     private fun extractRecommendationArtists(folders: List<RecommendationFolder>): List<Artist> =

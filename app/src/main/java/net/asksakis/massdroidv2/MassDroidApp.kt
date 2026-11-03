@@ -10,6 +10,8 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import net.asksakis.massdroidv2.data.repository.MaAnswerCacheGuard
+import net.asksakis.massdroidv2.data.signin.SignInSession
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
 import net.asksakis.massdroidv2.data.update.AppUpdateChecker
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
@@ -26,6 +28,12 @@ class MassDroidApp : Application(), ImageLoaderFactory {
 
     @Inject
     lateinit var settingsRepository: SettingsRepository
+
+    @Inject
+    lateinit var signInSession: SignInSession
+
+    @Inject
+    lateinit var maAnswerCacheGuard: MaAnswerCacheGuard
 
     @Inject
     lateinit var playHistoryRepository: PlayHistoryRepository
@@ -145,16 +153,14 @@ class MassDroidApp : Application(), ImageLoaderFactory {
         // The home screen widget follows the selected player for the life of the process.
         nowPlayingWidgetPublisher.start(appScope)
 
-        // Observe connection state: save token on connect, clear on auth failure
+        // Saves the token of every connection and forgets one the server refused.
+        signInSession.start()
+        // Clears the cached MA answers when a connection reaches another MA server.
+        maAnswerCacheGuard.start()
         appScope.launch {
             wsClient.connectionState.collect { state ->
                 when (state) {
                     is ConnectionState.Connected -> {
-                        // Save fresh token to DataStore before anything reads it
-                        wsClient.authToken?.let { token ->
-                            settingsRepository.setAuthToken(token)
-                            Log.d("MassDroidApp", "Token saved to DataStore")
-                        }
                         providerManifestCache.fetchManifests(wsClient, json)
                         // Blocked artists are stored under every uri the server
                         // knows for them, which is a snapshot of the providers
@@ -181,17 +187,13 @@ class MassDroidApp : Application(), ImageLoaderFactory {
                         // critical-path queries. Cancel any previously scheduled sync
                         // so flap reconnects don't stack parallel launches.
                         genreEnrichmentJob?.cancel()
+                        val serverId = state.serverInfo.serverId
                         genreEnrichmentJob = appScope.launch {
                             delay(genreEnrichmentStartupDelayMs)
-                            libraryGenreEnricher.enrichAllUnenriched()
+                            libraryGenreEnricher.enrichAllUnenriched(serverId)
                         }
                     }
                     is ConnectionState.Error -> {
-                        // If token was rejected (cleared by WS client), clear from DataStore too
-                        if (wsClient.authToken == null) {
-                            settingsRepository.setAuthToken("")
-                            Log.d("MassDroidApp", "Invalid token cleared from DataStore")
-                        }
                         genreEnrichmentJob?.cancel()
                         genreEnrichmentJob = null
                     }

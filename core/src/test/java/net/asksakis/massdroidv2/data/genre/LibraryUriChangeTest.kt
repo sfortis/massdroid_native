@@ -66,4 +66,21 @@ class LibraryUriChangeTest {
         const val MBID = "11111111-2222-3333-4444-555555555555"
         const val OTHER_MBID = "66666666-7777-8888-9999-000000000000"
     }
+
+    // Each MA server numbers its own library and the table has no server column, so after a
+    // switch nearly every id names someone else. Repointing those wiped the plays and feedback
+    // of every colliding artist (S25, 2026-11-02: artist/5 "Rick Miller" read as reused for
+    // "Broke For Free" on the other server, and back again after the switch back).
+
+    @Test
+    fun `a reused id is repointed while every sync ran against this server`() {
+        assertThat(repointsReusedLibraryIds(setOf("home"), "home")).isTrue()
+    }
+
+    @Test
+    fun `a reused id is left alone once a second server was synced`() {
+        assertThat(repointsReusedLibraryIds(setOf("home", "test"), "test")).isFalse()
+        // Back on the first server, the table still holds the other server's ids.
+        assertThat(repointsReusedLibraryIds(setOf("home", "test"), "home")).isFalse()
+    }
 }

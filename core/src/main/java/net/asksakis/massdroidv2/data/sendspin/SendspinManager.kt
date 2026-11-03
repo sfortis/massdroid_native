@@ -1186,6 +1186,9 @@ class SendspinManager(
 
     fun getRoutedDeviceProductName(): String? = audio.getRoutedDeviceProductName()
 
+    /** The id of the device the output is bound to, for telling apart two sinks with one name. */
+    fun getRoutedDeviceId(): Int? = audio.getRoutedDeviceId()
+
     fun acousticExtraMs(): Long = (audio.routeAcousticExtraUs ?: 0L) / 1000
 
     /** The sync delay the engine plays with now, fine-tune included (positive = later). */

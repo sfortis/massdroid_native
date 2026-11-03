@@ -75,6 +75,8 @@ import net.asksakis.massdroidv2.ui.screens.nowplaying.components.TrackInfoSectio
 import net.asksakis.massdroidv2.ui.screens.nowplaying.components.TransportControls
 import net.asksakis.massdroidv2.playback.SleepTimerBridge
 import net.asksakis.massdroidv2.ui.components.SleepTimerSheet
+import net.asksakis.massdroidv2.ui.permissions.AppPermissionRationales
+import net.asksakis.massdroidv2.ui.permissions.rememberNotificationPermissionAsk
 import androidx.compose.material.icons.filled.Bedtime
 import net.asksakis.massdroidv2.domain.model.MediaType
 import net.asksakis.massdroidv2.domain.model.QueueSource
@@ -635,6 +637,8 @@ fun NowPlayingScreen(
         )
     }
 
+    // Asked here rather than in the sheet: the sheet closes when a timer starts.
+    val askNotificationsForTimer = rememberNotificationPermissionAsk(AppPermissionRationales.sleepTimer)
     if (showSleepTimerDialog) {
         SleepTimerSheet(
             isActive = sleepTimerActive,
@@ -643,6 +647,7 @@ fun NowPlayingScreen(
                 val targetId = player?.playerId
                 if (targetId != null) {
                     viewModel.sleepTimerBridge.requestStart(minutes, targetId)
+                    askNotificationsForTimer()
                 }
             },
             onCancel = { viewModel.sleepTimerBridge.requestCancel() },

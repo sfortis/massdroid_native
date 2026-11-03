@@ -10,6 +10,7 @@ import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.decodeFromJsonElement
@@ -22,7 +23,9 @@ import okhttp3.Request
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
+import java.io.IOException
 import java.util.UUID
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 
 /**
@@ -34,35 +37,61 @@ import java.util.concurrent.atomic.AtomicReference
  * connection (which may not exist yet at first-time setup).
  */
 class MaAuthProbe(
-    private val httpClient: OkHttpClient,
+    /**
+     * The client for a URL, the same one the long-lived connection would use, so a server
+     * behind a client certificate or a private host with a certificate for another name
+     * answers the check the way it answers the connection.
+     */
+    private val clientFor: (String) -> OkHttpClient,
     private val json: Json
 ) {
     companion object {
         private const val TAG = "MaAuthProbe"
         private const val DEFAULT_TIMEOUT_MS = 6_000L
+        private const val REACH_TIMEOUT_MS = 2_500L
     }
 
-    /** List of providers the server supports (empty on failure). */
-    suspend fun fetchProviders(serverUrl: String): List<AuthProviderInfo> {
-        val raw = sendUnauthenticated(
-            serverUrl = serverUrl,
-            command = "auth/providers"
-        ) ?: return emptyList()
-        return runCatching {
-            json.decodeFromJsonElement(
-                ListSerializer(MaAuthProvider.serializer()),
-                raw
-            )
-        }.getOrElse {
-            Log.w(TAG, "fetchProviders parse failed: ${it.message}")
-            emptyList()
-        }.map {
-            AuthProviderInfo(
-                providerId = it.providerId,
-                providerType = it.providerType,
-                requiresRedirect = it.requiresRedirect
-            )
+    /**
+     * Whether anything answers HTTP at [origin] within [REACH_TIMEOUT_MS]. Any status counts, because
+     * the question is only whether this phone can reach the address at all.
+     */
+    suspend fun answersHttp(origin: String): Boolean = withContext(Dispatchers.IO) {
+        val request = try {
+            Request.Builder().url(origin).head().build()
+        } catch (_: IllegalArgumentException) {
+            return@withContext false
         }
+        val client = clientFor(origin).newBuilder().callTimeout(REACH_TIMEOUT_MS, TimeUnit.MILLISECONDS).build()
+        try {
+            client.newCall(request).execute().use { true }
+        } catch (e: IOException) {
+            Log.d(TAG, "No answer from $origin: ${e.message}")
+            false
+        }
+    }
+
+    /** Whether a Music Assistant server answers at [serverUrl]. */
+    suspend fun answersAsMusicAssistant(serverUrl: String): Boolean =
+        sendUnauthenticated(serverUrl = serverUrl, command = "auth/providers") != null
+
+    /**
+     * Asks [serverUrl] who it is. Music Assistant greets every new connection with its server
+     * info before any command, so the version comes from that greeting and the login providers
+     * from `auth/providers` on the same connection. An address that does not greet with a
+     * server version is not Music Assistant, whatever else it answers.
+     */
+    suspend fun identify(serverUrl: String): ServerAnswer {
+        val exchange = exchange(serverUrl = serverUrl, command = "auth/providers")
+        // A safe cast: another service at /ws may greet with an object here, and jsonPrimitive throws.
+        val version = (exchange.hello?.get("server_version") as? JsonPrimitive)?.contentOrNull
+            ?: return ServerAnswer.Failed(exchange.error)
+        val providers = exchange.result?.let { raw ->
+            runCatching {
+                json.decodeFromJsonElement(ListSerializer(MaAuthProvider.serializer()), raw)
+            }.getOrNull()
+        }.orEmpty().map { it.toInfo() }
+        val serverId = (exchange.hello?.get("server_id") as? JsonPrimitive)?.contentOrNull
+        return ServerAnswer.MusicAssistant(version, providers, serverId)
     }
 
     /**
@@ -90,13 +119,24 @@ class MaAuthProbe(
     private suspend fun sendUnauthenticated(
         serverUrl: String,
         command: String,
+        args: JsonObject? = null
+    ): JsonElement? = exchange(serverUrl, command, args).result
+
+    /** What one connection brought back: the server's greeting, the command's result, the failure. */
+    private class Exchange(val hello: JsonObject?, val result: JsonElement?, val error: Throwable?)
+
+    private suspend fun exchange(
+        serverUrl: String,
+        command: String,
         args: JsonObject? = null,
         timeoutMs: Long = DEFAULT_TIMEOUT_MS
-    ): JsonElement? = withContext(Dispatchers.IO) {
-        val wsUrl = toWsUrl(serverUrl) ?: return@withContext null
+    ): Exchange = withContext(Dispatchers.IO) {
+        val wsUrl = toWsUrl(serverUrl) ?: return@withContext Exchange(null, null, null)
         val messageId = UUID.randomUUID().toString().take(12)
         val deferred = CompletableDeferred<JsonElement?>()
         val socketRef = AtomicReference<WebSocket?>()
+        val helloRef = AtomicReference<JsonObject?>()
+        val errorRef = AtomicReference<Throwable?>()
 
         val listener = object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
@@ -106,8 +146,11 @@ class MaAuthProbe(
             override fun onMessage(webSocket: WebSocket, text: String) {
                 val msg = runCatching { json.parseToJsonElement(text).jsonObject }.getOrNull()
                     ?: return
-                // Ignore the initial server hello and any unrelated frames.
-                val mid = msg["message_id"]?.jsonPrimitive?.contentOrNull ?: return
+                // The server's greeting carries no message id; any other unrelated frame is ignored.
+                val mid = (msg["message_id"] as? JsonPrimitive)?.contentOrNull ?: run {
+                    if (msg.containsKey("server_version")) helloRef.compareAndSet(null, msg)
+                    return
+                }
                 if (mid != messageId) return
                 deferred.complete(msg["result"])
                 webSocket.close(1000, "probe done")
@@ -115,6 +158,7 @@ class MaAuthProbe(
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 Log.w(TAG, "WS failure for $command: ${t.message}")
+                errorRef.set(t)
                 deferred.complete(null)
             }
 
@@ -123,34 +167,44 @@ class MaAuthProbe(
             }
         }
 
-        val request = Request.Builder().url(wsUrl).build()
-        val socket = httpClient.newWebSocket(request, listener)
+        // The probe runs while the user types, so the address is often half written. OkHttp
+        // throws on a host it cannot parse (a space from autocorrect, a lone "http://"), and
+        // that exception used to escape the ViewModel and end the app.
+        val request = try {
+            Request.Builder().url(wsUrl).build()
+        } catch (e: IllegalArgumentException) {
+            Log.d(TAG, "Not probing an invalid URL: ${e.message}")
+            return@withContext Exchange(null, null, e)
+        }
+        val socket = clientFor(serverUrl).newWebSocket(request, listener)
+        // Closed on every way out, cancellation included: the check is cancelled at each
+        // keystroke, and an abandoned socket stays open until the server drops it.
+        try {
+            val payload = buildJsonObject {
+                put("command", command)
+                put("message_id", messageId)
+                if (args != null) put("args", args)
+            }.toString()
 
-        // Wait until the socket is open before sending the command.
-        val payload = buildJsonObject {
-            put("command", command)
-            put("message_id", messageId)
-            if (args != null) put("args", args)
-        }.toString()
-
-        // Brief wait for OPEN, then send. If we never opened, the failure will
-        // resolve the deferred with null below.
-        val opened = withTimeoutOrNull(timeoutMs) {
-            while (socketRef.get() == null && !deferred.isCompleted) {
-                kotlinx.coroutines.delay(50)
+            // Brief wait for OPEN, then send. If we never opened, the failure will
+            // resolve the deferred with null below.
+            val opened = withTimeoutOrNull(timeoutMs) {
+                while (socketRef.get() == null && !deferred.isCompleted) {
+                    kotlinx.coroutines.delay(50)
+                }
+                socketRef.get()
             }
-            socketRef.get()
-        }
-        opened?.send(payload)
+            opened?.send(payload)
 
-        val result = try {
-            withTimeoutOrNull(timeoutMs) { deferred.await() }
-        } catch (_: TimeoutCancellationException) {
-            null
+            val result = try {
+                withTimeoutOrNull(timeoutMs) { deferred.await() }
+            } catch (_: TimeoutCancellationException) {
+                null
+            }
+            Exchange(helloRef.get(), result, errorRef.get())
+        } finally {
+            runCatching { socket.close(1000, "probe done") }
         }
-
-        runCatching { socket.close(1000, "probe done") }
-        result
     }
 
     private fun toWsUrl(serverUrl: String): String? {
@@ -168,9 +222,27 @@ class MaAuthProbe(
     }
 }
 
+/** What an address said when asked whether it is Music Assistant. */
+sealed interface ServerAnswer {
+    data class MusicAssistant(
+        val version: String,
+        val providers: List<AuthProviderInfo>,
+        val serverId: String? = null
+    ) : ServerAnswer
+
+    /** No Music Assistant answered. [error] is the connection failure, null when there was none to name. */
+    data class Failed(val error: Throwable?) : ServerAnswer
+}
+
 @kotlinx.serialization.Serializable
 private data class MaAuthProvider(
     @kotlinx.serialization.SerialName("provider_id") val providerId: String,
     @kotlinx.serialization.SerialName("provider_type") val providerType: String,
     @kotlinx.serialization.SerialName("requires_redirect") val requiresRedirect: Boolean = false
+)
+
+private fun MaAuthProvider.toInfo() = AuthProviderInfo(
+    providerId = providerId,
+    providerType = providerType,
+    requiresRedirect = requiresRedirect
 )

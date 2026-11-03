@@ -12,6 +12,10 @@ object MaCommands {
     object Auth {
         const val LOGIN = "auth/login"
         const val AUTH = "auth"
+        /** The signed-in user, with the preferences the MA frontend keeps for them. */
+        const val ME = "auth/me"
+        /** Updates the signed-in user; `preferences` replaces all of them at once. */
+        const val USER_UPDATE = "auth/user/update"
     }
 
     object Server {
@@ -189,7 +193,11 @@ data class LibraryItemsArgs(
     val favoriteOnly: Boolean = false,
     val provider: List<String>? = null,
     /** MA 2.10 genre ids; the server keeps the items mapped to any of them. */
-    val genreIds: List<Int>? = null
+    val genreIds: List<Int>? = null,
+    /** Artists only: keep the artists credited on an album in the library. */
+    val albumArtistsOnly: Boolean = false,
+    /** Albums only: the album types to keep, as the server spells them; empty keeps all. */
+    val albumTypes: List<String> = emptyList()
 ) : MaCommandArgs {
     override fun toJson(): JsonObject = buildJsonObject {
         search?.let { put("search", it) }
@@ -199,6 +207,8 @@ data class LibraryItemsArgs(
         if (favoriteOnly) put("favorite", true)
         provider?.let { put("provider", JsonArray(it.map { id -> JsonPrimitive(id) })) }
         genreIds?.takeIf { it.isNotEmpty() }?.let { put("genre", JsonArray(it.map { id -> JsonPrimitive(id) })) }
+        if (albumArtistsOnly) put("album_artists_only", true)
+        if (albumTypes.isNotEmpty()) put("album_types", JsonArray(albumTypes.map { JsonPrimitive(it) }))
     }
 }
 

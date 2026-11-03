@@ -17,6 +17,7 @@ import net.asksakis.massdroidv2.ui.screens.library.LibraryScreen
 import net.asksakis.massdroidv2.ui.screens.library.PlaylistDetailScreen
 import net.asksakis.massdroidv2.ui.screens.library.PodcastDetailScreen
 import net.asksakis.massdroidv2.ui.screens.nowplaying.NowPlayingScreen
+import net.asksakis.massdroidv2.ui.screens.onboarding.OnboardingScreen
 import net.asksakis.massdroidv2.ui.screens.search.SearchScreen
 import net.asksakis.massdroidv2.ui.screens.settings.RecommendationInsightsScreen
 import net.asksakis.massdroidv2.ui.screens.settings.RoomSetupScreen
@@ -32,6 +33,7 @@ object Routes {
     const val SETTINGS = "settings?category={category}"
     const val RECOMMENDATION_INSIGHTS = "recommendation_insights"
     const val ROOM_SETUP = "room_setup?roomId={roomId}"
+    const val ONBOARDING = "onboarding"
 
     fun settings(category: SettingsCategory? = null): String =
         if (category != null) "settings?category=${category.name}" else "settings"
@@ -99,6 +101,10 @@ fun MassDroidNavHost(
                 onNavigateToSearch = { navController.navigate(Routes.SEARCH) },
                 onConfigureServer = { navController.navigate(Routes.settings(SettingsCategory.CONNECTION)) }
             )
+        }
+
+        composable(Routes.ONBOARDING) {
+            OnboardingScreen(onFinished = { navController.popBackStack(Routes.HOME, inclusive = false) })
         }
 
         composable(Routes.PLAYERS) {

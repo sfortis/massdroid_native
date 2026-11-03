@@ -10,6 +10,7 @@ import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.net.wifi.WifiManager
+import android.os.SystemClock
 import android.os.Build
 import android.os.PowerManager
 import android.util.Log
@@ -33,18 +34,24 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.updateAndGet
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.mapNotNull
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import net.asksakis.massdroidv2.data.sendspin.AcousticCalibrationCoordinator
 import net.asksakis.massdroidv2.data.sendspin.OutputRouteKeys
+import net.asksakis.massdroidv2.data.sendspin.SendspinClient
 import net.asksakis.massdroidv2.data.sendspin.SendspinManager
 import net.asksakis.massdroidv2.data.sendspin.isBluetoothSink
+import net.asksakis.massdroidv2.data.sendspin.bluetoothSinkIdentity
+import net.asksakis.massdroidv2.data.sendspin.routedBluetoothSink
 import net.asksakis.massdroidv2.data.sendspin.soleBluetoothSinkName
 import net.asksakis.massdroidv2.data.sendspin.SendspinState
 import net.asksakis.massdroidv2.data.sendspin.SyncState
+import net.asksakis.massdroidv2.data.websocket.AuthenticatedSession
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
 import net.asksakis.massdroidv2.domain.model.PlaybackState
@@ -207,6 +214,30 @@ class SendspinAudioController(
     // Audio route detection: uses the live stream's routed device as canonical source.
     @Volatile private var currentRoute = OutputRoute.UNKNOWN
     @Volatile private var currentBtRouteKey = ""
+    // The routed Bluetooth sink's identity (MAC, else name), kept with currentBtRouteKey so a
+    // route loss still knows which device it lost after the device is gone.
+    @Volatile private var currentBtSinkIdentity: String? = null
+
+    /**
+     * The Bluetooth device whose loss paused playback the listener wanted, which a reconnect of
+     * that same device may resume. Holds the device, not a flag, so a different device never
+     * starts the music. Written from the main thread (the route-loss hold) and from collectors
+     * on the IO scope, so it is volatile; every write except the route loss clears it, which
+     * makes a lost race end with no ticket, the safe outcome. Cleared by any play or pause, by
+     * choosing another player and by stop(), so a deliberate pause followed hours later by
+     * headphones stays paused.
+     */
+    @Volatile private var resumeTicket: String? = null
+
+    // Counts the pauses the listener made (Now Playing, a notification, a head unit). The
+    // route-loss hold compares it at its deadline, because a pause made while the transport is
+    // not ready returns before it clears _userIntent, and must still leave no resume ticket.
+    @Volatile private var listenerPauseGeneration = 0L
+
+    // What MA last reported for this phone's player, for the resume after an MA reconnect; see
+    // AutoResumePolicy.recordServerReport. A StateFlow so the collector and the reconnect update
+    // it atomically.
+    private val serverPlaybackRecord = MutableStateFlow(ServerPlaybackRecord())
     @Volatile private var routeChangeGeneration = 0L
     private val audioDeviceCallback = object : android.media.AudioDeviceCallback() {
         override fun onAudioDevicesAdded(addedDevices: Array<out android.media.AudioDeviceInfo>) = checkRouteChange()
@@ -242,6 +273,20 @@ class SendspinAudioController(
     // single connected sink is then unambiguous (see soleBluetoothSinkName).
     private fun resolveBtRouteKey(): String =
         "bt:${sendspinManager.getRoutedDeviceProductName() ?: audioManager.soleBluetoothSinkName() ?: "unknown"}"
+
+    private fun resolveBtSinkIdentity(): String? {
+        val identity = audioManager.routedBluetoothSink(sendspinManager.getRoutedDeviceId())
+            ?.let(::bluetoothSinkIdentity)
+        Log.d(TAG, "BT sink identity: ${identityForm(identity)}")
+        return identity
+    }
+
+    /**
+     * How a device identity was formed (mac, bt for the name, or none), for the log. The identity
+     * itself is never logged: app.log keeps it and users attach that file to public issues, and a
+     * MAC address or a device name says more about them than the log needs.
+     */
+    private fun identityForm(identity: String?): String = identity?.substringBefore(':') ?: "none"
 
     /** The key a route's calibration and fine-tune are stored under; null when the route is unknown. */
     private fun routeKeyFor(route: OutputRoute): String? = when (route) {
@@ -292,6 +337,7 @@ class SendspinAudioController(
                     if (gen != routeChangeGeneration) return@launch
                     sendspinManager.onOutputRouteChanged("bt:device-switch")
                     currentBtRouteKey = routeKey  // commit only after successful apply
+                    currentBtSinkIdentity = resolveBtSinkIdentity()
                     volumeCoordinator.onRouteChanged()
                 }
             }
@@ -309,6 +355,7 @@ class SendspinAudioController(
             if (gen != routeChangeGeneration) return@launch  // superseded during apply
             sendspinManager.onOutputRouteChanged("$oldRoute->$newRoute")
             currentBtRouteKey = if (newRoute == OutputRoute.BT) resolveBtRouteKey() else ""
+            currentBtSinkIdentity = if (newRoute == OutputRoute.BT) resolveBtSinkIdentity() else null
             if (newRoute == OutputRoute.BT) volumeCoordinator.onRouteChanged()
         }
     }
@@ -333,6 +380,10 @@ class SendspinAudioController(
     private fun holdForRouteLoss(source: String) {
         if (sendspinPlayerId == null) return
         if (routeLossConfirmJob?.isActive == true) return
+        // The device being lost, remembered only when the listener wanted playback: its return
+        // may resume what it interrupted. Read now, while the identity still names it.
+        val lostSink = currentBtSinkIdentity.takeIf { _userIntent.value }
+        val pausesAtHold = listenerPauseGeneration
         mutedBeforeRouteLossHold = sendspinManager.isMuted
         sendspinManager.setMuted(true)
         freezeOutput("route")
@@ -348,7 +399,17 @@ class SendspinAudioController(
                 checkRouteChange()
             } else {
                 Log.i(TAG, "External sink still gone after ${ROUTE_LOSS_SETTLE_MS}ms: pausing")
-                pauseForRouteLoss()
+                // Read before pauseForRouteLoss drops the intent. A pause the listener made
+                // during the hold must not leave a ticket: it cleared the intent, or, when the
+                // transport was not ready, it only moved the pause generation on.
+                pauseForRouteLoss(
+                    AutoResumePolicy.ticketAfterRouteLoss(
+                        lostSink = lostSink,
+                        intentAtDeadline = _userIntent.value,
+                        pausesAtHold = pausesAtHold,
+                        pausesAtDeadline = listenerPauseGeneration,
+                    )
+                )
                 applyRouteTiming(OutputRoute.SPEAKER)
                 // pauseForRouteLoss returns early without a player id, which would
                 // leave this hold's freeze in place; releasing it is a no-op otherwise.
@@ -389,6 +450,7 @@ class SendspinAudioController(
      */
     private fun abandonPlaybackIntent() {
         _userIntent.value = false
+        resumeTicket = null
         cancelOwedResume()
     }
 
@@ -410,7 +472,7 @@ class SendspinAudioController(
         }
     }
 
-    private fun pauseForRouteLoss() {
+    private fun pauseForRouteLoss(lostSink: String?) {
         val id = sendspinPlayerId ?: return
         // Silence locally first (mute + freeze) so the brief window before the
         // pause lands cannot leak audio to the phone speaker. pauseAudio() stops
@@ -418,8 +480,9 @@ class SendspinAudioController(
         // right after, leaving a clean paused stream.
         sendspinManager.setMuted(true)
         freezeOutput("route")
-        Log.d(TAG, "External sink lost -> clean pause (auto-resume on reconnect)")
+        Log.d(TAG, "External sink lost -> clean pause (resume ticket: ${identityForm(lostSink)})")
         abandonPlaybackIntent()
+        resumeTicket = lostSink
         sendspinManager.pauseAudio()
         unfreezeOutput("route")
         sendspinManager.setMuted(false)
@@ -1043,6 +1106,28 @@ class SendspinAudioController(
                 }
         }
 
+        // Choosing another player is a decision about where the music plays, so a Bluetooth
+        // reconnect must not bring it back to this phone afterwards.
+        collectorJobs += scope.launch {
+            playerRepository.selectedPlayer.collect { selected ->
+                val id = selected?.playerId ?: return@collect
+                if (id != sendspinPlayerId) resumeTicket = null
+            }
+        }
+
+        // The server's last word on this phone's player, kept for the resume after an MA
+        // reconnect; see AutoResumePolicy.recordServerReport for which reports count.
+        collectorJobs += scope.launch {
+            combine(playerRepository.players, sendspinManager.connectionState, ::Pair)
+                .collect { (players, transport) ->
+                    val transportUp = transport == SendspinState.SYNCING || transport == SendspinState.STREAMING
+                    val id = sendspinPlayerId
+                    val reported = players.firstOrNull { it.playerId == id && it.available }?.state
+                    val now = SystemClock.elapsedRealtime()
+                    serverPlaybackRecord.update { AutoResumePolicy.recordServerReport(it, transportUp, reported, now) }
+                }
+        }
+
         // Collector: immediate audio pause/resume when the UI (or any other
         // caller of `playerRepository.play()/pause()`) targets the sendspin
         // player. This is the canonical UI-driven path for user intent —
@@ -1054,6 +1139,7 @@ class SendspinAudioController(
                 if (selectedId != sendspinPlayerId) return@collect
                 if (intent.willPlay) {
                     _userIntent.value = true
+                    resumeTicket = null
                     // Playback is starting, so nothing is owed to a later focus
                     // gain and no pause is waiting to be confirmed any more. A duck
                     // in place is kept: a play pressed while another app speaks
@@ -1079,7 +1165,10 @@ class SendspinAudioController(
                     // interruption was holding; the focus pause has to keep it.
                     // Now Playing calls the repository directly rather than
                     // handlePause(), so this is the only place that sees it.
-                    if (intent.cause == PlaybackIntentCause.LISTENER) cancelOwedResume()
+                    if (intent.cause == PlaybackIntentCause.LISTENER) {
+                        cancelOwedResume()
+                        listenerPauseGeneration++
+                    }
                     if (!isReady) return@collect
                     _userIntent.value = false
                     sendspinManager.pauseAudio()
@@ -1159,7 +1248,7 @@ class SendspinAudioController(
                     clientId,
                     clientName,
                     noiseSessionFactory = plan.noiseSessionFactory,
-                    credentialsProvider = buildCredentialsProvider(),
+                    credentialsProvider = buildCredentialsProvider(plan.serverId),
                 )
                 Log.d(TAG, "Sendspin started, playerId=$clientId noise=${plan.noiseSessionFactory != null} seedVol=$seedVolume")
             } else {
@@ -1268,12 +1357,17 @@ class SendspinAudioController(
                     val sendspinIsSelected =
                         playerRepository.selectedPlayer.value?.playerId == sendspinPlayerId
                     val intent = _userIntent.value
-                    val wantToResume = intent && sendspinIsSelected
+                    // Resume only what the network cut; see AutoResumePolicy.reconnectResumes.
+                    val readAt = SystemClock.elapsedRealtime()
+                    val serverState = serverPlaybackRecord
+                        .updateAndGet { AutoResumePolicy.consumedByReconnect(it, readAt) }
+                        .state
+                    val wantToResume = AutoResumePolicy.reconnectResumes(intent, sendspinIsSelected, serverState)
                     Log.d(
                         TAG,
                         "MA reconnected, sendspin is $currentSsState, refreshing " +
                             "(wantToResume=$wantToResume, userIntent=$intent, " +
-                            "sendspinIsSelected=$sendspinIsSelected)"
+                            "sendspinIsSelected=$sendspinIsSelected, serverState=$serverState)"
                     )
                     // Supersede an in-flight run. Moving `refresh()` off the
                     // collector means a second reconnect within the ack wait
@@ -1410,6 +1504,7 @@ class SendspinAudioController(
         // Collectors are cancelled above so the derived flow no longer runs;
         // reset both flows explicitly so a subsequent start() begins clean.
         abandonPlaybackIntent()
+        serverPlaybackRecord.value = ServerPlaybackRecord()
         _currentIsPlaying.value = false
         clearAllFreezes()
         isReady = false
@@ -1431,6 +1526,7 @@ class SendspinAudioController(
 
         playerRepository.selectPlayer(id)
         _userIntent.value = true
+        resumeTicket = null
         owedResume = null
         if (!hasAudioFocus && !requestFocusToPlay()) return
         if (isReady) sendspinManager.resumeAudio()
@@ -1457,6 +1553,13 @@ class SendspinAudioController(
      *   forces music on.
      * - Skipped when already playing (`_userIntent` set, e.g. a transient flap kept
      *   it going); this only kicks in after a real pause/idle.
+     * - Skipped unless the device is the one whose loss paused the music the listener
+     *   wanted ([resumeTicket]), so headphones connected after a deliberate pause stay
+     *   silent. The device is identified from the output's routed device id. The
+     *   engine reports a change of that id through checkRouteChange, but the stored
+     *   identity is recomputed only when the name-based route key changes; two devices
+     *   with one name then keep the first one's identity, and the mismatch means no
+     *   auto-play, never a wrong one.
      */
     fun autoPlayOnBtConnect() {
         if (sendspinPlayerId == null) return
@@ -1471,12 +1574,28 @@ class SendspinAudioController(
             // coordinator's settle re-check still aborts the exit (Oboe is routed to the car again),
             // but poking here re-affirms promptly. Idempotent: never re-pins.
             volumeCoordinator.onRouteChanged()
-            if (_userIntent.value) return@launch  // already playing / intending to
+            if (_userIntent.value) {
+                resumeTicket = null
+                return@launch  // already playing / intending to
+            }
+            // Only the device whose loss paused the listener's music resumes it. Any other
+            // connect, or one after a deliberate pause, leaves playback as it is.
+            val connected = resolveBtSinkIdentity()
+            val ticket = resumeTicket
+            if (!AutoResumePolicy.bluetoothConnectResumes(ticket, connected)) {
+                Log.d(
+                    TAG,
+                    "BT connect auto-play skipped: device ${identityForm(connected)} does not match " +
+                        "the ticket (${identityForm(ticket)})"
+                )
+                return@launch
+            }
             if (isInActiveCall()) {
                 Log.d(TAG, "BT connect auto-play skipped: active call/communication")
                 return@launch
             }
-            Log.d(TAG, "BT route stabilized -> auto-play")
+            resumeTicket = null
+            Log.d(TAG, "BT route stabilized -> the lost device is back (${identityForm(connected)}): resuming")
             handlePlay()
         }
     }
@@ -1523,6 +1642,7 @@ class SendspinAudioController(
         val wantPlay = !currentIsPlaying
         if (wantPlay) {
             _userIntent.value = true
+            resumeTicket = null
             owedResume = null
             if (!hasAudioFocus && !requestFocusToPlay()) return
             if (isReady) sendspinManager.resumeAudio()
@@ -2174,19 +2294,17 @@ class SendspinAudioController(
     // region Sendspin connection helpers
 
     /**
-     * Credentials lookup used by the SendspinClient on every (re)connect
-     * attempt. Pulls the live MA WebSocket token if present, falling back to
-     * the persisted token so the very first attempt after a process restart
-     * also has something to send.
+     * Credentials lookup used by the SendspinClient on every (re)connect attempt, for a start
+     * planned for the MA server [plannedServerId]; see [sendspinCredentials].
      */
-    private fun buildCredentialsProvider(): suspend () -> net.asksakis.massdroidv2.data.sendspin.SendspinClient.Credentials? = {
-        val url = settingsRepository.serverUrl.first()
-        val token = wsClient.authToken ?: settingsRepository.authToken.first()
-        if (url.isBlank() || token.isBlank()) {
-            null
-        } else {
-            net.asksakis.massdroidv2.data.sendspin.SendspinClient.Credentials(url, token)
-        }
+    private fun buildCredentialsProvider(
+        plannedServerId: String
+    ): suspend () -> SendspinClient.Credentials? = {
+        sendspinCredentials(
+            maState = wsClient.connectionState.value,
+            lastSession = wsClient.lastSession,
+            plannedServerId = plannedServerId
+        )
     }
 
     /**
@@ -2316,4 +2434,26 @@ class SendspinAudioController(
     }
 
     // endregion
+}
+
+/**
+ * The address and token a Sendspin connection uses, always from one session, so the address of
+ * one server is never paired with the token of another: the live MA connection's while MA is
+ * connected, else the last connection of this process ([lastSession]). The saved pair is never
+ * used: it is written to two stores one after the other, and a read in between mixes them.
+ *
+ * A start is planned for one MA server ([plannedServerId]), and its player id and protocol
+ * belong to that server. A session of another server gives null, so a controller that a server
+ * change is about to replace never connects to the new server with the old plan. No session at
+ * all gives null too: a plan is made only once MA connected, so none left means Sign out or a
+ * refused token.
+ */
+internal fun sendspinCredentials(
+    maState: ConnectionState,
+    lastSession: AuthenticatedSession?,
+    plannedServerId: String
+): SendspinClient.Credentials? {
+    val session = (maState as? ConnectionState.Connected)?.session ?: lastSession ?: return null
+    if (session.serverId != plannedServerId) return null
+    return SendspinClient.Credentials(session.url, session.token)
 }

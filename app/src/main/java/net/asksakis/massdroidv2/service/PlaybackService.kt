@@ -29,7 +29,6 @@ import net.asksakis.massdroidv2.data.websocket.sendCommand
 import net.asksakis.massdroidv2.domain.repository.MusicRepository
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
-import net.asksakis.massdroidv2.ui.MainActivity
 import net.asksakis.massdroidv2.domain.shortcut.ShortcutActionDispatcher
 import javax.inject.Inject
 
@@ -42,6 +41,9 @@ class PlaybackService : MediaLibraryService() {
         private const val TAG = "PlaybackSvc"
         private const val CONN_CHANNEL_ID = "massdroid_connection"
         private const val CONN_NOTIFICATION_ID = 3
+        // Not 0, the media session's: in the car both open the media center with the same
+        // intent, and one request code would make them one PendingIntent.
+        private const val CONN_CONTENT_REQUEST_CODE = 1
     }
 
     @Inject lateinit var playerRepository: PlayerRepository
@@ -304,10 +306,8 @@ class PlaybackService : MediaLibraryService() {
         }
 
         val contentIntent = PendingIntent.getActivity(
-            this, 0,
-            Intent(this, MainActivity::class.java).apply {
-                flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
-            },
+            this, CONN_CONTENT_REQUEST_CODE,
+            carOrPhoneLaunchIntent(this),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 

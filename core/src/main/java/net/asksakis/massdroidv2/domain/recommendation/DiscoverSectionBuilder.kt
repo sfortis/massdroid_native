@@ -31,6 +31,9 @@ sealed class DiscoverSection {
 private const val MIN_SECTION_ITEMS = 3
 private val IGNORED_FOLDERS = setOf("in_progress", "favorite_radio", "favorite_playlists")
 
+/** Rows the app draws as its own live sections, so a home row with the same content is skipped. */
+private val APP_DRAWN_ROWS = setOf("recent_favorite_tracks", "recent_favorite_albums")
+
 /**
  * Providers of Music Assistant's own folders (recently favorited, random albums and artists).
  * MA 2.10 serves them from its "recommendations" provider; the app's local favorite albums folder,
@@ -48,7 +51,8 @@ class DiscoverSectionBuilder @Inject constructor() {
         suggestedAlbums: List<Album>,
         genreItems: List<GenreItem>,
         bllGenreScores: List<GenreScore>,
-        smartPlaylists: List<Playlist> = emptyList()
+        smartPlaylists: List<Playlist> = emptyList(),
+        homeRows: List<RecommendationFolder> = emptyList()
     ): List<DiscoverSection> {
         val sections = mutableListOf<DiscoverSection>()
 
@@ -97,14 +101,26 @@ class DiscoverSectionBuilder @Inject constructor() {
             }
         }
 
-        // 7. Random fallbacks (if few sections so far)
+        // 7. The MA user's own home rows, in their order. Recently favorited tracks is the
+        // live section above, so its row is not drawn twice.
+        val homeRowIds = homeRows.map { it.itemId }.toSet()
+        val usedTitles = sections.map(::sectionTitleOf).toMutableSet()
+        homeRows.filterNot { it.itemId in APP_DRAWN_ROWS }.forEach { folder ->
+            val title = uniqueTitle(folder, usedTitles)
+            folderToSection(folder, titleOverride = title)?.let {
+                sections.add(it)
+                usedTitles += title
+            }
+        }
+
+        // 8. Random fallbacks (if few sections so far), unless the user shows those rows already
         if (sections.size < MIN_SECTION_ITEMS) {
-            libraryFolders["random_albums"]?.let { folder ->
+            libraryFolders["random_albums"]?.takeIf { it.itemId !in homeRowIds }?.let { folder ->
                 if (folder.items.albums.size >= MIN_SECTION_ITEMS) {
                     sections.add(DiscoverSection.AlbumSection("Explore Albums", folder.items.albums))
                 }
             }
-            libraryFolders["random_artists"]?.let { folder ->
+            libraryFolders["random_artists"]?.takeIf { it.itemId !in homeRowIds }?.let { folder ->
                 if (folder.items.artists.size >= MIN_SECTION_ITEMS) {
                     sections.add(DiscoverSection.ArtistSection("Explore Artists", folder.items.artists))
                 }
@@ -112,6 +128,28 @@ class DiscoverSectionBuilder @Inject constructor() {
         }
 
         return sections
+    }
+
+    /**
+     * The row's own name, or, when another section already has that name, the name with the
+     * provider after it, so two providers' "Recently played" rows stay apart (the home screen
+     * keys its sections by title).
+     */
+    private fun uniqueTitle(folder: RecommendationFolder, used: Set<String>): String {
+        if (folder.name !in used) return folder.name
+        val source = folder.provider.substringBefore("--").replaceFirstChar { it.uppercase() }
+        val withSource = "${folder.name} · $source"
+        if (withSource !in used) return withSource
+        // Two instances of one provider, or one provider with two rows of one name.
+        return generateSequence(2) { it + 1 }.map { "$withSource $it" }.first { it !in used }
+    }
+
+    private fun sectionTitleOf(section: DiscoverSection): String = when (section) {
+        is DiscoverSection.ArtistSection -> section.title
+        is DiscoverSection.AlbumSection -> section.title
+        is DiscoverSection.PlaylistSection -> section.title
+        is DiscoverSection.TrackSection -> section.title
+        is DiscoverSection.GenreRadioSection -> section.title
     }
 
     @VisibleForTesting

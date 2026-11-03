@@ -3,6 +3,7 @@ package net.asksakis.massdroidv2.domain.repository
 import kotlinx.coroutines.flow.Flow
 import net.asksakis.massdroidv2.domain.model.LibraryDisplayMode
 import net.asksakis.massdroidv2.domain.model.LibraryTabKey
+import net.asksakis.massdroidv2.domain.model.ServerAccount
 import net.asksakis.massdroidv2.domain.model.SortOption
 
 interface SettingsRepository : TrustedServerStore {
@@ -108,6 +109,10 @@ interface SettingsRepository : TrustedServerStore {
     val librarySortDescending: Flow<Map<Int, Boolean>>
     val libraryFavoritesOnly: Flow<Map<Int, Boolean>>
     val libraryProviderFilters: Flow<Map<Int, Set<String>>>
+    /** The Artists tab lists only artists credited on an album in the library. */
+    val libraryAlbumArtistsOnly: Flow<Boolean>
+    /** The album types the Albums tab keeps, as the server spells them; empty keeps all. */
+    val libraryAlbumTypes: Flow<Set<String>>
     // Single global sort for the tracks inside any playlist (PlaylistDetail), applied to every
     // playlist and persisted across navigation/restart (not per-playlist, not per-tab).
     val playlistSortKey: Flow<String>
@@ -228,6 +233,52 @@ interface SettingsRepository : TrustedServerStore {
     suspend fun setClientCertAlias(alias: String?)
     suspend fun setUsername(username: String)
     suspend fun setPassword(password: String)
+
+    /**
+     * The account saved for the Music Assistant server [serverId] (its `server_id`), so a
+     * sign-in to a server used before can continue with its own token. Blank when none is
+     * saved. The keys above stay the account of the current server, which the TV and the car
+     * read; these are kept beside them, one entry per server.
+     */
+    fun serverAccount(serverId: String): Flow<ServerAccount>
+
+    /**
+     * Saves a sign-in that succeeded: the current account (token, username, password, trusted
+     * server), the server's own token and username, the address with the time it was used, and
+     * the server address last, so the saved address never names a server whose token is not
+     * saved yet. The address now leads to this server; another server that was saved at it
+     * keeps its token.
+     */
+    suspend fun saveSignIn(serverId: String, url: String, token: String, username: String, password: String)
+
+    /** Saves the token of a connection that signed in by itself, such as a reconnect. */
+    suspend fun saveConnectionToken(serverId: String, url: String, token: String)
+
+    /** Forgets [token] wherever it is saved, the current account and [serverId]'s entry, in one edit. */
+    suspend fun forgetRejectedToken(serverId: String?, token: String)
+
+    /** Forgets the token saved for [serverId]; its username stays for the sign-in form. */
+    suspend fun forgetServerToken(serverId: String)
+
+    /**
+     * Copies the account saved before tokens were kept per server into the entry of the server
+     * it belongs to, once per install. Later calls do nothing.
+     */
+    suspend fun migrateToServerAccounts()
+
+    /**
+     * Every address this phone signed in through, most recently used first, for the server list
+     * of the sign-in. One server can have several, such as its home and its remote address.
+     */
+    val usedServerUrls: Flow<List<String>>
+
+    /**
+     * Forgets the address [url]. The server behind it, [serverId] when the address answered
+     * with one, else the server it was saved for, loses its token and username too when it has
+     * no other address and is not the current server. The current address ([savedUrl]) is never
+     * forgotten, and nothing is when [savedUrl] could not be read.
+     */
+    suspend fun forgetServerAt(url: String, serverId: String?, savedUrl: String)
     suspend fun setSendspinEnabled(enabled: Boolean)
     suspend fun setSmartListeningEnabled(enabled: Boolean)
     suspend fun setSmartMixVariety(value: Float)
@@ -245,10 +296,25 @@ interface SettingsRepository : TrustedServerStore {
     suspend fun addSendspinUnpairedServer(serverId: String)
     suspend fun removeSendspinUnpairedServer(serverId: String)
     suspend fun clearSendspinUnpairedServers()
+
+    /**
+     * Records that the library sync ran against [serverId] and returns every MA server it has
+     * run against, this one included. The local artist table holds the library ids of all of
+     * them, and the database has no column that says which server a row came from. The first
+     * call starts from every server this device already has an account on.
+     */
+    suspend fun addLibrarySyncServer(serverId: String): Set<String>
+
+    /** The MA server the cached MA answers in the database belong to, or null before the first. */
+    val maCacheServer: Flow<String?>
+
+    suspend fun setMaCacheServer(serverId: String)
     suspend fun setLibraryDisplayMode(tab: LibraryTabKey, mode: LibraryDisplayMode)
     suspend fun setLibrarySortOption(tab: Int, option: SortOption)
     suspend fun setLibrarySortDescending(tab: Int, descending: Boolean)
     suspend fun setLibraryFavoritesOnly(tab: Int, favoritesOnly: Boolean)
+    suspend fun setLibraryAlbumArtistsOnly(enabled: Boolean)
+    suspend fun setLibraryAlbumTypes(types: Set<String>)
     suspend fun setLibraryProviderFilters(tab: Int, instanceIds: Set<String>)
     suspend fun setPlaylistSortKey(key: String)
     suspend fun setPlaylistSortDescending(descending: Boolean)

@@ -151,10 +151,10 @@ object AppModule {
     @Provides
     @Singleton
     fun provideMaAuthProbe(
-        okHttpClient: OkHttpClient,
+        wsClient: MaWebSocketClient,
         json: Json
     ): net.asksakis.massdroidv2.data.websocket.MaAuthProbe =
-        net.asksakis.massdroidv2.data.websocket.MaAuthProbe(okHttpClient, json)
+        net.asksakis.massdroidv2.data.websocket.MaAuthProbe({ url -> wsClient.httpClientFor(url) }, json)
 
     @Provides
     @Singleton

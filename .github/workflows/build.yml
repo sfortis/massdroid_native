@@ -30,8 +30,10 @@ jobs:
       - name: Run Android Lint
         # Every module, because the app's own report says nothing about :core, where an
         # API 33 call sat unnoticed under a minSdk of 26. Lint fails the build on any
-        # error by default, which is the point of running it here.
-        run: ./gradlew :app:lintGithubDebug :core:lintDebug :atv:lintGithubDebug :auto:lintDebug :automotive:lintDebug :ui-shared:lintDebug -PmassdroidBuildRoot=${{ github.workspace }}/build-output --stacktrace
+        # error by default, which is the point of running it here. The car build of the
+        # app is checked too: its own manifest overlay is what lint reads for that variant,
+        # and an error there went unnoticed until 2026-11-02.
+        run: ./gradlew :app:lintGithubDebug :app:lintAutomotiveDebug :core:lintDebug :atv:lintGithubDebug :auto:lintDebug :automotive:lintDebug :ui-shared:lintDebug -PmassdroidBuildRoot=${{ github.workspace }}/build-output --stacktrace
 
       - name: Upload lint reports
         # Kept on failure too, since the report is where the detail is.

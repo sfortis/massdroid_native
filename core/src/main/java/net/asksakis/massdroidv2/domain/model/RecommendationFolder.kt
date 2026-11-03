@@ -2,12 +2,18 @@ package net.asksakis.massdroidv2.domain.model
 
 import kotlinx.serialization.Serializable
 
+/**
+ * One recommendation row of Music Assistant. [uri] names the row in the user's home row
+ * settings, and [enabledByDefault] says whether the row shows before the user has chosen.
+ */
 @Serializable
 data class RecommendationFolder(
     val itemId: String,
     val name: String,
     val provider: String,
-    val items: RecommendationItems
+    val items: RecommendationItems,
+    val uri: String? = null,
+    val enabledByDefault: Boolean = true
 )
 
 @Serializable

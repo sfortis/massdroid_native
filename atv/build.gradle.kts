@@ -28,8 +28,8 @@ android {
         minSdk = 26
         targetSdk = 35
         // Versioned in lockstep with the phone app so the TV APK in a release matches the tag.
-        versionCode = 46
-        versionName = "2.40.0"
+        versionCode = 47
+        versionName = "2.41.0"
 
         // Only the ABIs :core builds its native code for. Without this filter, AndroidX libraries
         // add a lib/x86 folder without our native libraries, so the app would install on an x86
@@ -109,9 +109,11 @@ android {
             dimension = "distribution"
             buildConfigField("boolean", "IS_PLAY_STORE", "true")
             buildConfigField("boolean", "ENABLE_UPDATE_CHECK", "false")
-            // The native symbols go into the AAB, so Play shows function names in native
-            // crashes. Only the Play flavor: the F-Droid build must stay reproducible.
-            ndk { debugSymbolLevel = "SYMBOL_TABLE" }
+            // Full native symbols, so Play shows the function, file and line of a native
+            // crash. Play does not read them from the AAB, so ~/work/play_store_tools
+            // uploads them with the bundle. Only the Play flavor: the F-Droid build must stay
+            // reproducible.
+            ndk { debugSymbolLevel = "FULL" }
         }
     }
 

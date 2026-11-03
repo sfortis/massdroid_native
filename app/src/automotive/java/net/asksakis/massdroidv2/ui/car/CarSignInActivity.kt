@@ -1,8 +1,10 @@
 package net.asksakis.massdroidv2.ui.car
 
-import android.app.Activity
+import android.content.ActivityNotFoundException
 import android.os.Bundle
-import android.security.KeyChain
+import android.util.Log
+import androidx.activity.compose.BackHandler
+import androidx.activity.compose.LocalActivity
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Arrangement
@@ -44,6 +46,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -57,10 +60,23 @@ import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dagger.hilt.android.AndroidEntryPoint
+import net.asksakis.massdroidv2.data.signin.SavedSignIn
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
+import net.asksakis.massdroidv2.data.websocket.OAUTH_CALLBACK_SCHEME
 import net.asksakis.massdroidv2.domain.AppLinks
+import net.asksakis.massdroidv2.domain.connection.ServerCheck
+import net.asksakis.massdroidv2.domain.connection.displayAddressOf
+import net.asksakis.massdroidv2.domain.connection.sameServer
 import net.asksakis.massdroidv2.domain.model.CrossfadeMode
 import net.asksakis.massdroidv2.domain.model.SendspinAudioFormat
+import net.asksakis.massdroidv2.service.carMediaCenterIntent
+import net.asksakis.massdroidv2.ui.components.ChosenServerCard
+import net.asksakis.massdroidv2.ui.components.HomeAssistantSignIn
+import net.asksakis.massdroidv2.ui.components.OtherServerSheet
+import net.asksakis.massdroidv2.ui.components.ServerList
+import net.asksakis.massdroidv2.ui.components.chooseClientCertificate
+import net.asksakis.massdroidv2.ui.shared.HomeAssistantSignInPage
+import net.asksakis.massdroidv2.ui.shared.isWebViewAvailable
 import net.asksakis.massdroidv2.ui.theme.MassDroidTheme
 import kotlin.math.roundToInt
 
@@ -82,9 +98,28 @@ class CarSignInActivity : ComponentActivity() {
             // report day mode (isSystemInDarkTheme() = false), which would render this
             // parked screen white and jarring next to the dark media UI (and at night).
             MassDroidTheme(darkTheme = true) {
-                CarSignInScreen(onClose = { finish() })
+                CarSignInScreen(onClose = ::closeToMediaCenter)
             }
         }
+    }
+
+    /**
+     * Closes the screen into the media center showing MassDroid. The screen opens from the media
+     * center's gear and from the signed-out session error, and an older recents entry can still
+     * bring it up on its own; a plain finish() then left the user on the home screen instead of
+     * the media center. Without a media center to open, the screen only closes.
+     */
+    private fun closeToMediaCenter() {
+        try {
+            startActivity(carMediaCenterIntent(this))
+        } catch (e: ActivityNotFoundException) {
+            Log.w(TAG, "No media center to open: ${e.message}")
+        }
+        finish()
+    }
+
+    private companion object {
+        const val TAG = "CarSignIn"
     }
 }
 
@@ -95,55 +130,109 @@ private fun CarSignInScreen(
     viewModel: CarSignInViewModel = hiltViewModel(),
 ) {
     val context = LocalContext.current
+    val activity = LocalActivity.current
     val connection by viewModel.connectionState.collectAsStateWithLifecycle()
     val error by viewModel.error.collectAsStateWithLifecycle()
     val certAlias by viewModel.certAlias.collectAsStateWithLifecycle()
-    val prefill by viewModel.prefill.collectAsStateWithLifecycle()
     val audioFormat by viewModel.audioFormat.collectAsStateWithLifecycle()
     val compressorLevel by viewModel.compressorLevel.collectAsStateWithLifecycle()
     val dither by viewModel.dither.collectAsStateWithLifecycle()
     val crossfade by viewModel.crossfade.collectAsStateWithLifecycle()
+    val serverUrl by viewModel.serverUrl.collectAsStateWithLifecycle()
+    val picker = viewModel.serverPicker
+    val rows by picker.rows.collectAsStateWithLifecycle()
+    val searching by picker.searching.collectAsStateWithLifecycle()
+    val chosen by picker.chosen.collectAsStateWithLifecycle()
+    val typedCheck by picker.typedCheck.collectAsStateWithLifecycle()
+    val attemptedUrl by viewModel.attemptedUrl.collectAsStateWithLifecycle()
+    val providers by viewModel.providers.collectAsStateWithLifecycle()
+    val oauthInProgress by viewModel.oauthInProgress.collectAsStateWithLifecycle()
+    val homeAssistantPage by viewModel.homeAssistantPage.collectAsStateWithLifecycle()
 
-    var url by rememberSaveable { mutableStateOf("https://") }
-    var username by rememberSaveable { mutableStateOf("") }
-    var password by rememberSaveable { mutableStateOf("") }
-    var seeded by rememberSaveable { mutableStateOf(false) }
-    // Only auto-close after a sign-in initiated from THIS screen, so opening the
-    // gear while already connected (to change server / sign out) does not slam shut.
-    var attempted by rememberSaveable { mutableStateOf(false) }
+    // What was typed for the chosen server; null shows what is saved for that server. Keyed by
+    // the server, so what was typed for one never reaches the next. The password is kept out of
+    // saved instance state, which the system may write to disk.
+    var typedUsername by rememberSaveable(chosen?.url) { mutableStateOf<String?>(null) }
+    var typedPassword by remember(chosen?.url) { mutableStateOf<String?>(null) }
+    var choosingOther by rememberSaveable { mutableStateOf(false) }
+    // The server this screen last sent a sign-in to; only its success closes the screen, so
+    // opening the gear while connected, to change server or sign out, does not close it.
+    var sentUrl by rememberSaveable { mutableStateOf<String?>(null) }
+    // Leaving the chosen server abandons its sign-in, which then can no longer close the screen.
+    val leaveServer: () -> Unit = {
+        viewModel.cancelAttempt()
+        sentUrl = null
+    }
 
-    // Pre-fill the form from saved settings once (without clobbering user typing).
-    LaunchedEffect(prefill) {
-        val p = prefill ?: return@LaunchedEffect
-        if (!seeded) {
-            if (p.url.isNotBlank()) url = p.url
-            if (p.username.isNotBlank()) username = p.username
-            seeded = true
+    // BACK walks one step back, as on the phone and the TV: from Other server or from a chosen
+    // server to the server list. From the list it closes the screen the way the arrow in the top
+    // bar does, into the media center.
+    BackHandler(enabled = !choosingOther && chosen == null, onBack = onClose)
+    BackHandler(enabled = choosingOther || chosen != null) {
+        if (choosingOther) {
+            picker.clearTyped()
+            choosingOther = false
+        } else {
+            leaveServer()
+            picker.changeServer()
         }
     }
 
     // Reload any saved client certificate so a re-opened screen keeps mTLS active.
     LaunchedEffect(Unit) { viewModel.loadSavedCertificate(context) }
 
-    LaunchedEffect(connection, attempted) {
-        if (attempted && connection is ConnectionState.Connected) onClose()
+    // Closes on a sign-in from this screen that saved its server. Connected alone is not enough:
+    // a failed switch connects to the previous server again.
+    val succeeded by viewModel.succeeded.collectAsStateWithLifecycle()
+    LaunchedEffect(succeeded, sentUrl) {
+        val done = succeeded ?: return@LaunchedEffect
+        val sent = sentUrl ?: return@LaunchedEffect
+        if (sameServer(done, sent)) {
+            viewModel.consumeSuccess()
+            onClose()
+        }
+    }
+
+    // The Home Assistant page covers the screen while it is open; BACK and Cancel return here.
+    homeAssistantPage?.let { url ->
+        CarHomeAssistantPage(url, viewModel)
+        return
     }
 
     val connecting = connection is ConnectionState.Connecting
     val connected = connection is ConnectionState.Connected
+    // Only the error of a sign-in sent to the chosen server, not one left from another server.
+    val connectionError = (connection as? ConnectionState.Error)?.takeIf { attemptedUrl == chosen?.url }
     val statusMessage = error
-        ?: (connection as? ConnectionState.Error)?.message
+        ?: connectionError?.message
         ?: when {
             connecting -> "Connecting..."
-            connected -> "Connected to ${url.removePrefix("https://").removePrefix("http://")}"
+            connected -> "Connected to ${displayAddressOf(serverUrl)}"
             else -> null
         }
+
+    if (choosingOther) {
+        OtherServerSheet(
+            check = typedCheck,
+            onCheck = picker::checkTyped,
+            onUse = {
+                if (picker.useTyped()) {
+                    viewModel.clearError()
+                    choosingOther = false
+                }
+            },
+            onDismiss = {
+                picker.clearTyped()
+                choosingOther = false
+            }
+        )
+    }
 
     Scaffold(
         topBar = {
             // Explicit back affordance: the AAOS media center has no guaranteed back
             // button on a parked settings activity, so the gear/SessionError entry would
-            // otherwise be a one-way trip. The arrow finish()es back to the media center.
+            // otherwise be a one-way trip. The arrow closes into the media center.
             TopAppBar(
                 title = {},
                 navigationIcon = {
@@ -173,52 +262,105 @@ private fun CarSignInScreen(
                     )
                     Spacer(Modifier.height(24.dp))
 
-                    OutlinedTextField(
-                        value = url,
-                        onValueChange = { url = it },
-                        label = { Text("Server URL") },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    Spacer(Modifier.height(12.dp))
-                    OutlinedTextField(
-                        value = username,
-                        onValueChange = { username = it },
-                        label = { Text("Username") },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    Spacer(Modifier.height(12.dp))
-                    OutlinedTextField(
-                        value = password,
-                        onValueChange = { password = it },
-                        label = { Text("Password") },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                        visualTransformation = PasswordVisualTransformation(),
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-
-                    Spacer(Modifier.height(20.dp))
-                    Button(
-                        onClick = {
-                            // Only a sign-in that was actually sent may close the screen on
-                            // Connected; a rejected input while already connected keeps it open.
-                            if (viewModel.login(url, username, password)) attempted = true
-                        },
-                        enabled = !connecting,
-                        modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp),
-                    ) {
-                        if (connecting) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.height(20.dp),
-                                strokeWidth = 2.dp,
-                                color = MaterialTheme.colorScheme.onPrimary,
+                    val server = chosen
+                    if (server == null) {
+                        // Typing in a car is slow, so the servers found come first and an
+                        // address of one's own is the last row.
+                        ServerList(
+                            rows = rows,
+                            searching = searching,
+                            onPick = { row ->
+                                leaveServer()
+                                picker.choose(row.url, row.name)
+                            },
+                            onSearchAgain = picker::searchAgain,
+                            onForget = viewModel::forget,
+                            largeTargets = true,
+                            onOther = { choosingOther = true }
+                        )
+                    } else {
+                        ChosenServerCard(
+                            server = server,
+                            onChange = {
+                                leaveServer()
+                                picker.changeServer()
+                            },
+                            onCheckAgain = picker::checkAgain
+                        )
+                        Spacer(Modifier.height(16.dp))
+                        val saved by remember(server) { viewModel.savedSignIn(server) }
+                            .collectAsStateWithLifecycle(SavedSignIn.NONE)
+                        val username = typedUsername ?: saved.username
+                        val password = typedPassword ?: saved.password
+                        saved.continueAs?.let { name ->
+                            Button(
+                                onClick = {
+                                    viewModel.continueAs(server, saved)
+                                    sentUrl = server.url
+                                },
+                                enabled = !connecting,
+                                modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp),
+                            ) {
+                                Text("Continue as $name", fontSize = 18.sp)
+                            }
+                            Spacer(Modifier.height(12.dp))
+                            Text(
+                                "Or sign in with another account:",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
-                        } else {
-                            Text(if (connected) "Reconnect" else "Sign in", fontSize = 18.sp)
+                            Spacer(Modifier.height(8.dp))
+                        }
+                        // The providers belong to the server checked last, which is this one
+                        // once it answered.
+                        val webView = remember { isWebViewAvailable() }
+                        if (webView && server.check is ServerCheck.Found && providers.any { it.isHomeAssistant }) {
+                            HomeAssistantSignIn(inProgress = oauthInProgress) {
+                                viewModel.openHomeAssistantSignIn(server)
+                                sentUrl = server.url
+                            }
+                            Spacer(Modifier.height(12.dp))
+                        }
+                        OutlinedTextField(
+                            value = username,
+                            onValueChange = { typedUsername = it },
+                            label = { Text("Username") },
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        Spacer(Modifier.height(12.dp))
+                        OutlinedTextField(
+                            value = password,
+                            onValueChange = { typedPassword = it },
+                            label = { Text("Password") },
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                            visualTransformation = PasswordVisualTransformation(),
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+
+                        Spacer(Modifier.height(20.dp))
+                        Button(
+                            onClick = {
+                                // Only a sign-in that was actually sent may close the screen on
+                                // Connected; a rejected input while already connected keeps it open.
+                                if (viewModel.login(server, username, password)) {
+                                    sentUrl = server.url
+                                }
+                            },
+                            enabled = !connecting,
+                            modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp),
+                        ) {
+                            if (connecting) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.height(20.dp),
+                                    strokeWidth = 2.dp,
+                                    color = MaterialTheme.colorScheme.onPrimary,
+                                )
+                            } else {
+                                Text(if (connected) "Reconnect" else "Sign in", fontSize = 18.sp)
+                            }
                         }
                     }
 
@@ -245,12 +387,10 @@ private fun CarSignInScreen(
                             TextButton(onClick = { viewModel.clearCertificate() }) { Text("Remove") }
                         }
                         OutlinedButton(onClick = {
-                            val activity = context as? Activity ?: return@OutlinedButton
-                            KeyChain.choosePrivateKeyAlias(
-                                activity,
-                                { alias -> viewModel.onCertificateSelected(alias, context) },
-                                null, null, null, -1, null,
-                            )
+                            val host = activity ?: return@OutlinedButton
+                            chooseClientCertificate(host, certAlias) { alias ->
+                                viewModel.onCertificateSelected(alias, context)
+                            }
                         }) {
                             Icon(Icons.Default.Security, contentDescription = null)
                             Spacer(Modifier.width(8.dp))
@@ -289,6 +429,37 @@ private fun CarSignInScreen(
                         dither = dither,
                         onDither = viewModel::setDither,
                     )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * The Home Assistant sign-in page over the whole screen, which the car shows because it has no
+ * browser. It is reached only from the parked sign-in screen. A page that failed to load
+ * offers Retry and Cancel.
+ */
+@Composable
+private fun CarHomeAssistantPage(url: String, viewModel: CarSignInViewModel) {
+    HomeAssistantSignInPage(
+        url = url,
+        callbackScheme = OAUTH_CALLBACK_SCHEME,
+        onCallback = viewModel::deliverHomeAssistantCallback,
+        onCancel = viewModel::cancelHomeAssistantSignIn,
+        modifier = Modifier.fillMaxSize()
+    ) { message, retry ->
+        Surface(modifier = Modifier.fillMaxSize()) {
+            Column(
+                modifier = Modifier.fillMaxSize().padding(48.dp),
+                verticalArrangement = Arrangement.Center,
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Text(message, style = MaterialTheme.typography.bodyLarge)
+                Spacer(Modifier.height(20.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    retry?.let { again -> Button(onClick = again) { Text("Retry", fontSize = 18.sp) } }
+                    OutlinedButton(onClick = viewModel::cancelHomeAssistantSignIn) { Text("Cancel", fontSize = 18.sp) }
                 }
             }
         }

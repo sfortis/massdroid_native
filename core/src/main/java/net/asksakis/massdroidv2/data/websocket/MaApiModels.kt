@@ -351,4 +351,8 @@ object EventType {
     const val MEDIA_ITEM_ADDED = "media_item_added"
     const val MEDIA_ITEM_UPDATED = "media_item_updated"
     const val MEDIA_ITEM_DELETED = "media_item_deleted"
+    /** A provider was added, removed or changed state. */
+    const val PROVIDERS_UPDATED = "providers_updated"
+    /** A provider's own event; `data.event` says what, e.g. "recommendations_updated". */
+    const val PROVIDER_EVENT = "provider_event"
 }

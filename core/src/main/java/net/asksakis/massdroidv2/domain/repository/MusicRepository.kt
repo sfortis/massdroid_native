@@ -21,10 +21,34 @@ interface MusicRepository {
      */
     val mediaItemUpdates: Flow<MediaItemUpdate>
 
-    suspend fun getRecommendations(): List<RecommendationFolder>
+    /**
+     * Music Assistant's recommendation rows. MA 2.10 lists them without items, which
+     * [getRecommendationItems] fetches per row; older servers send the items inline.
+     */
+    suspend fun getRecommendationRows(): List<RecommendationFolder>
+    /** The items of one row; empty when the row is unavailable. */
+    suspend fun getRecommendationItems(folder: RecommendationFolder): RecommendationItems
     /** [genreIds] keeps only items the server maps to one of those MA genres (MA 2.10+). */
-    suspend fun getArtists(search: String? = null, limit: Int = 50, offset: Int = 0, orderBy: String? = null, favoriteOnly: Boolean = false, providerFilter: List<String>? = null, genreIds: List<Int>? = null): List<Artist>
-    suspend fun getAlbums(search: String? = null, limit: Int = 50, offset: Int = 0, orderBy: String? = null, favoriteOnly: Boolean = false, providerFilter: List<String>? = null, genreIds: List<Int>? = null): List<Album>
+    suspend fun getArtists(
+        search: String? = null,
+        limit: Int = 50,
+        offset: Int = 0,
+        orderBy: String? = null,
+        favoriteOnly: Boolean = false,
+        providerFilter: List<String>? = null,
+        genreIds: List<Int>? = null,
+        albumArtistsOnly: Boolean = false
+    ): List<Artist>
+    suspend fun getAlbums(
+        search: String? = null,
+        limit: Int = 50,
+        offset: Int = 0,
+        orderBy: String? = null,
+        favoriteOnly: Boolean = false,
+        providerFilter: List<String>? = null,
+        genreIds: List<Int>? = null,
+        albumTypes: Set<AlbumType> = emptySet()
+    ): List<Album>
     suspend fun getTracks(search: String? = null, limit: Int = 50, offset: Int = 0, orderBy: String? = null, favoriteOnly: Boolean = false, providerFilter: List<String>? = null, genreIds: List<Int>? = null): List<Track>
 
     /** The server's own genres (MA 2.10+), id and name. Fails on a server without them. */

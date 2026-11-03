@@ -1,6 +1,7 @@
 package net.asksakis.massdroidv2.domain.discover
 
 import android.util.Log
+import androidx.annotation.VisibleForTesting
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -16,11 +17,15 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 import net.asksakis.massdroidv2.data.cache.DiscoverCache
 import net.asksakis.massdroidv2.data.genre.GenreRepository
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
 import net.asksakis.massdroidv2.data.websocket.EventType
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
+import net.asksakis.massdroidv2.data.websocket.ServerEvent
 import net.asksakis.massdroidv2.data.websocket.SessionEventBus
 import net.asksakis.massdroidv2.data.websocket.mediaType
 import net.asksakis.massdroidv2.domain.model.Artist
@@ -44,6 +49,9 @@ private const val RECENT_FAVORITE_TRACKS_LIMIT = 10
 // section refresh waits this long so the burst collapses into one refresh.
 private const val TRACK_EVENT_SETTLE_MS = 350L
 private const val ALBUM_EVENT_SETTLE_MS = 500L
+
+// The provider event the MA frontend reloads its home on.
+private const val RECOMMENDATIONS_UPDATED = "recommendations_updated"
 
 /**
  * The Discover feed shared by every screen that shows it: the phone's Home, the TV's Home and
@@ -103,6 +111,10 @@ class DiscoverFeedStore @Inject constructor(
     private var mediaEventJob: Job? = null
     private var cacheStale = true
     private var lastSuccessfulLoadAt = 0L
+    // Counts home row setting changes, so a build that read the old setting does not mark the
+    // feed fresh, and the next load is not held back by the cooldown.
+    private var rowSettingsVersion = 0L
+    private var cooldownWaived = false
     // The first build of the process (and of a new account) skips the freshness check, so the
     // time-sensitive sections are live; it waits for a viewer like every other build.
     private var firstBuildPending = true
@@ -129,6 +141,18 @@ class DiscoverFeedStore @Inject constructor(
             observeConnection()
         }
         scope.launch { observeMediaEvents() }
+    }
+
+    /**
+     * The home row setting changed: the next screen that shows the feed gets it rebuilt. No
+     * library sync, because the library did not change.
+     */
+    fun invalidate() {
+        synchronized(lock) {
+            rowSettingsVersion++
+            cacheStale = true
+            cooldownWaived = true
+        }
     }
 
     /** A pull to refresh: asks MA to sync its library, then rebuilds the feed. */
@@ -268,10 +292,23 @@ class DiscoverFeedStore @Inject constructor(
                 EventType.MEDIA_ITEM_DELETED -> replaceMediaEventJob(ALBUM_EVENT_SETTLE_MS) { startSession ->
                     refreshRecentFavoriteAlbums(startSession)
                 }
+                // A provider coming or going, or refreshing its rows, changes the home rows; the
+                // MA frontend reloads its home on the same events.
+                EventType.PROVIDERS_UPDATED -> rebuildForProviderChange()
+                EventType.PROVIDER_EVENT ->
+                    if (event.isRecommendationsUpdate()) rebuildForProviderChange()
                 else -> Unit
             }
         }
     }
+
+    private fun rebuildForProviderChange() = replaceMediaEventJob(ALBUM_EVENT_SETTLE_MS) {
+        synchronized(lock) { cacheStale = true }
+        load()
+    }
+
+    private fun ServerEvent.isRecommendationsUpdate(): Boolean =
+        ((data as? JsonObject)?.get("event") as? JsonPrimitive)?.contentOrNull == RECOMMENDATIONS_UPDATED
 
     // With nobody watching, a media event only marks the feed stale for the next viewer.
     private fun replaceMediaEventJob(settleMs: Long, block: suspend (startSession: Long) -> Unit) {
@@ -305,13 +342,15 @@ class DiscoverFeedStore @Inject constructor(
                 Log.d(TAG, "load skipped: in flight")
                 return running
             }
-            !manual && !force && System.currentTimeMillis() - lastSuccessfulLoadAt < LOAD_COOLDOWN_MS -> {
+            !manual && !force && !cooldownWaived &&
+                System.currentTimeMillis() - lastSuccessfulLoadAt < LOAD_COOLDOWN_MS -> {
                 Log.d(TAG, "load skipped: cooldown")
                 return running
             }
         }
         val generation = ++loadGeneration
         val startSession = session
+        cooldownWaived = false
         fullLoadJob?.cancel()
         scope.launch { runLoad(generation, startSession, manual) }.also { fullLoadJob = it }
     }
@@ -319,6 +358,7 @@ class DiscoverFeedStore @Inject constructor(
     @Suppress("TooGenericExceptionCaught")
     private suspend fun runLoad(generation: Long, startSession: Long, manual: Boolean) {
         Log.d(TAG, "load starting (manual=$manual)")
+        val settingsVersion = synchronized(lock) { rowSettingsVersion }
         try {
             val feed = feedOrchestrator.buildFeed()
             if (feed.sections.isEmpty()) {
@@ -338,7 +378,7 @@ class DiscoverFeedStore @Inject constructor(
                 genreItems = feed.genreItems
                 topArtists = feed.topArtists
                 _state.update { it.copy(sections = feed.sections) }
-                cacheStale = false
+                cacheStale = rowSettingsVersion != settingsVersion
                 lastSuccessfulLoadAt = System.currentTimeMillis()
                 true
             }
@@ -356,6 +396,7 @@ class DiscoverFeedStore @Inject constructor(
                     _state.update { it.copy(isLoading = false, isRefreshing = false) }
                 }
             }
+            _buildsEnded.update { it + 1 }
         }
     }
 
@@ -415,6 +456,24 @@ class DiscoverFeedStore @Inject constructor(
         if (synchronized(lock) { startSession != session }) discoverCache.clear()
     }
 
+    private val _buildsEnded = MutableStateFlow(0)
+
+    /**
+     * How many full builds have ended, applied, dropped or failed. Tests wait on it instead of
+     * a fixed time for a build to finish.
+     */
+    @VisibleForTesting
+    internal val buildsEnded: StateFlow<Int> = _buildsEnded.asStateFlow()
+
+    private val _resetsDone = MutableStateFlow(0)
+
+    /**
+     * How many account switches the store has applied. Tests wait on it, because the reset
+     * runs on the store's own scope some time after the switch is announced.
+     */
+    @VisibleForTesting
+    internal val resetsDone: StateFlow<Int> = _resetsDone.asStateFlow()
+
     // Account switch: nothing of the previous account may stay on screen or feed a mix.
     private fun reset() {
         Log.d(TAG, "Session reset: dropping the Discover feed")
@@ -431,5 +490,6 @@ class DiscoverFeedStore @Inject constructor(
             topArtists = emptyList()
             _state.value = State(isLoading = false)
         }
+        _resetsDone.update { it + 1 }
     }
 }

@@ -12,15 +12,24 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import net.asksakis.massdroidv2.data.cache.DiscoverCache
 import net.asksakis.massdroidv2.data.websocket.MaAuthProbe
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
+import net.asksakis.massdroidv2.data.websocket.OAUTH_CALLBACK_SCHEME
 import net.asksakis.massdroidv2.data.websocket.OAuthCallback
 import net.asksakis.massdroidv2.data.websocket.OAuthCallbackBus
+import net.asksakis.massdroidv2.data.websocket.ServerAnswer
 import net.asksakis.massdroidv2.data.websocket.SessionEventBus
+import net.asksakis.massdroidv2.data.websocket.describeServerCheckFailure
+import net.asksakis.massdroidv2.domain.connection.ServerCheck
+import net.asksakis.massdroidv2.domain.connection.signInOriginsToCheck
+import net.asksakis.massdroidv2.domain.connection.unfinishedSignInMessage
+import net.asksakis.massdroidv2.domain.connection.unreachableSignInMessage
 import net.asksakis.massdroidv2.domain.model.AuthProviderInfo
 import net.asksakis.massdroidv2.domain.repository.MaAuthRepository
+import net.asksakis.massdroidv2.domain.repository.OAuthSignIn
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
 
 @Singleton
@@ -38,7 +47,7 @@ class MaAuthRepositoryImpl @Inject constructor(
         // The return URL is this prefix plus "/<nonce>". MA accepts any return URL that
         // starts with "musicassistant://" and appends the token as ?code=, so the nonce
         // comes back in the path, where a server that only concatenates cannot break it.
-        const val OAUTH_RETURN_URL = "musicassistant://auth/callback"
+        const val OAUTH_RETURN_URL = "$OAUTH_CALLBACK_SCHEME://auth/callback"
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -53,10 +62,20 @@ class MaAuthRepositoryImpl @Inject constructor(
     private val _oauthErrors = MutableSharedFlow<String>(extraBufferCapacity = 2)
     override val oauthErrors: SharedFlow<String> = _oauthErrors.asSharedFlow()
 
+    private val _completedOAuthSignIns = MutableSharedFlow<OAuthSignIn>(extraBufferCapacity = 1)
+    override val completedOAuthSignIns: SharedFlow<OAuthSignIn> = _completedOAuthSignIns.asSharedFlow()
+
     /** Pending OAuth target URL; needed when the callback resolves. */
     @Volatile private var pendingServerUrl: String? = null
     /** Nonce of the sign-in in progress; a callback without it is not ours. */
     @Volatile private var pendingNonce: String? = null
+    /** An address the sign-in in progress opens besides the server's, named if it does not finish. */
+    @Volatile private var pendingForeignOrigin: String? = null
+    /**
+     * The nonce of the start that may still open the browser. A cancel clears it and a newer
+     * start replaces it, so a start whose checks end after either does nothing.
+     */
+    @Volatile private var activeStart: String? = null
 
     init {
         scope.launch {
@@ -64,20 +83,19 @@ class MaAuthRepositoryImpl @Inject constructor(
         }
     }
 
-    override suspend fun probeProviders(serverUrl: String) {
-        if (serverUrl.isBlank()) {
-            _availableProviders.value = emptyList()
-            return
+    override suspend fun checkServer(serverUrl: String): ServerCheck =
+        when (val answer = probe.identify(serverUrl)) {
+            is ServerAnswer.MusicAssistant -> {
+                _availableProviders.value = answer.providers
+                Log.d(TAG, "Music Assistant ${answer.version} at $serverUrl: ${answer.providers.map { it.providerId }}")
+                ServerCheck.Found(serverUrl, answer.version, answer.serverId)
+            }
+            is ServerAnswer.Failed -> {
+                _availableProviders.value = emptyList()
+                Log.d(TAG, "No Music Assistant at $serverUrl: ${answer.error?.message}")
+                ServerCheck.Problem(describeServerCheckFailure(answer.error, serverUrl))
+            }
         }
-        val list = probe.fetchProviders(serverUrl)
-        if (list.isNotEmpty()) {
-            _availableProviders.value = list
-            Log.d(TAG, "providers for $serverUrl: ${list.map { it.providerId }}")
-        } else {
-            Log.d(TAG, "providers probe returned empty for $serverUrl")
-            _availableProviders.value = emptyList()
-        }
-    }
 
     override suspend fun startHomeAssistantOAuth(serverUrl: String): String? {
         val provider = _availableProviders.value.firstOrNull { it.isHomeAssistant }
@@ -86,37 +104,86 @@ class MaAuthRepositoryImpl @Inject constructor(
                 return null
             }
         val nonce = newOAuthNonce()
-        val authUrl = probe.fetchAuthorizationUrl(
-            serverUrl = serverUrl,
-            providerId = provider.providerId,
-            returnUrl = "$OAUTH_RETURN_URL/$nonce"
-        )
-        if (authUrl.isNullOrBlank()) {
-            _oauthErrors.tryEmit("Could not start sign-in. Check the server URL and try again.")
+        // In progress from here, so the button cannot start a second sign-in and a cancel
+        // during the fetch or the checks below reaches this start.
+        _oauthInProgress.value = true
+        activeStart = nonce
+        // The fetch and the checks can take seconds, and the screen that started them may go
+        // away meanwhile (Change server, a rotation). A start that is cancelled or throws must
+        // not leave the button disabled on "Waiting for sign in" for the rest of the process.
+        val authUrl: String?
+        val foreignOrigins: List<String>
+        val unreachable: String?
+        var checked = false
+        try {
+            authUrl = probe.fetchAuthorizationUrl(
+                serverUrl = serverUrl,
+                providerId = provider.providerId,
+                returnUrl = "$OAUTH_RETURN_URL/$nonce"
+            )
+            // Cancelled or replaced during the fetch: the newer state, nonce included, stays.
+            if (activeStart != nonce) return null
+            if (authUrl.isNullOrBlank()) {
+                endStart(nonce)
+                _oauthErrors.tryEmit("Could not start sign-in. Check the server URL and try again.")
+                return null
+            }
+            // The link can send the browser to addresses this phone cannot reach, such as the
+            // server's LAN address while the phone is away (see signInOriginsToCheck). The
+            // browser is not opened on a page that cannot load.
+            foreignOrigins = signInOriginsToCheck(authUrl, serverUrl)
+            unreachable = foreignOrigins.firstOrNull { !probe.answersHttp(it) }
+            checked = true
+        } finally {
+            if (!checked) endStart(nonce)
+        }
+        // Cancelled or replaced during the checks: the newer state, nonce included, stays.
+        if (activeStart != nonce) return null
+        if (unreachable != null) {
+            endStart(nonce)
+            _oauthErrors.tryEmit(unreachableSignInMessage(unreachable))
             return null
         }
+        pendingForeignOrigin = foreignOrigins.lastOrNull()
         pendingServerUrl = serverUrl
         pendingNonce = nonce
         oauthStartedAtMs = System.currentTimeMillis()
-        _oauthInProgress.value = true
         return authUrl
+    }
+
+    /** Ends the start [nonce] without a sign-in, unless a cancel or a newer start owns the state. */
+    private fun endStart(nonce: String) {
+        if (activeStart != nonce) return
+        activeStart = null
+        _oauthInProgress.value = false
     }
 
     override fun cancelOAuth() {
         if (_oauthInProgress.value) {
             _oauthInProgress.value = false
+            activeStart = null
             pendingServerUrl = null
             pendingNonce = null
             oauthStartedAtMs = 0L
         }
     }
 
+    override suspend fun prepareServerSwitch() {
+        runCatching { discoverCache.clear() }
+        sessionEventBus.emitReset()
+    }
+
     override suspend fun signOut() {
-        Log.d(TAG, "signOut(): wiping token, credentials, discover cache, and disconnecting")
+        Log.d(TAG, "signOut(): wiping token, password, discover cache, and disconnecting")
         runCatching { wsClient.disconnect() }
+        // First, with the disconnect: a planned Sendspin start with no session sends nothing, so
+        // there is no fallback to the saved token while it is being forgotten below.
+        wsClient.forgetLastSession()
         wsClient.clearSavedCredentials()
+        // Only this server's token and password are forgotten. The accounts saved for other
+        // servers stay, and the username stays for the sign-in form.
+        settingsRepository.trustedServerId.first()?.let { settingsRepository.forgetServerToken(it) }
         settingsRepository.setAuthToken("")
-        settingsRepository.setUsername("")
         settingsRepository.setPassword("")
         // The next sign-in is explicit and trusts whichever server answers it.
         runCatching { settingsRepository.setTrustedServerId(null) }
@@ -124,8 +191,7 @@ class MaAuthRepositoryImpl @Inject constructor(
         // server that happens to expose a same-id player would silently latch
         // back onto something the user did not choose.
         runCatching { settingsRepository.setSelectedPlayerId(null) }
-        runCatching { discoverCache.clear() }
-        sessionEventBus.emitReset()
+        prepareServerSwitch()
         // Leave the server URL alone, the user is signing OUT and not switching
         // servers. They can edit the URL field if they want to move on.
     }
@@ -146,10 +212,13 @@ class MaAuthRepositoryImpl @Inject constructor(
             if (_oauthInProgress.value && oauthStartedAtMs == started) {
                 Log.d(TAG, "OAuth canceled by user (returned to app without callback)")
                 _oauthInProgress.value = false
+                activeStart = null
                 pendingServerUrl = null
                 pendingNonce = null
                 oauthStartedAtMs = 0L
-                _oauthErrors.tryEmit("Sign-in canceled.")
+                val origin = pendingForeignOrigin
+                pendingForeignOrigin = null
+                _oauthErrors.tryEmit(origin?.let(::unfinishedSignInMessage) ?: "Sign-in canceled.")
             }
         }
     }
@@ -176,35 +245,15 @@ class MaAuthRepositoryImpl @Inject constructor(
     }
 
     private fun finishOAuth(url: String, token: String) {
-        scope.launch {
-            try {
-                settingsRepository.setAuthToken(token)
-                // Clear any built-in credentials saved from a previous attempt
-                // so the persisted auth state is unambiguous: OAuth-token only.
-                settingsRepository.setUsername("")
-                settingsRepository.setPassword("")
-                wsClient.clearSavedCredentials()
-                // The previous account's selected player almost certainly does
-                // not exist on the new server; drop it so we don't try to
-                // restore a phantom selection.
-                settingsRepository.setSelectedPlayerId(null)
-                // Discover content is per-account; wipe the on-disk cache so the
-                // home screen doesn't briefly show items the new user hasn't seen.
-                discoverCache.clear()
-                // Notify everyone holding per-account in-memory state to drop it
-                // before the new connection brings fresh data in.
-                sessionEventBus.emitReset()
-                wsClient.connect(url, token, MaWebSocketClient.ConnectOrigin.SIGN_IN)
-                Log.d(TAG, "OAuth completed, connecting to $url with new token")
-            } catch (e: Exception) {
-                Log.w(TAG, "OAuth completion failed: ${e.message}")
-                _oauthErrors.tryEmit("Sign-in completed but connection failed: ${e.message}")
-            } finally {
-                _oauthInProgress.value = false
-                pendingServerUrl = null
-                oauthStartedAtMs = 0L
-            }
+        // The sign-in session connects with the token and saves it, with the server, only once
+        // the server accepted it.
+        if (!_completedOAuthSignIns.tryEmit(OAuthSignIn(url, token))) {
+            _oauthErrors.tryEmit("Sign-in completed but could not be applied. Please try again.")
         }
+        Log.d(TAG, "OAuth completed for $url")
+        _oauthInProgress.value = false
+        pendingServerUrl = null
+        oauthStartedAtMs = 0L
     }
 }
 

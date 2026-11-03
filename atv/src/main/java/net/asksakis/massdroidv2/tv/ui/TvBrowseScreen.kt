@@ -39,6 +39,8 @@ fun TvBrowseScreen(
     val load by viewModel.load.collectAsStateWithLifecycle()
     val sortOption by viewModel.sortOption.collectAsStateWithLifecycle()
     val sortDescending by viewModel.sortDescending.collectAsStateWithLifecycle()
+    val albumArtistsOnly by viewModel.albumArtistsOnly.collectAsStateWithLifecycle()
+    val albumTypes by viewModel.albumTypes.collectAsStateWithLifecycle()
     var showSortDialog by remember { mutableStateOf(false) }
     val gridState = rememberLazyGridState()
 
@@ -136,7 +138,11 @@ fun TvBrowseScreen(
                 showSortDialog = false
             },
             onSetDescending = { viewModel.setSortDescending(it) },
-            onDismiss = { showSortDialog = false }
+            onDismiss = { showSortDialog = false },
+            albumArtistsOnly = albumArtistsOnly.takeIf { category == BrowseCategory.ARTISTS },
+            onToggleAlbumArtistsOnly = viewModel::toggleAlbumArtistsOnly,
+            albumTypes = albumTypes.takeIf { category == BrowseCategory.ALBUMS },
+            onToggleAlbumType = viewModel::toggleAlbumType
         )
     }
 }

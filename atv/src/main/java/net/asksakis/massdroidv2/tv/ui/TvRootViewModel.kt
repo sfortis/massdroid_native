@@ -61,10 +61,7 @@ class TvRootViewModel @Inject constructor(
     init {
         viewModelScope.launch {
             wsClient.connectionState.collect { state ->
-                if (state is ConnectionState.Connected) {
-                    _sessionEstablished.value = true
-                    _changeServerRequested.value = false
-                }
+                if (state is ConnectionState.Connected) _sessionEstablished.value = true
             }
         }
         viewModelScope.launch {
@@ -81,14 +78,21 @@ class TvRootViewModel @Inject constructor(
 
     /**
      * Connect, then retry on Error/Disconnected with a bounded backoff until
-     * connected. While the user is changing server or has disconnected, it waits for
-     * the next successful sign-in instead of giving up for the rest of the session.
+     * connected. While the user is changing server, it waits until Change server closes
+     * instead of giving up for the rest of the session. A connection while it is open is
+     * not the end of it: a failed sign-in connects to the previous server again, and the
+     * screen stays to show why.
+     *
+     * Only this screen's own Change server holds it back. The client's userDisconnected
+     * flag outlives the activity: Change server, then leaving the app with BACK and opening
+     * it again, left a fresh screen on "Connecting to Music Assistant" for good, waiting for
+     * a sign-in nobody was making, with the saved server never tried.
      */
     private suspend fun keepConnected(url: String, token: String) {
         while (currentCoroutineContext().isActive) {
-            if (_changeServerRequested.value || wsClient.userDisconnected) {
-                wsClient.connectionState.first { it is ConnectionState.Connected }
-                _changeServerRequested.value = false
+            if (_changeServerRequested.value) {
+                // Waits for a sign-in to the new server, or for the user to go back to this one.
+                _changeServerRequested.first { !it }
                 continue
             }
             when (wsClient.connectionState.value) {
@@ -106,6 +110,14 @@ class TvRootViewModel @Inject constructor(
     }
 
     fun serverLabel(): String = savedUrl
+
+    /**
+     * Change server closes: a sign-in from it saved its server, or the user left it with BACK
+     * on the server list. The saved server, the new one or the old one, is connected again.
+     */
+    fun closeChangeServer() {
+        _changeServerRequested.value = false
+    }
 
     /** User chose to enter a different server: stop retrying and show onboarding. */
     fun changeServer() {

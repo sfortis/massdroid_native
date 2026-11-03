@@ -1,7 +1,6 @@
 package net.asksakis.massdroidv2.ui.screens.settings
 
 import android.content.Context
-import android.security.KeyChain
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -11,6 +10,8 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import net.asksakis.massdroidv2.data.sendspin.SendspinManager
 import net.asksakis.massdroidv2.data.sendspin.SyncProbeOutcome
+import net.asksakis.massdroidv2.data.discovery.ServerPicker
+import net.asksakis.massdroidv2.data.signin.SignInController
 import net.asksakis.massdroidv2.data.update.AppUpdateChecker
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
 import net.asksakis.massdroidv2.data.whatsnew.WhatsNewRepository
@@ -47,8 +48,9 @@ class SettingsViewModel @Inject constructor(
     private val smartListeningRepository: SmartListeningRepository,
     private val libraryGenreEnricher: net.asksakis.massdroidv2.data.genre.LibraryGenreEnricher,
     private val genreRepository: net.asksakis.massdroidv2.data.genre.GenreRepository,
-    private val maAuthRepository: net.asksakis.massdroidv2.domain.repository.MaAuthRepository,
-    private val whatsNewRepository: WhatsNewRepository
+    private val whatsNewRepository: WhatsNewRepository,
+    serverPickerFactory: ServerPicker.Factory,
+    signInFactory: SignInController.Factory
 ) : ViewModel() {
 
     /**
@@ -60,10 +62,6 @@ class SettingsViewModel @Inject constructor(
      */
     val whatsNew: StateFlow<WhatsNewRelease?> = flow { emit(whatsNewRepository.load()) }
         .stateIn(viewModelScope, SharingStarted.Eagerly, null)
-
-    val availableAuthProviders = maAuthRepository.availableProviders
-    val oauthInProgress = maAuthRepository.oauthInProgress
-    val oauthErrors = maAuthRepository.oauthErrors
 
     /**
      * Resolved identity of the currently authenticated user, or null when not
@@ -85,43 +83,13 @@ class SettingsViewModel @Inject constructor(
                 }
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
 
-    /**
-     * Triggered when the user's typed server URL stabilises. Refreshes the
-     * provider list so the UI can show "Sign in with Home Assistant" if the
-     * server advertises it.
-     */
-    fun probeAuthProviders(url: String) {
-        viewModelScope.launch {
-            maAuthRepository.probeProviders(normalizeUrl(url))
-        }
-    }
+    /** Step 1 and step 2 of the sign-in form: the server list, the chosen server, the typed address. */
+    val serverPicker: ServerPicker = serverPickerFactory.create(viewModelScope)
 
-    /**
-     * Returns the URL to open in a browser tab to begin the HA OAuth flow,
-     * or null on failure (errors are emitted to [oauthErrors]).
-     */
-    suspend fun startHomeAssistantOAuth(url: String): String? {
-        val normalized = normalizeUrl(url)
-        if (normalized.isBlank()) {
-            _loginError.value = "Couldn't sign in with Home Assistant. Enter the server URL."
-            return null
-        }
-        // No message of its own: the URL field already says the scheme is missing and
-        // offers the fix, so a second copy under the form only repeated it.
-        if (!isUrlValid(normalized)) return null
-        viewModelScope.launch { settingsRepository.setServerUrl(normalized) }
-        return maAuthRepository.startHomeAssistantOAuth(normalized)
-    }
+    /** Signing in to the chosen server, shared with the onboarding. */
+    val signIn: SignInController = signInFactory.create(viewModelScope)
 
-    fun cancelOAuth() {
-        maAuthRepository.cancelOAuth()
-    }
-
-    fun signOut() {
-        viewModelScope.launch {
-            maAuthRepository.signOut()
-        }
-    }
+    fun signOut() = signIn.signOut()
 
     val enrichmentProgress = libraryGenreEnricher.progress
 
@@ -131,12 +99,6 @@ class SettingsViewModel @Inject constructor(
 
     val serverUrl = settingsRepository.serverUrl
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "")
-
-    val authToken = settingsRepository.authToken
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "")
-
-    val clientCertAlias = settingsRepository.clientCertAlias
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
 
     val connectionState = wsClient.connectionState
     val isReconnecting = wsClient.isReconnecting
@@ -206,8 +168,6 @@ class SettingsViewModel @Inject constructor(
         .map { it ?: net.asksakis.massdroidv2.BuildConfig.DEBUG }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), net.asksakis.massdroidv2.BuildConfig.DEBUG)
 
-    private val _loginError = MutableStateFlow<String?>(null)
-    val loginError: StateFlow<String?> = _loginError.asStateFlow()
     private val _recommendationBusy = MutableStateFlow(false)
     val recommendationBusy: StateFlow<Boolean> = _recommendationBusy.asStateFlow()
     private val _recommendationMessage = MutableStateFlow<String?>(null)
@@ -239,81 +199,12 @@ class SettingsViewModel @Inject constructor(
         UpdateUiState(appVersion = appUpdateChecker.getCurrentVersion())
     )
 
-    val savedUsername = settingsRepository.username
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "")
-
-    val savedPassword = settingsRepository.password
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "")
-
     init {
         refreshRecommendationData()
     }
 
-    // Token persistence is handled by MassDroidApp's connectionState observer
-
-    /**
-     * Light shaping for the URL: trim whitespace and strip a trailing slash.
-     * No silent scheme prepend — the UI surfaces a validation hint with
-     * suggestion chips so the user explicitly picks http:// or https://.
-     */
-    private fun normalizeUrl(raw: String): String {
-        return raw.trim().trimEnd('/')
-    }
-
-    private fun isUrlValid(url: String): Boolean = url.contains("://")
-
-    fun login(url: String, username: String, password: String) {
-        val u = normalizeUrl(url)
-        val user = username.trim()
-        val pass = password.trim()
-        if (u.isBlank() || user.isBlank() || pass.isBlank()) {
-            _loginError.value = "Couldn't sign in. Fill in the server, username and password."
-            return
-        }
-        // The URL field already says the scheme is missing (see startHomeAssistantOAuth).
-        if (!isUrlValid(u)) return
-        _loginError.value = null
-        viewModelScope.launch {
-            settingsRepository.setServerUrl(u)
-            settingsRepository.setUsername(user)
-            settingsRepository.setPassword(pass)
-        }
-        wsClient.setSavedCredentials(user, pass)
-        wsClient.connectWithLogin(u, user, pass) { token ->
-            viewModelScope.launch {
-                settingsRepository.setAuthToken(token)
-            }
-        }
-    }
-
-    fun connectWithToken(url: String? = null) {
-        val connectUrl = normalizeUrl((url ?: serverUrl.value))
-        val token = authToken.value
-        if (connectUrl.isBlank()) {
-            _loginError.value = "Couldn't sign in. Enter the server URL."
-            return
-        }
-        // The URL field already says the scheme is missing (see startHomeAssistantOAuth).
-        if (!isUrlValid(connectUrl)) return
-        if (token.isBlank()) {
-            _loginError.value = "Couldn't sign in with the saved token. Sign in with your username and password."
-            return
-        }
-        _loginError.value = null
-        viewModelScope.launch { settingsRepository.setServerUrl(connectUrl) }
-        wsClient.connect(connectUrl, token, MaWebSocketClient.ConnectOrigin.SIGN_IN)
-    }
-
     fun disconnect() {
         wsClient.disconnect()
-    }
-
-    fun clearLoginError() {
-        _loginError.value = null
-    }
-
-    fun setLoginError(message: String) {
-        _loginError.value = message
     }
 
     fun clearUpdateMessage() {
@@ -431,51 +322,6 @@ class SettingsViewModel @Inject constructor(
                     )
                 }
             }
-        }
-    }
-
-    fun onCertificateSelected(alias: String?, context: Context) {
-        if (alias == null) return
-        viewModelScope.launch {
-            settingsRepository.setClientCertAlias(alias)
-            loadCertificate(alias, context)
-        }
-    }
-
-    fun loadSavedCertificate(context: Context) {
-        viewModelScope.launch {
-            val alias = settingsRepository.clientCertAlias.first()
-            if (alias != null) {
-                loadCertificate(alias, context)
-            }
-        }
-    }
-
-    private suspend fun loadCertificate(alias: String, context: Context) {
-        withContext(Dispatchers.IO) {
-            try {
-                val privateKey = KeyChain.getPrivateKey(context, alias)
-                val certChain = KeyChain.getCertificateChain(context, alias)
-                if (privateKey != null && certChain != null) {
-                    wsClient.configureMtls(privateKey, certChain)
-                    Log.d(TAG, "mTLS loaded: $alias")
-                } else {
-                    Log.e(TAG, "Failed to load cert for alias: $alias")
-                    settingsRepository.setClientCertAlias(null)
-                    wsClient.clearMtls()
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Error loading cert: ${e.message}")
-                settingsRepository.setClientCertAlias(null)
-                wsClient.clearMtls()
-            }
-        }
-    }
-
-    fun clearCertificate() {
-        viewModelScope.launch {
-            settingsRepository.setClientCertAlias(null)
-            wsClient.clearMtls()
         }
     }
 

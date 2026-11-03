@@ -166,11 +166,19 @@ class DiscoverFeedStoreTest {
     fun `a build that finishes after an account switch is dropped`() = runBlocking {
         coEvery { cache.load() } returns null
         val release = CompletableDeferred<Unit>()
+        val builds = java.util.concurrent.atomic.AtomicInteger()
         coEvery { orchestrator.buildFeed() } coAnswers {
             // The switch cancels the build, but a build that already has its answer finishes
             // without suspending again; NonCancellable stands for that.
-            withContext(NonCancellable) { release.await() }
-            feed(liveSection)
+            if (builds.incrementAndGet() == 1) {
+                withContext(NonCancellable) { release.await() }
+                feed(liveSection)
+            } else {
+                // A build the store starts after the switch is the new account's, and may run
+                // when a watcher or the connection is seen late. It comes back empty, so only
+                // the build from before the switch could put Live on screen.
+                feed()
+            }
         }
         val store = store()
         val viewer = launch(Dispatchers.Default) { store.state.collect {} }
@@ -179,9 +187,12 @@ class DiscoverFeedStoreTest {
         coVerify(timeout = WAIT_MS) { orchestrator.buildFeed() }
 
         sessionEventBus.emitReset()
-        delay(SETTLE_MS)
+        // The reset must have run before the build answers; a fixed wait was not always
+        // enough under load.
+        withTimeout(WAIT_MS) { store.resetsDone.first { it == 1 } }
         release.complete(Unit)
-        delay(SETTLE_MS)
+        // The build has ended, so a feed it wrongly applied would be on screen by now.
+        withTimeout(WAIT_MS) { store.buildsEnded.first { it >= 1 } }
 
         assertThat(store.state.value.sections).isEmpty()
         assertThat(store.libraryContext()).isNull()
@@ -241,7 +252,12 @@ class DiscoverFeedStoreTest {
 
         assertThat(store.radioGenres().map { it.name }).containsExactly("Rock", "Synth-pop")
         sessionEventBus.emitReset()
-        withTimeout(WAIT_MS) { store.state.first { it.sections.isEmpty() } }
+        // Read state.value and do not collect it: a collector counts as a screen watching, and
+        // a watched store that is connected builds the feed again at once. That rebuild raced
+        // the check and failed this test under load, either way round.
+        withTimeout(WAIT_MS) {
+            while (store.state.value.sections.isNotEmpty()) delay(POLL_MS)
+        }
         assertThat(store.radioGenres()).isEmpty()
     }
 
@@ -265,5 +281,6 @@ class DiscoverFeedStoreTest {
     private companion object {
         const val WAIT_MS = 5_000L
         const val SETTLE_MS = 200L
+        const val POLL_MS = 10L
     }
 }

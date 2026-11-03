@@ -1,57 +1,65 @@
 package net.asksakis.massdroidv2.ui.car
 
 import android.content.Context
-import android.security.KeyChain
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
-import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import net.asksakis.massdroidv2.data.discovery.ServerPicker
 import net.asksakis.massdroidv2.data.repository.QueueTogglesCache
+import net.asksakis.massdroidv2.data.signin.SavedSignIn
+import net.asksakis.massdroidv2.data.signin.SignInController
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
+import net.asksakis.massdroidv2.domain.connection.ChosenServer
+import net.asksakis.massdroidv2.domain.connection.ServerRow
+import net.asksakis.massdroidv2.domain.model.AuthProviderInfo
 import net.asksakis.massdroidv2.domain.model.CrossfadeMode
 import net.asksakis.massdroidv2.domain.model.QueueChoice
 import net.asksakis.massdroidv2.domain.model.SendspinAudioFormat
-import net.asksakis.massdroidv2.domain.repository.MaAuthRepository
 import net.asksakis.massdroidv2.domain.repository.MusicRepository
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
 import javax.inject.Inject
 
 /**
- * Minimal car (AAOS) sign-in / server-config view model. Reuses the shared
- * :core [MaWebSocketClient] login flow exactly like the phone SettingsViewModel
- * and the TV onboarding screen, but stays intentionally small (username/password
- * + optional client certificate) so the parked car screen never pulls in the
- * full phone settings surface. OAuth is deliberately omitted (it needs a browser
- * round-trip that is not reliable in a car).
+ * The car (AAOS) sign-in and the settings of the car's own player. The sign-in is the phone's
+ * [SignInController] and [ServerPicker], so the car picks a server and signs in the way the
+ * phone does. It offers a username and password, the account saved for the server, Home
+ * Assistant, whose page the car shows inside the app because it has no browser, and a client
+ * certificate.
  */
 @HiltViewModel
 class CarSignInViewModel @Inject constructor(
     private val wsClient: MaWebSocketClient,
     private val settingsRepository: SettingsRepository,
-    private val authRepository: MaAuthRepository,
     private val playerRepository: PlayerRepository,
     private val musicRepository: MusicRepository,
     private val queueToggles: QueueTogglesCache,
+    serverPickerFactory: ServerPicker.Factory,
+    signInFactory: SignInController.Factory,
 ) : ViewModel() {
+
+    // The phone's sign-in form: what to prefill for a server, "Continue as", and the attempt.
+    private val signIn: SignInController = signInFactory.create(viewModelScope)
 
     val connectionState: StateFlow<ConnectionState> = wsClient.connectionState
 
-    private val _error = MutableStateFlow<String?>(null)
-    val error: StateFlow<String?> = _error.asStateFlow()
+    /** Step 1 and step 2 of the sign-in, shared with the phone and the TV. */
+    val serverPicker: ServerPicker = serverPickerFactory.create(viewModelScope)
+
+    /** The form's error or the last attempt's; see [SignInController.error]. */
+    val error: StateFlow<String?> = signIn.error
 
     // ---- MassDroid player audio settings ----------------------------------
     // The car IS the Sendspin player, so these tune its own output. Audio
@@ -97,6 +105,8 @@ class CarSignInViewModel @Inject constructor(
                 if (state is ConnectionState.Connected && _crossfade.value == null) loadCrossfade()
             }
         }
+        // A Home Assistant start that fails says why on the form, as on the phone.
+        viewModelScope.launch { signIn.oauthErrors.collect(signIn::setError) }
     }
 
     fun setAudioFormat(format: SendspinAudioFormat) {
@@ -192,104 +202,70 @@ class CarSignInViewModel @Inject constructor(
         return if (effective == SMART_CROSSFADE) CrossfadeMode.SMART else CrossfadeMode.STANDARD
     }
 
-    /** Currently selected mTLS client-certificate alias, or null. */
-    val certAlias: StateFlow<String?> = settingsRepository.clientCertAlias
-        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+    /** The selected client certificate's alias, or null; see [SignInController.clientCertAlias]. */
+    val certAlias: StateFlow<String?> = signIn.clientCertAlias
 
-    /** Saved server URL + username, surfaced once to pre-fill the form. */
-    val prefill: StateFlow<Prefill?> = combine(
-        settingsRepository.serverUrl,
-        settingsRepository.username,
-    ) { url, username -> Prefill(url, username) }
-        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+    /** The server the app connects to, for the status line. */
+    val serverUrl: StateFlow<String> = settingsRepository.serverUrl
+        .stateIn(viewModelScope, SharingStarted.Eagerly, "")
 
-    data class Prefill(val url: String, val username: String)
+    /** The server the last sign-in went to; the client's connection error belongs to it. */
+    val attemptedUrl: StateFlow<String?> = signIn.attemptedUrl
 
-    /** Starts a sign-in; false when the input was rejected and nothing was sent. */
-    fun login(rawUrl: String, username: String, password: String): Boolean {
-        val url = rawUrl.trim().trimEnd('/')
-        val user = username.trim()
-        val pass = password.trim()
-        if (!url.startsWith("http://") && !url.startsWith("https://")) {
-            _error.value = "Add http:// or https:// to the URL"
-            return false
-        }
-        if (user.isBlank() || pass.isBlank()) {
-            _error.value = "Enter username and password"
-            return false
-        }
-        _error.value = null
-        viewModelScope.launch {
-            settingsRepository.setServerUrl(url)
-            settingsRepository.setUsername(user)
-            settingsRepository.setPassword(pass)
-        }
-        wsClient.setSavedCredentials(user, pass)
-        wsClient.connectWithLogin(url, user, pass) { token ->
-            viewModelScope.launch { settingsRepository.setAuthToken(token) }
-        }
-        return true
-    }
+    fun clearError() = signIn.clearError()
+
+    /** Abandons the sign-in in progress when the user leaves its server; see [SignInController.cancelAttempt]. */
+    fun cancelAttempt() = signIn.cancelAttempt()
 
     /**
-     * Apply a client certificate picked from the Android KeyChain. Mirrors the
-     * phone settings cert flow: persist the alias, load the key/chain off-main,
-     * and reconfigure the shared OkHttp/WebSocket client for mTLS.
+     * What the form may offer for [server], as on the phone: that server's saved username, the
+     * password only for the current server, and "Continue as" when it has a saved token.
      */
-    fun onCertificateSelected(alias: String?, context: Context) {
-        if (alias == null) return
-        viewModelScope.launch {
-            settingsRepository.setClientCertAlias(alias)
-            loadCertificate(alias, context.applicationContext)
-        }
-    }
+    fun savedSignIn(server: ChosenServer): Flow<SavedSignIn> = signIn.savedSignIn(server)
 
-    fun clearCertificate() {
-        viewModelScope.launch {
-            settingsRepository.setClientCertAlias(null)
-            wsClient.clearMtls()
-        }
-    }
+    /** The server the last sign-in saved; the screen closes on it, see [consumeSuccess]. */
+    val succeeded: StateFlow<String?> = signIn.succeeded
 
-    fun signOut() {
-        viewModelScope.launch { authRepository.signOut() }
-    }
+    fun consumeSuccess() = signIn.consumeSuccess()
 
-    private suspend fun loadCertificate(alias: String, context: Context) {
-        withContext(Dispatchers.IO) {
-            try {
-                val privateKey = KeyChain.getPrivateKey(context, alias)
-                val certChain = KeyChain.getCertificateChain(context, alias)
-                // KeyChain can take a while; a certificate removed or replaced meanwhile must
-                // not be applied over the newer choice.
-                if (settingsRepository.clientCertAlias.first() != alias) {
-                    Log.d(TAG, "Certificate $alias no longer selected, not applying it")
-                    return@withContext
-                }
-                if (privateKey != null && certChain != null) {
-                    wsClient.configureMtls(privateKey, certChain)
-                    Log.d(TAG, "mTLS loaded: $alias")
-                } else {
-                    Log.e(TAG, "Failed to load cert for alias: $alias")
-                    settingsRepository.setClientCertAlias(null)
-                    wsClient.clearMtls()
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Error loading cert: ${e.message}")
-                settingsRepository.setClientCertAlias(null)
-                wsClient.clearMtls()
-            }
-        }
-    }
+    /**
+     * Starts a sign-in; false when the input was rejected and nothing was sent. The server is
+     * saved only once it accepted the sign-in, and the app returns to the previous server when
+     * it does not; see [SignInController.login].
+     */
+    fun login(server: ChosenServer, username: String, password: String): Boolean =
+        signIn.login(server, username, password)
 
-    /** One-shot: load the saved cert (if any) so a re-opened screen keeps mTLS. */
-    fun loadSavedCertificate(context: Context) {
-        val appContext = context.applicationContext
-        viewModelScope.launch {
-            val alias = settingsRepository.clientCertAlias.first() ?: return@launch
-            loadCertificate(alias, appContext)
-        }
-    }
+    /** The sign-in providers of the server checked last; see [SignInController.providers]. */
+    val providers: StateFlow<List<AuthProviderInfo>> = signIn.providers
+
+    val oauthInProgress: StateFlow<Boolean> = signIn.oauthInProgress
+
+    /** The Home Assistant page to show; see [SignInController.homeAssistantPage]. */
+    val homeAssistantPage: StateFlow<String?> = signIn.homeAssistantPage
+
+    fun openHomeAssistantSignIn(server: ChosenServer) = signIn.openHomeAssistantSignIn(server.url)
+
+    fun deliverHomeAssistantCallback(link: String) = signIn.deliverHomeAssistantCallback(link)
+
+    fun cancelHomeAssistantSignIn() = signIn.cancelHomeAssistantSignIn()
+
+    /** Forgets a server used before from the list; see [SignInController.forget]. */
+    fun forget(row: ServerRow) = signIn.forget(row)
+
+    /** Signs in to [server] with the account saved for it, the "Continue as" choice. */
+    fun continueAs(server: ChosenServer, saved: SavedSignIn) = signIn.continueAs(server, saved)
+
+    /** Uses the certificate picked in the system KeyChain picker; see [SignInController.selectCertificate]. */
+    fun onCertificateSelected(alias: String?, context: Context) = signIn.selectCertificate(alias, context)
+
+    fun clearCertificate() = signIn.clearCertificate()
+
+    /** Signs out of the current server; see [SignInController.signOut]. */
+    fun signOut() = signIn.signOut()
+
+    /** Loads the saved certificate again, so a re-opened screen keeps mTLS. */
+    fun loadSavedCertificate(context: Context) = signIn.loadSavedCertificate(context)
 
     companion object {
         /** How long to wait for the queue toggles to seed after a connect. */

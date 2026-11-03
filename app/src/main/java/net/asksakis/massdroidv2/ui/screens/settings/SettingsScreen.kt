@@ -1,6 +1,14 @@
 package net.asksakis.massdroidv2.ui.screens.settings
 
 import net.asksakis.massdroidv2.ui.components.LabeledSlider
+import net.asksakis.massdroidv2.ui.components.OtherServerSheet
+import net.asksakis.massdroidv2.ui.components.ServerList
+import net.asksakis.massdroidv2.ui.components.SignInDraft
+import net.asksakis.massdroidv2.ui.components.NO_CERTIFICATE_CHOSEN
+import net.asksakis.massdroidv2.ui.components.SignInStep
+import net.asksakis.massdroidv2.ui.components.chooseClientCertificate
+import net.asksakis.massdroidv2.ui.components.launchCustomTab
+import net.asksakis.massdroidv2.ui.components.rememberSignInDraft
 import net.asksakis.massdroidv2.ui.components.MdSlider
 import kotlin.math.roundToInt
 import net.asksakis.massdroidv2.ui.components.MdButton
@@ -21,12 +29,8 @@ import net.asksakis.massdroidv2.ui.components.SettingsTone
 
 import android.annotation.SuppressLint
 import android.app.Activity
-import android.security.KeyChain
-import androidx.compose.ui.autofill.ContentType
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.semantics.contentType
-import androidx.compose.ui.semantics.semantics
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -66,8 +70,6 @@ import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.CloudSync
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Info
-import androidx.compose.material.icons.filled.Login
-import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.SystemUpdate
 import net.asksakis.massdroidv2.ui.components.WhatsNewItems
@@ -80,8 +82,6 @@ import androidx.compose.material.icons.filled.RestartAlt
 import androidx.compose.material.icons.filled.Sensors
 import androidx.compose.material.icons.filled.Speaker
 import androidx.compose.material.icons.filled.VerifiedUser
-import androidx.compose.material.icons.filled.Visibility
-import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -89,24 +89,17 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.MutableState
-import androidx.compose.runtime.Stable
-import androidx.compose.runtime.saveable.Saver
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.text.style.TextAlign
-import androidx.browser.customtabs.CustomTabsIntent
 import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.text.style.TextOverflow
@@ -122,12 +115,6 @@ import androidx.core.content.ContextCompat
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
-import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.ui.text.TextRange
-import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.PasswordVisualTransformation
-import androidx.compose.ui.text.input.TextFieldValue
-import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -148,40 +135,7 @@ import net.asksakis.massdroidv2.domain.recommendation.smartMixTrackTargetFor
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
 
 enum class SettingsCategory {
-    CONNECTION, PHONE_AS_SPEAKER, RECOMMENDATIONS, PROXIMITY, NFC_TAGS, DIAGNOSTICS, ABOUT
-}
-
-/**
- * Matches text the user could plausibly be typing as a leading "http" / "https"
- * scheme: any prefix of "https" optionally followed by ":", "/", or "//".
- * Used so the scheme suggestion chips REPLACE a half-typed scheme rather than
- * concatenate "https://" to "htt".
- */
-private val PARTIAL_HTTP_SCHEME = Regex(
-    "^h(t(t(p(s?(:(/(/)?)?)?)?)?)?)?$",
-    RegexOption.IGNORE_CASE
-)
-
-/**
- * Apply a scheme chip to the current URL field text. Three cases:
- *  1. The text already has "://" somewhere: swap whatever was before it.
- *  2. The text is itself a partial scheme (e.g. "h", "htt", "https:"): drop
- *     it so the new scheme stands alone.
- *  3. Anything else (host-looking text): prepend.
- */
-private fun applyUrlScheme(scheme: String, current: String): String {
-    val trimmed = current.trim()
-    val sep = trimmed.indexOf("://")
-    if (sep >= 0) return scheme + trimmed.substring(sep + 3)
-    val host = if (PARTIAL_HTTP_SCHEME.matches(trimmed)) "" else trimmed
-    return scheme + host
-}
-
-private fun launchCustomTab(context: android.content.Context, url: String) {
-    val intent = CustomTabsIntent.Builder()
-        .setShowTitle(true)
-        .build()
-    intent.launchUrl(context, android.net.Uri.parse(url))
+    CONNECTION, PHONE_AS_SPEAKER, HOME_SCREEN, RECOMMENDATIONS, PROXIMITY, NFC_TAGS, DIAGNOSTICS, ABOUT
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -200,7 +154,7 @@ fun SettingsScreen(
     var selectedCategoryName by rememberSaveable { mutableStateOf(initialCategory?.name) }
     val selectedCategory = selectedCategoryName?.let { name -> SettingsCategory.entries.find { it.name == name } }
 
-    LaunchedEffect(Unit) { viewModel.loadSavedCertificate(context) }
+    LaunchedEffect(Unit) { viewModel.signIn.loadSavedCertificate(context) }
 
     LaunchedEffect(updateUiState.message) {
         if (updateUiState.message != null) {
@@ -229,6 +183,7 @@ fun SettingsScreen(
                         when (selectedCategory) {
                             SettingsCategory.CONNECTION -> "Connection"
                             SettingsCategory.PHONE_AS_SPEAKER -> "Phone as speaker"
+                            SettingsCategory.HOME_SCREEN -> "Home screen"
                             SettingsCategory.RECOMMENDATIONS -> "Recommendations"
                             SettingsCategory.PROXIMITY -> "Follow Me"
                             SettingsCategory.NFC_TAGS -> "NFC tags"
@@ -269,6 +224,9 @@ fun SettingsScreen(
                 SettingsCategory.PROXIMITY -> ProximitySettingsScreen(
                     onBack = { selectedCategoryName = null },
                     onSetupRoom = onSetupRoom,
+                    modifier = Modifier.padding(paddingValues)
+                )
+                SettingsCategory.HOME_SCREEN -> HomeScreenSettingsScreen(
                     modifier = Modifier.padding(paddingValues)
                 )
                 SettingsCategory.RECOMMENDATIONS -> RecommendationsScreen(
@@ -345,6 +303,12 @@ private fun CategoryList(
         }
         SettingsSectionDivider()
         SettingsSectionHeader("Discovery")
+        SettingsNavigationRow(
+            title = "Home screen",
+            icon = Icons.Default.Home,
+            supporting = "Which Music Assistant rows the home screen shows",
+            onClick = { onSelect(SettingsCategory.HOME_SCREEN) }
+        )
         SettingsNavigationRow(
             title = "Recommendations",
             icon = Icons.Default.Explore,
@@ -681,13 +645,71 @@ private fun ServerSection(
     // Surface OAuth errors as login errors so the existing error row picks them up.
     // Collected here rather than in the form, so it runs whatever the connection state.
     LaunchedEffect(Unit) {
-        viewModel.oauthErrors.collect { msg -> viewModel.setLoginError(msg) }
+        viewModel.signIn.oauthErrors.collect { msg -> viewModel.signIn.setError(msg) }
+    }
+
+    // Change server opens the server list while the current connection stays up, so leaving it
+    // changes nothing. Saveable, so a rotation keeps the list open.
+    var changingServer by rememberSaveable { mutableStateOf(false) }
+    val chosenServer by viewModel.serverPicker.chosen.collectAsStateWithLifecycle()
+    val clearDraft = {
+        draft.username = null
+        draft.password = null
+    }
+    // Leaving abandons a sign-in still running, and a switch that was under way returns to the
+    // saved server; what was typed for the other server is forgotten.
+    val leaveChangeServer = {
+        changingServer = false
+        viewModel.signIn.cancelAttempt()
+        viewModel.serverPicker.changeServer()
+        clearDraft()
+    }
+    // Back from a chosen server returns to the list first, then closes the list. Enabled while
+    // a switch is still connecting too, so BACK then cancels it and returns to the saved server.
+    BackHandler(enabled = changingServer) {
+        if (chosenServer != null) {
+            viewModel.signIn.cancelAttempt()
+            viewModel.serverPicker.changeServer()
+            // A password typed for that server must not be offered to the next one.
+            clearDraft()
+        } else {
+            leaveChangeServer()
+        }
+    }
+    // A sign-in that saved its server ends Change server. The session says so explicitly: the
+    // saved address already matches when the user signs in to the current server again, and
+    // matching it closed the list before a wrong password could show its error.
+    val succeeded by viewModel.signIn.succeeded.collectAsStateWithLifecycle()
+    LaunchedEffect(succeeded) {
+        if (succeeded == null) return@LaunchedEffect
+        if (changingServer) {
+            changingServer = false
+            viewModel.serverPicker.changeServer()
+        }
+        clearDraft()
+        viewModel.signIn.consumeSuccess()
     }
 
     SettingsSectionHeader("Server")
     // The URL cannot be edited while connected, so it is the status row's second line.
     ConnectionStatusRow(connectionState = connectionState, detail = serverUrl.takeIf { isConnected })
-    if (isConnected) {
+    if (!isConnected || changingServer) {
+        // One place for the form, so a short drop of the connection while the list is open
+        // keeps what the list holds (an open Other server sheet, the chosen server).
+        if (isConnected) {
+            SettingsRow(
+                title = "Keep using this server",
+                icon = Icons.AutoMirrored.Filled.ArrowBack,
+                supporting = "Close the server list without changing anything",
+                onClick = leaveChangeServer
+            )
+        }
+        SignInForm(
+            viewModel = viewModel,
+            connectionState = connectionState,
+            draft = draft
+        )
+    } else {
         // Saveable so the question is still open after a rotation. Signing out cannot be
         // undone from here, because the password has to be typed again.
         var confirmingSignOut by rememberSaveable { mutableStateOf(false) }
@@ -695,6 +717,18 @@ private fun ServerSection(
             title = "Signed in as ${currentUser?.username ?: "unknown"}",
             icon = Icons.Default.Person,
             supporting = currentUser?.authMethod?.let { "via $it" }
+        )
+        SettingsRow(
+            title = "Change server",
+            icon = Icons.Default.Dns,
+            supporting = "Pick another Music Assistant server",
+            onClick = {
+                // A fresh start: no attempt, error or chosen server left from an earlier one.
+                viewModel.signIn.cancelAttempt()
+                viewModel.serverPicker.changeServer()
+                clearDraft()
+                changingServer = true
+            }
         )
         SettingsRow(
             title = "Sign out",
@@ -710,274 +744,81 @@ private fun ServerSection(
                 confirmLabel = "Sign out",
                 onConfirm = {
                     confirmingSignOut = false
+                    clearDraft()
+                    viewModel.signIn.cancelAttempt()
                     viewModel.signOut()
                 },
                 onDismiss = { confirmingSignOut = false }
             )
         }
-    } else {
-        SignInForm(
-            viewModel = viewModel,
-            connectionState = connectionState,
-            serverUrl = serverUrl,
-            draft = draft
-        )
     }
 }
 
 /**
- * The editable URL and the sign-in options, shown while disconnected (or connecting, or
- * failed). A form is not a row, so it sits in the section aligned with the rows through
- * [SETTINGS_ROW_INSET] rather than in a container of its own.
+ * The sign-in, shown while disconnected (or connecting, or failed), in two steps: choose a
+ * server, which the app checks at once, then sign in to it. The list is made of rows, which
+ * sit outside the form's inset like every other row; step 2 is a form, aligned with the rows
+ * through [SETTINGS_ROW_INSET].
  */
 @Composable
 private fun SignInForm(
     viewModel: SettingsViewModel,
     connectionState: ConnectionState,
-    serverUrl: String,
     draft: SignInDraft
 ) {
-    val authToken by viewModel.authToken.collectAsStateWithLifecycle()
-    val loginError by viewModel.loginError.collectAsStateWithLifecycle()
-    val savedUsername by viewModel.savedUsername.collectAsStateWithLifecycle()
-    val savedPassword by viewModel.savedPassword.collectAsStateWithLifecycle()
+    val picker = viewModel.serverPicker
+    val rows by picker.rows.collectAsStateWithLifecycle()
+    val searching by picker.searching.collectAsStateWithLifecycle()
+    val chosen by picker.chosen.collectAsStateWithLifecycle()
+    val typedCheck by picker.typedCheck.collectAsStateWithLifecycle()
+    var choosingOther by rememberSaveable { mutableStateOf(false) }
 
-    // An untouched field shows the saved value, which also covers the saved values arriving
-    // a frame after the first composition.
-    val editUrl = draft.url ?: TextFieldValue(serverUrl, TextRange(serverUrl.length))
-    val username = draft.username ?: savedUsername
-    val password = draft.password ?: savedPassword
-    val hasToken = authToken.isNotBlank()
-
-    // Auth providers exposed by the server (only HA OAuth is treated specially;
-    // the built-in credentials path always falls through).
-    val providers by viewModel.availableAuthProviders.collectAsStateWithLifecycle()
-    val oauthInProgress by viewModel.oauthInProgress.collectAsStateWithLifecycle()
-    val context = LocalContext.current
-    val coroutineScope = rememberCoroutineScope()
-
-    // Probe the server's providers as the URL stabilises (debounced). The form is only
-    // composed while disconnected, so there is no connected state to skip.
-    LaunchedEffect(editUrl.text) {
-        if (editUrl.text.isBlank()) return@LaunchedEffect
-        kotlinx.coroutines.delay(400)
-        viewModel.probeAuthProviders(editUrl.text)
-    }
-
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = SETTINGS_ROW_INSET, vertical = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        ServerUrlField(value = editUrl, onValueChange = { draft.url = it })
-
-        if (providers.any { it.isHomeAssistant }) {
-            HomeAssistantSignIn(
-                inProgress = oauthInProgress,
-                onClick = {
-                    viewModel.clearLoginError()
-                    coroutineScope.launch {
-                        val authUrl = viewModel.startHomeAssistantOAuth(editUrl.text)
-                        if (authUrl != null) launchCustomTab(context, authUrl)
-                    }
-                }
-            )
-        }
-
-        CredentialFields(
-            username = username,
-            onUsernameChange = {
-                draft.username = it
-                viewModel.clearLoginError()
+    val server = chosen
+    if (server == null) {
+        ServerList(
+            rows = rows,
+            searching = searching,
+            onPick = { row ->
+                viewModel.signIn.clearError()
+                picker.choose(row.url, row.name)
             },
-            password = password,
-            onPasswordChange = {
-                draft.password = it
-                viewModel.clearLoginError()
-            }
+            onSearchAgain = picker::searchAgain,
+            onForget = viewModel.signIn::forget,
+            onOther = { choosingOther = true }
         )
-
-        // Only the form's own errors (validation, Home Assistant sign-in). A connection
-        // error is already in the status row above the form.
-        loginError?.let { error ->
-            Text(
-                text = error,
-                color = MaterialTheme.colorScheme.error,
-                style = MaterialTheme.typography.bodySmall
-            )
-        }
-
-        SignInButton(
+    } else {
+        SignInStep(
+            signIn = viewModel.signIn,
+            server = server,
             connecting = connectionState is ConnectionState.Connecting,
-            onClick = {
-                if (hasToken && username.isBlank() && password.isBlank()) {
-                    viewModel.connectWithToken(editUrl.text)
-                } else {
-                    viewModel.login(editUrl.text, username, password)
-                }
-            }
+            draft = draft,
+            onChangeServer = {
+                viewModel.signIn.cancelAttempt()
+                picker.changeServer()
+                // A password typed for that server must not be offered to the next one.
+                draft.username = null
+                draft.password = null
+            },
+            onCheckAgain = picker::checkAgain,
+            modifier = Modifier.padding(horizontal = SETTINGS_ROW_INSET, vertical = 8.dp)
         )
     }
-}
 
-/**
- * What has been typed into the sign-in form. Each value is null until its field is edited,
- * and an untouched field shows the saved value instead. Seeding the fields from the saved
- * values at the first composition would capture the empty values the flows start with.
- */
-@Stable
-private class SignInDraft(
-    url: MutableState<TextFieldValue?>,
-    username: MutableState<String?>,
-    password: MutableState<String?>
-) {
-    var url by url
-    var username by username
-    var password by password
-}
-
-/**
- * A [SignInDraft] that survives a disconnect. The URL and the username also survive a
- * rotation and process recreation; the password does not, because saved instance state is
- * a Bundle the system may write to disk, and a typed password must not end up there.
- */
-@Composable
-private fun rememberSignInDraft(): SignInDraft {
-    val url = rememberSaveable(stateSaver = OptionalTextFieldValueSaver) {
-        mutableStateOf<TextFieldValue?>(null)
-    }
-    val username = rememberSaveable { mutableStateOf<String?>(null) }
-    val password = remember { mutableStateOf<String?>(null) }
-    return remember(url, username, password) { SignInDraft(url, username, password) }
-}
-
-/** [TextFieldValue.Saver] for a value that may be absent, which is saved as nothing. */
-private val OptionalTextFieldValueSaver: Saver<TextFieldValue?, Any> = Saver(
-    save = { value -> value?.let { with(TextFieldValue.Saver) { save(it) } } },
-    restore = { TextFieldValue.Saver.restore(it) }
-)
-
-/** The server URL, with one-tap fixes when the scheme is missing. */
-@Composable
-private fun ServerUrlField(value: TextFieldValue, onValueChange: (TextFieldValue) -> Unit) {
-    val urlMissingScheme = value.text.isNotBlank() && !value.text.contains("://")
-    OutlinedTextField(
-        value = value,
-        onValueChange = onValueChange,
-        label = { Text("Server URL") },
-        placeholder = { Text("https://ma.example.com") },
-        singleLine = true,
-        isError = urlMissingScheme,
-        supportingText = if (urlMissingScheme) {
-            { Text("Add http:// or https:// to the URL") }
-        } else null,
-        modifier = Modifier.fillMaxWidth()
-    )
-    if (urlMissingScheme) {
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            listOf("http://", "https://").forEach { scheme ->
-                androidx.compose.material3.SuggestionChip(
-                    onClick = {
-                        val next = applyUrlScheme(scheme, value.text)
-                        onValueChange(TextFieldValue(next, TextRange(next.length)))
-                    },
-                    label = { Text("Use $scheme") }
-                )
+    if (choosingOther) {
+        OtherServerSheet(
+            check = typedCheck,
+            onCheck = picker::checkTyped,
+            onUse = {
+                if (picker.useTyped()) {
+                    viewModel.signIn.clearError()
+                    choosingOther = false
+                }
+            },
+            onDismiss = {
+                picker.clearTyped()
+                choosingOther = false
             }
-        }
-    }
-}
-
-@Composable
-private fun HomeAssistantSignIn(inProgress: Boolean, onClick: () -> Unit) {
-    MdButton(
-        onClick = onClick,
-        modifier = Modifier.fillMaxWidth(),
-        enabled = !inProgress
-    ) {
-        if (inProgress) {
-            CircularProgressIndicator(
-                modifier = Modifier.size(20.dp),
-                strokeWidth = 2.dp,
-                color = MaterialTheme.colorScheme.onPrimary
-            )
-            Spacer(modifier = Modifier.width(8.dp))
-            Text("Waiting for sign in")
-        } else {
-            Icon(Icons.Default.Home, contentDescription = null)
-            Spacer(modifier = Modifier.width(8.dp))
-            Text("Sign in with Home Assistant")
-        }
-    }
-    Text(
-        text = "or use credentials",
-        style = MaterialTheme.typography.labelSmall,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-        modifier = Modifier.fillMaxWidth(),
-        textAlign = TextAlign.Center
-    )
-}
-
-@Composable
-private fun CredentialFields(
-    username: String,
-    onUsernameChange: (String) -> Unit,
-    password: String,
-    onPasswordChange: (String) -> Unit
-) {
-    var showPassword by remember { mutableStateOf(false) }
-    OutlinedTextField(
-        value = username,
-        onValueChange = onUsernameChange,
-        label = { Text("Username") },
-        singleLine = true,
-        leadingIcon = { Icon(Icons.Default.Person, contentDescription = null) },
-        modifier = Modifier.fillMaxWidth()
-            .semantics { contentType = ContentType.Username }
-    )
-    OutlinedTextField(
-        value = password,
-        onValueChange = onPasswordChange,
-        label = { Text("Password") },
-        singleLine = true,
-        leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null) },
-        visualTransformation = if (showPassword) VisualTransformation.None
-            else PasswordVisualTransformation(),
-        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-        trailingIcon = {
-            MdIconButton(onClick = { showPassword = !showPassword }) {
-                Icon(
-                    if (showPassword) Icons.Default.VisibilityOff
-                    else Icons.Default.Visibility,
-                    contentDescription = if (showPassword) "Hide password" else "Show password"
-                )
-            }
-        },
-        modifier = Modifier.fillMaxWidth()
-            .semantics { contentType = ContentType.Password }
-    )
-}
-
-@Composable
-private fun SignInButton(connecting: Boolean, onClick: () -> Unit) {
-    MdButton(
-        onClick = onClick,
-        modifier = Modifier.fillMaxWidth(),
-        enabled = !connecting
-    ) {
-        if (connecting) {
-            CircularProgressIndicator(
-                modifier = Modifier.size(20.dp),
-                strokeWidth = 2.dp
-            )
-            Spacer(modifier = Modifier.width(8.dp))
-            Text("Connecting")
-        } else {
-            Icon(Icons.Default.Login, contentDescription = null)
-            Spacer(modifier = Modifier.width(8.dp))
-            Text("Sign in")
-        }
+        )
     }
 }
 
@@ -987,15 +828,16 @@ private fun SignInButton(connecting: Boolean, onClick: () -> Unit) {
  */
 @Composable
 private fun ClientCertSection(viewModel: SettingsViewModel) {
-    val clientCertAlias by viewModel.clientCertAlias.collectAsStateWithLifecycle()
+    val clientCertAlias by viewModel.signIn.clientCertAlias.collectAsStateWithLifecycle()
     val context = LocalContext.current
+    // Saveable, so the explanation is still there after a rotation.
+    var noneChosen by rememberSaveable { mutableStateOf(false) }
     val chooseCertificate: (String?) -> Unit = { current ->
         (context as? Activity)?.let { activity ->
-            KeyChain.choosePrivateKeyAlias(
-                activity,
-                { alias -> viewModel.onCertificateSelected(alias, context) },
-                null, null, null, -1, current
-            )
+            chooseClientCertificate(activity, current) { alias ->
+                noneChosen = alias == null && current == null
+                viewModel.signIn.selectCertificate(alias, context)
+            }
         }
     }
 
@@ -1025,7 +867,7 @@ private fun ClientCertSection(viewModel: SettingsViewModel) {
                 confirmLabel = "Remove",
                 onConfirm = {
                     confirmingRemoval = false
-                    viewModel.clearCertificate()
+                    viewModel.signIn.clearCertificate()
                 },
                 onDismiss = { confirmingRemoval = false }
             )
@@ -1034,7 +876,7 @@ private fun ClientCertSection(viewModel: SettingsViewModel) {
         SettingsRow(
             title = "Select certificate",
             icon = Icons.Default.VerifiedUser,
-            supporting = "No certificate selected",
+            supporting = if (noneChosen) NO_CERTIFICATE_CHOSEN else "No certificate selected",
             onClick = { chooseCertificate(null) }
         )
     }
