@@ -1,6 +1,7 @@
 package net.asksakis.massdroidv2.playback
 
 import com.google.common.truth.Truth.assertThat
+import net.asksakis.massdroidv2.domain.model.PlaybackState
 import org.junit.Test
 
 /**
@@ -361,5 +362,82 @@ class AudioFocusPolicyTest {
     fun `a grouped loss before the call mode is set freezes and checks`() {
         val hold = AudioFocusPolicy.interruptionHold(grouped = true, callModeSet = false)
         assertThat(hold).isEqualTo(AudioFocusPolicy.InterruptionHold.FREEZE_AND_CHECK_FOR_CALL)
+    }
+
+    /**
+     * The server never heard a pause made during a dropped connection and starts the
+     * stream again when the phone rejoins. Focus that is still held, as after a pause
+     * from a watch, must not let that stream play.
+     */
+    @Test
+    fun `a stream that restarts before the server heard the pause stays paused`() {
+        val outcome = AudioFocusPolicy.onStreamStart(holdsFocus = true, pauseOwedToServer = true) { never() }
+        assertThat(outcome).isEqualTo(AudioFocusPolicy.StreamStart.HOLD_FOR_SERVER_PAUSE)
+    }
+
+    /** Without focus the owed pause also wins, so a call is not asked to give focus back. */
+    @Test
+    fun `a stream held for an owed pause does not ask for focus`() {
+        val outcome = AudioFocusPolicy.onStreamStart(holdsFocus = false, pauseOwedToServer = true) { never() }
+        assertThat(outcome).isEqualTo(AudioFocusPolicy.StreamStart.HOLD_FOR_SERVER_PAUSE)
+    }
+
+    @Test
+    fun `a pause made while MA is down is owed`() {
+        val owed = AudioFocusPolicy.pauseOwedToServer(
+            maConnected = false,
+            streamHeldThroughDrop = false,
+            serverState = PlaybackState.PLAYING,
+        )
+        assertThat(owed).isTrue()
+    }
+
+    /**
+     * The player list is emptied while MA is down, so there is no report at all
+     * exactly when the pause is most likely lost.
+     */
+    @Test
+    fun `a pause with no server report is owed while MA is down`() {
+        val owed = AudioFocusPolicy.pauseOwedToServer(
+            maConnected = false,
+            streamHeldThroughDrop = false,
+            serverState = null,
+        )
+        assertThat(owed).isTrue()
+    }
+
+    /**
+     * A socket that died without a close still reads as connected, and a command
+     * written into it is dropped without an error. The held stream is the sign.
+     */
+    @Test
+    fun `a pause made while the stream is held through a drop is owed even with MA connected`() {
+        val owed = AudioFocusPolicy.pauseOwedToServer(
+            maConnected = true,
+            streamHeldThroughDrop = true,
+            serverState = PlaybackState.PLAYING,
+        )
+        assertThat(owed).isTrue()
+    }
+
+    @Test
+    fun `a pause the server can hear at once is not owed`() {
+        val owed = AudioFocusPolicy.pauseOwedToServer(
+            maConnected = true,
+            streamHeldThroughDrop = false,
+            serverState = PlaybackState.PLAYING,
+        )
+        assertThat(owed).isFalse()
+    }
+
+    /** A server that already reports the player stopped has nothing left to pause. */
+    @Test
+    fun `a pause for a player the server reports stopped is not owed`() {
+        val owed = AudioFocusPolicy.pauseOwedToServer(
+            maConnected = false,
+            streamHeldThroughDrop = true,
+            serverState = PlaybackState.PAUSED,
+        )
+        assertThat(owed).isFalse()
     }
 }

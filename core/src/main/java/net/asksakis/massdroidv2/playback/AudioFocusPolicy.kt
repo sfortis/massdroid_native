@@ -1,5 +1,7 @@
 package net.asksakis.massdroidv2.playback
 
+import net.asksakis.massdroidv2.domain.model.PlaybackState
+
 /**
  * The decisions behind starting the phone's own audio output, separated from the
  * Android calls that carry them out.
@@ -27,7 +29,13 @@ object AudioFocusPolicy {
         WAIT_FOR_GAIN,
 
         /** Refused: stay paused, and stop claiming the listener wants to play. */
-        STAY_SILENT
+        STAY_SILENT,
+
+        /**
+         * A pause made here has not reached the server yet, so this is the playback
+         * that pause stopped: stay paused, and leave focus and intent as they are.
+         */
+        HOLD_FOR_SERVER_PAUSE
     }
 
     /** What should happen when audio focus comes back. */
@@ -45,11 +53,19 @@ object AudioFocusPolicy {
      * [requestFocus] is only called when focus is not already held, so an ordinary
      * track change, which is a stream end followed by a stream start, does not ask
      * the platform again.
+     *
+     * [pauseOwedToServer] comes first, ahead of the focus we may still hold. A pause
+     * made while the connection was down never reached the server, which keeps the
+     * queue playing and starts the stream again when the phone rejoins. Playing it
+     * would undo the pause: after a call the music would come back from a later
+     * place, and after another app took over it would play on top of that app.
      */
     fun onStreamStart(
         holdsFocus: Boolean,
+        pauseOwedToServer: Boolean = false,
         requestFocus: () -> FocusRequestResult
     ): StreamStart {
+        if (pauseOwedToServer) return StreamStart.HOLD_FOR_SERVER_PAUSE
         if (holdsFocus) return StreamStart.PLAY
         return when (requestFocus()) {
             FocusRequestResult.GRANTED -> StreamStart.PLAY
@@ -231,6 +247,29 @@ object AudioFocusPolicy {
 
     fun selectionCancelsOwedResume(newSelectedPlayerId: String?, localPlayerId: String?): Boolean =
         newSelectedPlayerId != null && localPlayerId != null && newSelectedPlayerId != localPlayerId
+
+    /**
+     * Whether a pause made here has to be sent again once the MA connection is back.
+     *
+     * The phone plays on from its buffer through a dropped connection, so a call, another
+     * app or the listener can pause it while neither socket reaches the server. The MA
+     * command then fails, or is written into a socket that is already dead and dropped
+     * with it, and the server keeps the queue playing. A pause made while the MA
+     * connection is down, or while the Sendspin stream is only held through a drop, is
+     * therefore owed until the server confirms it.
+     *
+     * [serverState] is what MA last reported for this player. A server that reports it
+     * as not playing has nothing left to pause. No report at all (null) counts as
+     * playing, because the player list is emptied while the MA connection is down,
+     * which is exactly when the pause is most likely to be lost.
+     */
+    fun pauseOwedToServer(
+        maConnected: Boolean,
+        streamHeldThroughDrop: Boolean,
+        serverState: PlaybackState?,
+    ): Boolean =
+        (serverState == null || serverState == PlaybackState.PLAYING) &&
+            (!maConnected || streamHeldThroughDrop)
 }
 
 /** The three answers the platform gives to a focus request. */

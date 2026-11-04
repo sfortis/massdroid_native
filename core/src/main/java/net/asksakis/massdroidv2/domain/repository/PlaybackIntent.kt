@@ -14,7 +14,14 @@ enum class PlaybackIntentCause {
     LISTENER,
 
     /** The local output stepping aside for another app that took audio focus. */
-    AUDIO_FOCUS
+    AUDIO_FOCUS,
+
+    /**
+     * A pause made earlier, sent again because the server may not have heard it, for
+     * example after a dropped connection. It decides nothing new: the output is already
+     * paused, and a resume owed to an interruption stays owed.
+     */
+    REPEAT
 }
 
 /** A playback command as it was issued, before the server has answered. */

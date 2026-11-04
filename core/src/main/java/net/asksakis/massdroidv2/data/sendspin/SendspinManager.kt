@@ -578,7 +578,13 @@ class SendspinManager(
     private fun endStreamUnlessResumed() {
         val myEpoch = synchronized(lifecycleLock) {
             idleTeardownJob?.cancel()
+            val holdRunning = dropEpoch == streamEpoch
             ++streamEpoch
+            // The rejoin itself starts no stream, so a hold still running for the audio
+            // buffered at the drop moves to the new epoch and still ends it when that audio
+            // has played out, instead of only at the teardown below.
+            if (holdRunning) dropEpoch = streamEpoch
+            streamEpoch
         }
         idleTeardownJob = scope.launch {
             delay(IDLE_TEARDOWN_GRACE_MS)

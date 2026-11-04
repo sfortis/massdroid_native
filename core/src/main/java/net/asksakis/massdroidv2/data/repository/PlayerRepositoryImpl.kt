@@ -1715,8 +1715,8 @@ class PlayerRepositoryImpl @Inject constructor(
      * Re-assert a pause and wait for the answer. Never dropped as a repeat:
      * insisting is the point, and the caller is waiting for the acknowledgement.
      */
-    override suspend fun pauseConfirmed(playerId: String) {
-        _playbackIntent.tryEmit(PlaybackIntent(willPlay = false))
+    override suspend fun pauseConfirmed(playerId: String, cause: PlaybackIntentCause) {
+        _playbackIntent.tryEmit(PlaybackIntent(willPlay = false, cause = cause))
         lastPauseSentAt[playerId] = elapsedMs()
         playerCmd("pause", playerId, awaitAck = true)
     }
