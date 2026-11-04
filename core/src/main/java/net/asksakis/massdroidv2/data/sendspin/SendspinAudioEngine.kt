@@ -54,7 +54,10 @@ interface SendspinAudioEngine {
         channels: Int = 2,
         bitDepth: Int = 16,
         codecHeader: String? = null,
-        startType: ProtocolStartType = ProtocolStartType.NEW_STREAM
+        startType: ProtocolStartType = ProtocolStartType.NEW_STREAM,
+        // A continuation after a dropped connection whose server state still matches the
+        // buffered audio; see RejoinSplicePolicy. The engine decides whether it may splice.
+        rejoinVerified: Boolean = false,
     )
     fun currentConfigureGeneration(): Long
 

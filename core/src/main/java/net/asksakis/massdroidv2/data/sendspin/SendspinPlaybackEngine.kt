@@ -17,6 +17,7 @@ import java.util.ArrayDeque
 import java.util.concurrent.PriorityBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.abs
 
 enum class SyncState {
@@ -267,6 +268,20 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
     private var codecRebuildWindowStartMs = 0L
     private var codecRebuildsInWindow = 0
     @Volatile private var lastEnqueuedTimestampUs = 0L
+
+    /**
+     * A rejoin that kept the buffer and has not reached its end yet: the last buffered frame,
+     * the earliest point the new stream may start from, whether its first frame came, and how
+     * many frames it repeated. Set on the message thread; a flush from any thread clears it, so
+     * the message thread advances it only by compare-and-set and a flush is never undone.
+     */
+    private data class RejoinSplice(
+        val tailUs: Long,
+        val windowStartUs: Long,
+        val seenFirst: Boolean = false,
+        val dropped: Int = 0,
+    )
+    private val rejoinSplice = AtomicReference<RejoinSplice?>(null)
     @Volatile private var estimatedFrameDurationUs = 20_000L
 
     /**
@@ -405,6 +420,7 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
         bitDepth: Int,
         codecHeader: String?,
         startType: ProtocolStartType,
+        rejoinVerified: Boolean,
     ) {
         // With a change pending, the stream is already in the newest announced format.
         val latestChange = formatChanges.lastOrNull()
@@ -419,6 +435,7 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
         awaitingFreshStream = false
         awaitingFreshStreamSinceMs = 0L
         startupWaitStartedMs = 0L
+        rejoinSplice.set(null)
         // A stream/start means the server is actively streaming again. Resume
         // can arrive as stream/start (not setPaused(false)), so we must clear
         // the paused flag here or onAudioChunk keeps dropping every frame and
@@ -432,6 +449,19 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
         resetSyncMetrics()
 
         if (sameFormat) {
+            val keeps = RejoinSplicePolicy.keepsBuffer(
+                rejoinVerified = rejoinVerified,
+                continuation = startType == ProtocolStartType.CONTINUATION,
+                sameFormat = true,
+                solo = !isSync,
+                outputAllowed = !paused,
+                // At least the start cushion, which a kept buffer skips.
+                holdsAudio = lastEnqueuedTimestampUs > 0L && bufferDurationMs() + ringBufferedMs() >= startBufferMs,
+            )
+            if (keeps) {
+                beginRejoinSplice()
+                return
+            }
             Log.d(TAG, "configure ${startType.name} reuse codec=$codecName ${sampleRate}Hz/${bitDepth}bit")
             // Restart the output/producer if they were stopped for idle power save.
             ensureOutputRunning()
@@ -504,6 +534,72 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
     override fun currentConfigureGeneration(): Long = configureGeneration
 
     /**
+     * Keeps the encoded queue and the native ring across a verified rejoin, so the audio that
+     * carried the phone through the drop plays on. The new stream's frames that the buffer
+     * already holds are dropped as they arrive, and the first one after its end continues it;
+     * see [spliceAccepts]. Runs on the message thread, like the frames.
+     */
+    private fun beginRejoinSplice() {
+        val tailUs = lastEnqueuedTimestampUs
+        val ringMs = ringBufferedMs()
+        val headUs = frameQueue.peek()?.serverTimestampUs ?: tailUs
+        rejoinSplice.set(
+            RejoinSplice(
+                tailUs = tailUs,
+                windowStartUs = headUs - ringMs * 1000L - RejoinSplicePolicy.WINDOW_SLACK_US,
+            )
+        )
+        Log.d(TAG, "configure CONTINUATION rejoin: keeping buf=${bufferDurationMs()}ms ring=${ringMs}ms, splicing after ${tailUs / 1000}ms")
+        // The audio plays on, so the state the drop left behind no longer applies. A terminal
+        // transport error moved it to rebuffering or holdover, and only a start sets it back.
+        if (playbackStarted) transitionSyncState(SyncState.SYNCHRONIZED)
+        ensureOutputRunning()
+        ensurePlaybackThread()
+    }
+
+    /**
+     * Whether a frame of a rejoined stream is enqueued. A frame the buffer holds is dropped; the
+     * first frame past its end ends the splice; a first frame outside the buffered window flushes
+     * the way a stream/start did before and is then enqueued as the new stream's first. If a
+     * flush on another thread ended the splice meanwhile, the frame is handled as any other.
+     */
+    private fun spliceAccepts(splice: RejoinSplice, frameUs: Long): Boolean {
+        val placement = RejoinSplicePolicy.place(
+            frameUs = frameUs,
+            tailUs = splice.tailUs,
+            windowStartUs = splice.windowStartUs,
+            frameDurationUs = estimatedFrameDurationUs,
+            seenFirst = splice.seenFirst,
+        )
+        return when (placement) {
+            RejoinSplicePolicy.Placement.DUPLICATE ->
+                !rejoinSplice.compareAndSet(splice, splice.copy(seenFirst = true, dropped = splice.dropped + 1))
+            RejoinSplicePolicy.Placement.CONTINUES -> {
+                if (!rejoinSplice.compareAndSet(splice, null)) return true
+                Log.d(
+                    TAG,
+                    "Rejoin splice: continuing ${(frameUs - splice.tailUs) / 1000}ms after the buffered end, " +
+                        "dropped ${splice.dropped} frames the buffer held, buf=${bufferDurationMs()}ms ring=${ringBufferedMs()}ms"
+                )
+                true
+            }
+            RejoinSplicePolicy.Placement.OUTSIDE -> {
+                if (!rejoinSplice.compareAndSet(splice, null)) return true
+                Log.w(
+                    TAG,
+                    "Rejoin splice abandoned: the new stream starts ${(frameUs - splice.tailUs) / 1000}ms " +
+                        "off the buffered end, flushing"
+                )
+                flushQueuesAndDecoder()
+                playbackStarted = false
+                beginStartupMute()
+                transitionSyncState(SyncState.SYNC_ERROR_REBUFFERING)
+                true
+            }
+        }
+    }
+
+    /**
      * Bounded backstop for the fresh-stream gate. The gate clears normally on
      * configure() (stream/start) or clearBuffer() (stream/clear). Here we time
      * from the FIRST gated frame: if frames keep arriving and getting dropped
@@ -535,6 +631,7 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
         // is a no-op once already running.
         if (outputPausedForIdle) mainHandler.post { ensureOutputRunning() }
         if (outputFrozen && isSync) dropFramesPastDueWhileFrozen()
+        rejoinSplice.get()?.let { if (!spliceAccepts(it, chunk.timestampUs)) return }
         // Overflow backstop: if we are genuinely over the memory ceiling, drop
         // THIS incoming (newest) frame. Never poll() the head — that is about
         // to be decoded/played. With MAX_ENCODED_BUFFER_BYTES well above the
@@ -1566,6 +1663,7 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
         // frozen output still resets its ring and holds the refill silent.
         frameQueue.clear()
         frameQueueBytes.set(0)
+        rejoinSplice.set(null)
         lastEnqueuedTimestampUs = 0L
         estimatedFrameDurationUs = 20_000L
         // Nothing older is left to carry. A change not carried out yet still sets the

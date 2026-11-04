@@ -188,6 +188,8 @@ class SendspinManager(
     private val _serverMetadata = MutableStateFlow<ServerMetadataPayload?>(null)
     val serverMetadata: StateFlow<ServerMetadataPayload?> = _serverMetadata.asStateFlow()
     private val scheduledMetadata = ScheduledMetadata(scope) { _serverMetadata.value = it }
+    // What a stream/start after a dropped connection is checked against; see RejoinSplicePolicy.
+    private val rejoinLog = RejoinMetadataLog()
 
     var currentVolume = 100
         private set
@@ -404,6 +406,8 @@ class SendspinManager(
                 endPlayerSession()
                 noiseFlow.reset()
                 scheduledMetadata.cancel()
+                // The boundary between connections, in order with their reports.
+                rejoinLog.onNewConnection(streamPlaying = hasActiveProtocolStream)
                 publishNoiseSecurity()
             }
             SendspinIncoming.NoiseRehandshake -> {
@@ -497,6 +501,7 @@ class SendspinManager(
                     hasActiveProtocolStream = false
                     _streamActive.value = false
                     lastStreamInfo = null
+                    rejoinLog.clear()
                     audio.onStreamEnd()
                     idleTeardownJob?.cancel()
                     ++streamEpoch
@@ -536,6 +541,7 @@ class SendspinManager(
                     // On rc1 an omitted metadata object leaves the role's state unchanged, and
                     // a future timestamp schedules the update.
                     SendspinWire.RC1 -> incoming.payload.metadata?.let {
+                        rejoinLog.onMetadata(it)
                         scheduledMetadata.offer(it, metadataDelayMs(it))
                     }
                 }
@@ -574,6 +580,7 @@ class SendspinManager(
                 hasActiveProtocolStream = false
                 _streamActive.value = false
                 lastStreamInfo = null
+                rejoinLog.clear()
                 audio.onStreamEnd()
                 engine.release()
                 _audioResourcesActive.value = false
@@ -595,9 +602,11 @@ class SendspinManager(
         _streamGeneration.value += 1
         val startType = if (hasActiveProtocolStream) ProtocolStartType.CONTINUATION else ProtocolStartType.NEW_STREAM
         Log.d("sendspindbg", ">>> stream/start $startType ${info.codec} ${info.sampleRate}Hz buf=${audio.bufferDurationMs()}ms sync=${audio.syncState}")
+        // Taken at every start, so the log returns to the live connection after a new stream too.
+        val rejoinVerified = rejoinVerified() && startType == ProtocolStartType.CONTINUATION
         hasActiveProtocolStream = true
         lastStreamInfo = info
-        audio.configure(info.codec, info.sampleRate, info.channels, info.bitDepth, info.codecHeader, startType)
+        audio.configure(info.codec, info.sampleRate, info.channels, info.bitDepth, info.codecHeader, startType, rejoinVerified)
         // Local playback gain is STREAM_MUSIC-driven via LocalSpeakerVolumeBridge, so the
         // engine stays at gain 1.0 and only the mute state propagates. Always: the engine
         // combines it with its own startup mute, and skipping it while that was on (it always
@@ -614,6 +623,28 @@ class SendspinManager(
         )
         client.updateState(SendspinState.STREAMING)
     }
+
+    /**
+     * Whether this stream/start follows a dropped connection and the server's metadata says the
+     * stream the buffer holds is still playing where it was. Only on the rc1 wire, whose metadata
+     * is the whole state with a progress at a server time. Runs at every start, so the log always
+     * returns to the live connection.
+     */
+    private fun rejoinVerified(): Boolean {
+        val evidence = rejoinLog.takeAtStreamStart() ?: return false
+        if (client.wire != SendspinWire.RC1) return false
+        val verified = RejoinSplicePolicy.serverStateContinues(evidence.before, evidence.after)
+        Log.d(
+            TAG,
+            "Rejoin after a dropped connection: server state ${if (verified) "continues" else "does not continue"} " +
+                "the buffered stream (before: ${evidence.before.size} reports, last ${evidence.before.lastOrNull()?.describe() ?: "none"}; " +
+                "after: ${evidence.after?.describe() ?: "none"})"
+        )
+        return verified
+    }
+
+    private fun ServerMetadataPayload.describe(): String =
+        "'$title' at ${progress?.trackProgress}ms ts=${timestamp?.div(1000)}ms speed=${progress?.playbackSpeed}"
 
     private fun publishNoiseSecurity() {
         _linkSecurity.value = client.noisePsk()?.category?.let(SendspinLinkSecurity::of)
@@ -1315,6 +1346,7 @@ class SendspinManager(
         _syncState.value = finalSyncState
         scheduledMetadata.cancel()
         _serverMetadata.value = null
+        rejoinLog.clear()
         Log.d(TAG, "Sendspin stopped")
     }
 }
