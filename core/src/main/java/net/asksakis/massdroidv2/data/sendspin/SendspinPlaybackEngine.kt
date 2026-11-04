@@ -825,6 +825,8 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
 
     override fun bufferedBytes(): Long = frameQueueBytes.get()
 
+    override fun playableMs(): Long = bufferDurationMs() + ringBufferedMs()
+
     /** Decoded PCM cushion currently in the native ring (ms); the real underrun margin. */
     fun ringBufferedMs(): Long =
         nativeOutput.bufferedFrames() * 1000L / activeSampleRate.coerceAtLeast(1)

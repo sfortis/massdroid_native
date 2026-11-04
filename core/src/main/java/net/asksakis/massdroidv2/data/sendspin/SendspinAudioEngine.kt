@@ -82,6 +82,8 @@ interface SendspinAudioEngine {
 
     // Buffer info
     fun bufferDurationMs(): Long
+    /** The audio still to be heard: the encoded queue plus what is already decoded for output. */
+    fun playableMs(): Long = bufferDurationMs()
     fun bufferedBytes(): Long
 
     // Sync-specific (no-op in DIRECT mode). Called when the UX sync nudge

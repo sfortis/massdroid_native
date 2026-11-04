@@ -190,6 +190,11 @@ class SendspinManager(
     private val scheduledMetadata = ScheduledMetadata(scope) { _serverMetadata.value = it }
     // What a stream/start after a dropped connection is checked against; see RejoinSplicePolicy.
     private val rejoinLog = RejoinMetadataLog()
+    // Keeps a stream active through a dropped connection while its buffered audio plays.
+    private val dropHold = StreamDropHold(scope) { onDropPlayedOut() }
+    // The stream epoch at the drop the hold belongs to; a stream/start, a stream/end or a stop
+    // moves the epoch, and the hold then ends nothing.
+    private var dropEpoch = -1L
 
     var currentVolume = 100
         private set
@@ -309,15 +314,18 @@ class SendspinManager(
             var socketLostMidStream = false
             client.state.collect { state ->
                 _connectionState.value = state
-                // A dropped socket ends the stream without a stream/end message.
+                // A dropped socket ends no stream by itself: the buffer plays on, and the stream
+                // stays active until that audio has played out (holdStreamThroughDrop).
                 if (state == SendspinState.DISCONNECTED || state == SendspinState.ERROR) {
-                    _streamActive.value = false
                     _linkSecurity.value = null
                 }
                 when (state) {
                     // A refresh goes from STREAMING straight to CONNECTING, so that counts too.
                     SendspinState.DISCONNECTED, SendspinState.ERROR, SendspinState.CONNECTING ->
-                        if (hasActiveProtocolStream) socketLostMidStream = true
+                        if (hasActiveProtocolStream && !socketLostMidStream) {
+                            socketLostMidStream = true
+                            holdStreamThroughDrop()
+                        }
                     SendspinState.SYNCING -> if (socketLostMidStream) {
                         socketLostMidStream = false
                         endStreamUnlessResumed()
@@ -502,6 +510,7 @@ class SendspinManager(
                     _streamActive.value = false
                     lastStreamInfo = null
                     rejoinLog.clear()
+                    dropHold.cancel()
                     audio.onStreamEnd()
                     idleTeardownJob?.cancel()
                     ++streamEpoch
@@ -588,6 +597,26 @@ class SendspinManager(
         }
     }
 
+    /**
+     * The connection dropped in the middle of a stream. The stream stays active for as long as
+     * the audio the engine holds plays, so a front-end that ends its media session with the
+     * stream (the TV) keeps it while the music is still heard.
+     */
+    private fun holdStreamThroughDrop() {
+        val playableMs = synchronized(lifecycleLock) {
+            dropEpoch = streamEpoch
+            audio.playableMs()
+        }
+        Log.d(TAG, "Connection dropped mid-stream: the stream stays active while ${playableMs}ms of buffered audio play")
+        dropHold.onLoss(playableMs)
+    }
+
+    private fun onDropPlayedOut() = synchronized(lifecycleLock) {
+        if (streamEpoch != dropEpoch || !hasActiveProtocolStream || !_streamActive.value) return@synchronized
+        Log.d(TAG, "The audio buffered at the drop has played out and no stream came back: the stream is no longer active")
+        _streamActive.value = false
+    }
+
     /** Runs under [lifecycleLock]. */
     private fun onStreamStart(info: StreamStartPlayerInfo) {
         // A new stream cancels any pending idle teardown (this is the
@@ -597,6 +626,7 @@ class SendspinManager(
         streamEpoch++
         idleTeardownJob?.cancel()
         idleTeardownJob = null
+        dropHold.cancel()
         _audioResourcesActive.value = true
         _streamActive.value = true
         _streamGeneration.value += 1
@@ -968,6 +998,13 @@ class SendspinManager(
         // racing/double-releasing the freshly swapped-in engine.
         idleTeardownJob?.cancel()
         idleTeardownJob = null
+        // A stream held through a dropped connection plays from the outgoing engine's buffer,
+        // which the release below throws away: nothing is left to hold it for.
+        if (dropEpoch == streamEpoch && _streamActive.value) {
+            Log.d(TAG, "Engine swap during a dropped connection releases the buffered audio: the stream is no longer active")
+            dropHold.cancel()
+            _streamActive.value = false
+        }
         streamEpoch++
         val carrySyncDelay = engine.syncDelayMs
         val carryAcoustic = engine.routeAcousticExtraUs
@@ -1347,6 +1384,7 @@ class SendspinManager(
         scheduledMetadata.cancel()
         _serverMetadata.value = null
         rejoinLog.clear()
+        dropHold.cancel()
         Log.d(TAG, "Sendspin stopped")
     }
 }
