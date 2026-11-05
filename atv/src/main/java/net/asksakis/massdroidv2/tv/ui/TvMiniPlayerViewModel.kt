@@ -12,7 +12,13 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import net.asksakis.massdroidv2.data.sendspin.SendspinManager
+import net.asksakis.massdroidv2.data.sendspin.SyncState
+import net.asksakis.massdroidv2.data.websocket.ConnectionState
+import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
+import net.asksakis.massdroidv2.domain.model.PlaybackState
 import net.asksakis.massdroidv2.domain.model.Player
+import net.asksakis.massdroidv2.playback.OfflinePlayPausePolicy
 import net.asksakis.massdroidv2.domain.model.skipAvailability
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
@@ -27,6 +33,8 @@ class TvMiniPlayerViewModel @Inject constructor(
     private val playerRepository: PlayerRepository,
     settingsRepository: SettingsRepository,
     private val volumeKeyController: VolumeKeyController,
+    wsClient: MaWebSocketClient,
+    sendspinManager: SendspinManager,
 ) : ViewModel() {
 
     val players: StateFlow<List<Player>> = playerRepository.players
@@ -39,6 +47,28 @@ class TvMiniPlayerViewModel @Inject constructor(
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     fun selectPlayer(playerId: String) = playerRepository.selectPlayer(playerId)
+
+    /**
+     * The play/pause button. With MA down and this TV's own player selected it follows the
+     * local output, which the last state MA reported does not; see [OfflinePlayPausePolicy].
+     * Eagerly, because playPause() reads it for the direction of the press.
+     */
+    val playPauseButton: StateFlow<OfflinePlayPausePolicy.Button> = combine(
+        wsClient.connectionState,
+        selectedPlayer,
+        localPlayerId,
+        sendspinManager.streamActive,
+        sendspinManager.syncState,
+    ) { connection, player, localId, streamActive, syncState ->
+        OfflinePlayPausePolicy.button(
+            maConnected = connection is ConnectionState.Connected,
+            serverPlaying = player?.state == PlaybackState.PLAYING,
+            localPlayerId = localId,
+            selectedPlayerId = player?.playerId,
+            streamActive = streamActive,
+            outputIdle = syncState == SyncState.IDLE,
+        )
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, OfflinePlayPausePolicy.Button(false, false))
 
     /**
      * Whether the volume buttons show: only for a Music Assistant player elsewhere, decided as
@@ -67,7 +97,13 @@ class TvMiniPlayerViewModel @Inject constructor(
 
     fun playPause() {
         val id = selectedPlayer.value?.playerId ?: return
-        viewModelScope.launch { runCatching { playerRepository.playPause(id) } }
+        // An offline pause is a pause whatever MA last reported, which the toggle would read.
+        val pausedOffline = playPauseButton.value.pausableOffline
+        viewModelScope.launch {
+            runCatching {
+                if (pausedOffline) playerRepository.pause(id) else playerRepository.playPause(id)
+            }
+        }
     }
 
     fun next() {
