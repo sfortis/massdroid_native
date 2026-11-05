@@ -1,5 +1,6 @@
 package net.asksakis.massdroidv2.tv.ui
 
+import android.util.Log
 import net.asksakis.massdroidv2.domain.player.VolumeKeyController
 import net.asksakis.massdroidv2.domain.player.VolumeKeyTarget
 import net.asksakis.massdroidv2.domain.player.volumeKeyTarget
@@ -44,6 +45,8 @@ import net.asksakis.massdroidv2.domain.model.Track
 import net.asksakis.massdroidv2.domain.repository.MusicRepository
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 import javax.inject.Inject
+
+private const val TAG = "TvNowPlayingVM"
 
 /**
  * Controls a single MA player from the TV: transport + volume, targeting the
@@ -283,6 +286,8 @@ class TvNowPlayingViewModel @Inject constructor(
     fun playPause() {
         // An offline pause is a pause whatever MA last reported, which the toggle would read.
         val pausedOffline = playPauseButton.value.pausableOffline
+        val willPlay = !pausedOffline && playerRepository.selectedPlayer.value?.state != PlaybackState.PLAYING
+        Log.i(TAG, "Play/pause from Now Playing: ${if (willPlay) "play" else "pause"}")
         viewModelScope.launch {
             runCatching {
                 if (pausedOffline) playerRepository.pause(playerId) else playerRepository.playPause(playerId)

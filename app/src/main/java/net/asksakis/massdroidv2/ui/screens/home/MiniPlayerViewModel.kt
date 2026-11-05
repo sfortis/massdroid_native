@@ -112,6 +112,8 @@ class MiniPlayerViewModel @Inject constructor(
         val player = playerRepository.selectedPlayer.value ?: return
         // An offline pause is a pause whatever MA last reported, which the toggle would read.
         val pausedOffline = miniPlayerUiState.value.pausableOffline
+        val willPlay = !pausedOffline && player.state != PlaybackState.PLAYING
+        Log.i(TAG, "Play/pause from the mini player: ${if (willPlay) "play" else "pause"}")
         viewModelScope.launch {
             try {
                 if (pausedOffline) {

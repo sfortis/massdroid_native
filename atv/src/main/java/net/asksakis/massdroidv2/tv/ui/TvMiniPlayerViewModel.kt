@@ -1,5 +1,6 @@
 package net.asksakis.massdroidv2.tv.ui
 
+import android.util.Log
 import net.asksakis.massdroidv2.domain.player.VolumeKeyController
 import net.asksakis.massdroidv2.domain.player.VolumeKeyTarget
 import net.asksakis.massdroidv2.domain.player.volumeKeyTarget
@@ -23,6 +24,8 @@ import net.asksakis.massdroidv2.domain.model.skipAvailability
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
 import javax.inject.Inject
+
+private const val TAG = "TvMiniPlayerVM"
 
 /**
  * Backs the mini player bar: the selected player's live state, the full player list
@@ -99,6 +102,8 @@ class TvMiniPlayerViewModel @Inject constructor(
         val id = selectedPlayer.value?.playerId ?: return
         // An offline pause is a pause whatever MA last reported, which the toggle would read.
         val pausedOffline = playPauseButton.value.pausableOffline
+        val willPlay = !pausedOffline && selectedPlayer.value?.state != PlaybackState.PLAYING
+        Log.i(TAG, "Play/pause from the mini player: ${if (willPlay) "play" else "pause"}")
         viewModelScope.launch {
             runCatching {
                 if (pausedOffline) playerRepository.pause(id) else playerRepository.playPause(id)

@@ -136,6 +136,7 @@ class PlaybackService : MediaLibraryService() {
                 Log.w(TAG, "Widget $command dropped: no selected player after connect")
                 return@launch
             }
+            Log.i(TAG, "Widget $command")
             androidAutoController.dispatchTransport(command)
         }
     }

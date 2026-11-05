@@ -703,6 +703,7 @@ class NowPlayingViewModel @Inject constructor(
         // the failed command is not a failure to report.
         val button = playPauseButton.value
         val pausedOffline = button.pausableOffline
+        Log.i(TAG, "Play/pause from Now Playing: ${if (button.shownPlaying) "pause" else "play"}")
         viewModelScope.launch {
             try {
                 if (button.shownPlaying) {
