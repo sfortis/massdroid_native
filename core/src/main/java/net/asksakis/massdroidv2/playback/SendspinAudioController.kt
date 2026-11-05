@@ -592,6 +592,11 @@ class SendspinAudioController(
     @Volatile
     private var pauseOwedGeneration = 0L
 
+    // The resend of an owed pause that a held stream/start started, or null. A play waits
+    // for it, so the server cannot get the play first and the pause after it.
+    @Volatile
+    private var owedPauseResend: Job? = null
+
     // Locks
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
@@ -1203,6 +1208,9 @@ class SendspinAudioController(
                     }
                     _userIntent.value = false
                     sendspinManager.pauseAudio()
+                    // The phone can pause its own playback with MA down (the app's play/pause
+                    // button lets that pause through), and then MA has to hear it later.
+                    sendspinPlayerId?.let { markPauseIfServerMayMissIt(it) }
                 }
             }
         }
@@ -2121,6 +2129,10 @@ class SendspinAudioController(
      * the server playing with no pause owed, and the rejoin then streamed into a phone
      * that showed paused. MA hears the owed pause on the reconnect and this play after it.
      * A pause pressed during the wait has cleared the intent, and then nothing is sent.
+     *
+     * A resend of the owed pause that a held stream/start already started is waited for,
+     * because it runs in its own coroutine and could otherwise reach the server after this
+     * play. Clearing the debt first keeps a later stream/start from starting another one.
      */
     private suspend fun sendLocalPlay(id: String, reason: String) {
         if (!_userIntent.value) {
@@ -2128,6 +2140,7 @@ class SendspinAudioController(
             return
         }
         clearPauseOwedToServer(reason)
+        owedPauseResend?.join()
         playerRepository.play(id)
     }
 
@@ -2181,7 +2194,7 @@ class SendspinAudioController(
 
     /** Send the owed pause again and wait for MA's answer; it stays owed if none comes. */
     private fun resendOwedPause(id: String) {
-        scope.launch {
+        owedPauseResend = scope.launch {
             // A play since the stream started has settled the debt; the pause would undo it.
             if (pauseOwedToServer != id) return@launch
             try {

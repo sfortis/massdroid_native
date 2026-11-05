@@ -195,7 +195,8 @@ fun NowPlayingScreen(
     val duration = currentTrack?.duration ?: queueState?.currentItem?.duration
         ?: player?.currentMedia?.duration ?: cachedTrackDisplay?.duration ?: 0.0
     val audioFormat = queueState?.currentItem?.audioFormat
-    val isPlaying = player?.state == PlaybackState.PLAYING
+    val playPauseButton by viewModel.playPauseButton.collectAsStateWithLifecycle()
+    val isPlaying = playPauseButton.shownPlaying
     val sleepTimerState by viewModel.sleepTimerBridge.state.collectAsStateWithLifecycle()
     val sleepTimerRemainingMs = viewModel.sleepTimerBridge.remainingMs()
     val sleepTimerRemainingMin = (sleepTimerRemainingMs / 60_000).toInt()

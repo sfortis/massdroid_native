@@ -32,6 +32,7 @@ import net.asksakis.massdroidv2.domain.feedback.TrackDisliker
 import net.asksakis.massdroidv2.data.sendspin.SendspinState
 import net.asksakis.massdroidv2.playback.SleepTimerBridge
 import net.asksakis.massdroidv2.data.sendspin.SyncState
+import net.asksakis.massdroidv2.data.websocket.ConnectionState
 import net.asksakis.massdroidv2.domain.model.Chapter
 import net.asksakis.massdroidv2.domain.model.MediaType
 import net.asksakis.massdroidv2.domain.model.QueueSource
@@ -41,6 +42,7 @@ import net.asksakis.massdroidv2.domain.player.QueueTransfer
 import net.asksakis.massdroidv2.domain.player.QueueTransferOutcome
 import net.asksakis.massdroidv2.domain.player.userMessage
 import net.asksakis.massdroidv2.domain.model.PlaybackState
+import net.asksakis.massdroidv2.playback.OfflinePlayPausePolicy
 import net.asksakis.massdroidv2.domain.model.PlayerConfig
 import net.asksakis.massdroidv2.domain.model.QueueItem
 import net.asksakis.massdroidv2.domain.model.SendspinAudioFormat
@@ -224,6 +226,32 @@ class NowPlayingViewModel @Inject constructor(
     val queueCrossfadeStates: StateFlow<Map<String, Boolean>> = queueTogglesCache.crossfadeStates
     val elapsedTime = playerRepository.elapsedTime
     val sendspinClientId = settingsRepository.sendspinClientId
+
+    /**
+     * The play/pause button. With MA down and this phone selected it follows the phone's
+     * own output, and a pause of that output may go through; see [OfflinePlayPausePolicy].
+     */
+    val playPauseButton: StateFlow<OfflinePlayPausePolicy.Button> = combine(
+        wsClient.connectionState,
+        selectedPlayer,
+        sendspinClientId,
+        sendspinManager.streamActive,
+        sendspinManager.syncState,
+    ) { connection, player, localPlayerId, streamActive, syncState ->
+        OfflinePlayPausePolicy.button(
+            maConnected = connection is ConnectionState.Connected,
+            serverPlaying = player?.state == PlaybackState.PLAYING,
+            localPlayerId = localPlayerId,
+            selectedPlayerId = player?.playerId,
+            streamActive = streamActive,
+            outputIdle = syncState == SyncState.IDLE,
+        )
+    }.distinctUntilChanged().stateIn(
+        viewModelScope,
+        // Eagerly, because playPause() reads the value for the direction of the tap.
+        SharingStarted.Eagerly,
+        OfflinePlayPausePolicy.Button(shownPlaying = false, pausableOffline = false)
+    )
     val sendspinAudioFormat = settingsRepository.sendspinAudioFormat
     val sendspinSyncHistory = sendspinManager.syncHistory
 
@@ -670,16 +698,21 @@ class NowPlayingViewModel @Inject constructor(
 
     fun playPause() {
         val player = selectedPlayer.value ?: return
+        // Read at the tap, so the direction is what the button showed. With MA down this
+        // pause stops the phone's own output here and is sent to MA on the reconnect, so
+        // the failed command is not a failure to report.
+        val button = playPauseButton.value
+        val pausedOffline = button.pausableOffline
         viewModelScope.launch {
             try {
-                if (player.state == PlaybackState.PLAYING) {
+                if (button.shownPlaying) {
                     playerRepository.pause(player.playerId)
                 } else {
                     playerRepository.play(player.playerId)
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "playPause failed: ${e.message}")
-                _error.tryEmit(e.failureMessage("Couldn't change playback"))
+                if (!pausedOffline) _error.tryEmit(e.failureMessage("Couldn't change playback"))
             }
         }
     }
