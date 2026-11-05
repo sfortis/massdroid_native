@@ -2182,6 +2182,10 @@ class SendspinAudioController(
     private fun markPauseOwedToServer(id: String) {
         if (pauseOwedToServer == id) return
         pauseOwedToServer = id
+        // An owed pause is a pause awaiting MA's confirmation. The intent collector sets this
+        // only while this phone is the selected player, and a PLAYING report from the player
+        // list reloaded on the reconnect, older than this pause, was then adopted as intent.
+        pauseAwaitingConfirmation = true
         Log.i(TAG, "Pause owed to the server until MA confirms it")
     }
 
