@@ -10,7 +10,7 @@ package net.asksakis.massdroidv2.playback
  * time as paused: the TV's remote card read paused for the whole drop, and a media
  * button, which toggles by what the session shows, sent play instead of pause.
  */
-internal object LocalPlayingPolicy {
+object LocalPlayingPolicy {
 
     /**
      * [selectedPlayerId] is null when no selection has been observed. While the stream is
@@ -31,7 +31,13 @@ internal object LocalPlayingPolicy {
         if (localPlayerId == null) return false
         val heldThroughDrop = streamActive && !transportStreaming
         val selected = selectedPlayerId == localPlayerId || (selectedPlayerId == null && heldThroughDrop)
-        val flowing = transportStreaming || heldThroughDrop
-        return intent && selected && flowing && outputSynced && serverSpeedPositive
+        return intent && selected && flowing(transportStreaming, streamActive) && outputSynced && serverSpeedPositive
     }
+
+    /**
+     * Whether the transport carries audio to the output: it streams, or the stream is held
+     * through a dropped connection while the buffered audio plays.
+     */
+    fun flowing(transportStreaming: Boolean, streamActive: Boolean): Boolean =
+        transportStreaming || streamActive
 }

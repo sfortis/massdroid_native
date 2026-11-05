@@ -108,6 +108,21 @@ class SendspinManager(
     private val _streamActive = MutableStateFlow(false)
     val streamActive: StateFlow<Boolean> = _streamActive.asStateFlow()
 
+    private val _localPauseOwed = MutableStateFlow(false)
+
+    /**
+     * A pause made on this phone has not reached MA yet: it was made during a dropped
+     * connection or while MA was unreachable, and the controller sends it when MA is back.
+     * The Sendspin audio controller owns the value and is its only writer; the manager only
+     * carries it, so the media session, which outlives a controller, can read it. stop()
+     * clears it, so a controller replaced on a restart cannot leave it set.
+     */
+    val localPauseOwed: StateFlow<Boolean> = _localPauseOwed.asStateFlow()
+
+    fun setLocalPauseOwed(owed: Boolean) {
+        _localPauseOwed.value = owed
+    }
+
     // Counts protocol stream/start messages, continuation starts included. [streamActive] is
     // state and cannot carry every start: a fast end/start conflates before a collector runs,
     // and a continuation start while already active changes nothing. A consumer that must act
@@ -1356,6 +1371,7 @@ class SendspinManager(
     fun stop() = synchronized(lifecycleLock) { stopLocked() }
 
     private fun stopLocked() {
+        _localPauseOwed.value = false
         // Invalidate any pending idle teardown (epoch bump makes a mid-delay
         // teardown no-op under the mutex; releaseInternal is idempotent anyway).
         idleTeardownJob?.cancel()

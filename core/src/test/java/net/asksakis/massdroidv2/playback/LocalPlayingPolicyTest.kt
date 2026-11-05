@@ -86,6 +86,13 @@ class LocalPlayingPolicyTest {
         assertThat(playing(localPlayerId = null, selectedPlayerId = null, transportStreaming = false)).isFalse()
     }
 
+    @Test
+    fun `audio flows on a live transport and through a held drop only`() {
+        assertThat(LocalPlayingPolicy.flowing(transportStreaming = true, streamActive = false)).isTrue()
+        assertThat(LocalPlayingPolicy.flowing(transportStreaming = false, streamActive = true)).isTrue()
+        assertThat(LocalPlayingPolicy.flowing(transportStreaming = false, streamActive = false)).isFalse()
+    }
+
     private companion object {
         const val LOCAL = "local"
     }

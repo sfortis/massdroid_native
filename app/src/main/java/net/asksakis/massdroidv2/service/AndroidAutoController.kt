@@ -1,6 +1,7 @@
 package net.asksakis.massdroidv2.service
 
 import net.asksakis.massdroidv2.playback.SendspinAudioController
+import net.asksakis.massdroidv2.playback.LocalPlayingPolicy
 
 import android.app.PendingIntent
 import android.graphics.Bitmap
@@ -411,6 +412,8 @@ class AndroidAutoController(
                 artworkData,
                 queueSnapshot,
                 volumeOverride,
+                sendspinManager.streamActive,
+                sendspinManager.localPauseOwed,
             ) { values: Array<*> ->
                 @Suppress("UNCHECKED_CAST")
                 buildAaState(
@@ -421,6 +424,8 @@ class AndroidAutoController(
                     artwork = values[4] as ByteArray?,
                     queueEntries = values[5] as AutoQueueSnapshot,
                     volumeOv = values[6] as Pair<Int, Long>?,
+                    ssStreamActive = values[7] as Boolean,
+                    localPauseOwed = values[8] as Boolean,
                 )
             }
                 .filterNotNull()
@@ -447,6 +452,8 @@ class AndroidAutoController(
         artwork: ByteArray?,
         queueEntries: AutoQueueSnapshot,
         volumeOv: Pair<Int, Long>?,
+        ssStreamActive: Boolean,
+        localPauseOwed: Boolean,
     ): AaCompleteState? {
         player ?: return null
         val currentTrack = queue?.currentItem?.track
@@ -454,12 +461,14 @@ class AndroidAutoController(
         val currentIndex = queue?.currentIndex ?: 0
         val isSendspinSelected = player.playerId == sendspinPlayerId()
         // Audio actually flowing: for Sendspin we have engine-level truth
-        // (STREAMING + (SYNCHRONIZED || HOLDOVER)); for remote MA players we
+        // (STREAMING, or a stream held through a dropped connection while its
+        // buffer plays, + (SYNCHRONIZED || HOLDOVER)); for remote MA players we
         // trust the server-reported PLAYING state. STATE_BUFFERING in
         // RemoteControlPlayer.getState() reads this to pause the AA bar
-        // during seeks / track-changes / sync transitions / network blips.
+        // during seeks / track-changes / sync transitions and when a drop
+        // outlasts the buffer.
         val audioFlowing = if (isSendspinSelected) {
-            ssConn == SendspinState.STREAMING &&
+            LocalPlayingPolicy.flowing(ssConn == SendspinState.STREAMING, ssStreamActive) &&
                 (ssSync == SyncState.SYNCHRONIZED ||
                     ssSync == SyncState.HOLDOVER_PLAYING_FROM_BUFFER)
         } else {
@@ -470,7 +479,9 @@ class AndroidAutoController(
         val volumeLevel = effectiveVolume(player.groupVolume ?: player.volumeLevel, volumeOv)
         val imageUrl = currentTrack?.imageUrl ?: queue?.currentItem?.imageUrl ?: player.currentMedia?.imageUrl
         val playback = AutoPlaybackSnapshot(
-            isPlaying = player.state == PlaybackState.PLAYING,
+            // A pause made here that MA has not heard yet: the server still says
+            // PLAYING, but the phone is paused, which is not buffering.
+            isPlaying = player.state == PlaybackState.PLAYING && !(isSendspinSelected && localPauseOwed),
             audioFlowing = audioFlowing,
             queueItemId = queue?.currentItem?.queueItemId,
             trackUri = trackUri,

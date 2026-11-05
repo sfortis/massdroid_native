@@ -1581,6 +1581,7 @@ class SendspinAudioController(
         abandonPlaybackIntent()
         pauseOwedToServer = null
         pauseOwedGeneration++
+        sendspinManager.setLocalPauseOwed(false)
         serverPlaybackRecord.value = ServerPlaybackRecord()
         _currentIsPlaying.value = false
         clearAllFreezes()
@@ -2186,6 +2187,9 @@ class SendspinAudioController(
         // only while this phone is the selected player, and a PLAYING report from the player
         // list reloaded on the reconnect, older than this pause, was then adopted as intent.
         pauseAwaitingConfirmation = true
+        // Written from the field, so a mark and a clear that interleave still leave the two
+        // agreeing once both have run.
+        sendspinManager.setLocalPauseOwed(pauseOwedToServer != null)
         Log.i(TAG, "Pause owed to the server until MA confirms it")
     }
 
@@ -2193,6 +2197,7 @@ class SendspinAudioController(
         pauseOwedGeneration++
         if (pauseOwedToServer == null) return
         pauseOwedToServer = null
+        sendspinManager.setLocalPauseOwed(pauseOwedToServer != null)
         Log.i(TAG, "Pause no longer owed to the server: $reason")
     }
 
