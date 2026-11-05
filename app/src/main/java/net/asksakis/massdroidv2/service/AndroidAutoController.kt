@@ -297,8 +297,19 @@ class AndroidAutoController(
             // commands in 700 ms and dropped a group from 36 to 0.
             onVolumeUp = { noteVolume(volumeKeyController.step(up = true)) },
             onVolumeDown = { noteVolume(volumeKeyController.step(up = false)) },
-            onVolumeSet = { volume -> noteVolume(volumeKeyController.setLevel(volume)) }
+            onVolumeSet = { volume -> noteVolume(volumeKeyController.setLevel(volume)) },
+            commandSource = ::currentCommandSource,
         )
+    }
+
+    /**
+     * Who sent the session command being handled. Media3's own notification controller runs in
+     * this process, so its package alone would read like an in-app control.
+     */
+    private fun currentCommandSource(): String? {
+        val session = session ?: return null
+        val controller = session.controllerForCurrentRequest ?: return null
+        return if (session.isMediaNotificationController(controller)) "the media notification" else controller.packageName
     }
 
     /**

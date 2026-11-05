@@ -160,18 +160,25 @@ class AndroidAutoBrowseController(
                 controllerInfo: MediaSession.ControllerInfo,
                 intent: Intent
             ): Boolean {
+                val keyEvent: KeyEvent? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    intent.getParcelableExtra(Intent.EXTRA_KEY_EVENT, KeyEvent::class.java)
+                } else {
+                    @Suppress("DEPRECATION")
+                    intent.getParcelableExtra(Intent.EXTRA_KEY_EVENT)
+                }
+                // Logged before any branch, so a key that arrives and is dropped (Sendspin not
+                // active) can be told apart from one that never reached the app.
+                if (keyEvent?.action != KeyEvent.ACTION_UP && (keyEvent?.repeatCount ?: 0) == 0) {
+                    val key = keyEvent?.let { KeyEvent.keyCodeToString(it.keyCode) } ?: "with no key"
+                    Log.i(TAG, "Media button $key from ${controllerInfo.packageName}")
+                }
                 if (session.isMediaNotificationController(controllerInfo)) return false
 
                 val ctrl = sendspinController() ?: return true
                 if (!isSendspinActive()) return true
                 ctrl.sendspinPlayerId ?: return true
 
-                val keyEvent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                    intent.getParcelableExtra(Intent.EXTRA_KEY_EVENT, KeyEvent::class.java)
-                } else {
-                    @Suppress("DEPRECATION")
-                    intent.getParcelableExtra(Intent.EXTRA_KEY_EVENT)
-                } ?: return false
+                keyEvent ?: return false
                 if (keyEvent.action != KeyEvent.ACTION_DOWN) return true
 
                 when (keyEvent.keyCode) {
@@ -182,7 +189,7 @@ class AndroidAutoBrowseController(
                     KeyEvent.KEYCODE_MEDIA_PREVIOUS -> ctrl.handlePrev()
                     else -> return false
                 }
-                Log.d(TAG, "BT media button routed to sendspin: ${keyEvent.keyCode}")
+                Log.i(TAG, "Media button ${KeyEvent.keyCodeToString(keyEvent.keyCode)} routed to Sendspin")
                 return true
             }
 
