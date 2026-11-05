@@ -1208,37 +1208,44 @@ class SendspinAudioController(
         }
 
         // Derived flow: `_currentIsPlaying` = user intent AND sendspin is the
-        // selected player AND the transport is actually flowing audio (not
-        // syncing/error/idle) AND the server-reported playback speed is > 0.
-        // Replaces the 17 imperative writes the previous design scattered
-        // across collectors and handlers. Writes only `_currentIsPlaying`
-        // and fires `notifyStateChanged()` on each emission so MediaSession
-        // tracks the same canonical state as our internal consumers.
+        // selected player AND audio is actually flowing (the transport streams,
+        // or a stream is held through a dropped connection while its buffer
+        // plays; not syncing/error/idle) AND the server-reported playback speed
+        // is > 0. See [LocalPlayingPolicy]. Replaces the 17 imperative writes the
+        // previous design scattered across collectors and handlers. Writes only
+        // `_currentIsPlaying` and fires `notifyStateChanged()` on each emission so
+        // MediaSession tracks the same canonical state as our internal consumers.
         //
-        // Two chained 3-ary combines because the 5-ary overload's lambda
-        // inference trips on the heterogeneous nullable flow types here.
+        // Two chained combines because the 5-ary overload's lambda inference
+        // trips on the heterogeneous nullable flow types here.
         collectorJobs += scope.launch {
             val transportFlow = combine(
                 sendspinManager.connectionState,
                 sendspinManager.syncState,
                 sendspinManager.serverMetadata,
             ) { transport, sync, metadata ->
-                val streaming = transport == SendspinState.STREAMING
                 val syncOk = sync != SyncState.SYNC_ERROR_REBUFFERING &&
                     sync != SyncState.IDLE
                 // Treat unknown/missing speed as "not paused": the server
                 // omits the field on first frames and on some transports.
                 val speedOk = (metadata?.progress?.playbackSpeed ?: 1) > 0
-                streaming && syncOk && speedOk
+                Triple(transport == SendspinState.STREAMING, syncOk, speedOk)
             }
             combine(
                 _userIntent,
                 playerRepository.selectedPlayer,
                 transportFlow,
-            ) { intent, selected, transportPlaying ->
-                val sendspinSelected = sendspinPlayerId != null &&
-                    selected?.playerId == sendspinPlayerId
-                intent && sendspinSelected && transportPlaying
+                sendspinManager.streamActive,
+            ) { intent, selected, (streaming, syncOk, speedOk), streamActive ->
+                LocalPlayingPolicy.playing(
+                    intent = intent,
+                    localPlayerId = sendspinPlayerId,
+                    selectedPlayerId = selected?.playerId,
+                    transportStreaming = streaming,
+                    streamActive = streamActive,
+                    outputSynced = syncOk,
+                    serverSpeedPositive = speedOk,
+                )
             }
                 .distinctUntilChanged()
                 .collect { playing ->
@@ -1590,7 +1597,6 @@ class SendspinAudioController(
         _userIntent.value = true
         resumeTicket = null
         owedResume = null
-        clearPauseOwedToServer("play")
         if (!hasAudioFocus && !requestFocusToPlay()) return
         if (isReady) sendspinManager.resumeAudio()
         scope.launch {
@@ -1598,7 +1604,7 @@ class SendspinAudioController(
                 abandonPlaybackIntent()
                 return@launch
             }
-            playerRepository.play(id)
+            sendLocalPlay(id, "play")
         }
     }
 
@@ -1707,7 +1713,6 @@ class SendspinAudioController(
             _userIntent.value = true
             resumeTicket = null
             owedResume = null
-            clearPauseOwedToServer("play from an external control")
             if (!hasAudioFocus && !requestFocusToPlay()) return
             if (isReady) sendspinManager.resumeAudio()
         } else {
@@ -1724,7 +1729,10 @@ class SendspinAudioController(
                 abandonPlaybackIntent()
                 return@launch
             }
-            playerRepository.playPause(id)
+            // An explicit play, as handlePlay sends: the icon showed paused. The toggle
+            // reads the server's state, which a pause made during a dropped connection
+            // left at PLAYING, so it turned this play into a second pause.
+            sendLocalPlay(id, "play from an external control")
         }
     }
 
@@ -1901,7 +1909,6 @@ class SendspinAudioController(
                 return
             }
             owedResume = null
-            clearPauseOwedToServer("resume after the interruption")
             reconnectMaAfterInterruption()
             Log.i(
                 TAG,
@@ -1916,7 +1923,7 @@ class SendspinAudioController(
             sendspinManager.resumeAudio()
             scope.launch {
                 if (!isReady) ensureSendspinConnected()
-                playerRepository.play(resumeId)
+                sendLocalPlay(resumeId, "resume after the interruption")
             }
             return
         }
@@ -2104,6 +2111,24 @@ class SendspinAudioController(
         duckWatchJob?.cancel()
         duckWatchJob = null
         sendspinManager.restoreVolume()
+    }
+
+    /**
+     * Send the play a local control asked for, once the wait for the transport is over.
+     *
+     * A pause owed to the server is settled only here, when the play really goes out:
+     * cleared at the press, a play that timed out waiting for a dropped connection left
+     * the server playing with no pause owed, and the rejoin then streamed into a phone
+     * that showed paused. MA hears the owed pause on the reconnect and this play after it.
+     * A pause pressed during the wait has cleared the intent, and then nothing is sent.
+     */
+    private suspend fun sendLocalPlay(id: String, reason: String) {
+        if (!_userIntent.value) {
+            Log.i(TAG, "Play dropped: paused while it waited for the connection ($reason)")
+            return
+        }
+        clearPauseOwedToServer(reason)
+        playerRepository.play(id)
     }
 
     /**
