@@ -1200,7 +1200,7 @@ class SendspinAudioController(
                         // buttons included, has to stop it here and be owed to the
                         // server, which cannot hear it.
                         if (!isStreamHeldThroughDrop()) return@collect
-                        Log.i(TAG, "Pause during a dropped connection (${intent.cause}): pausing the buffered audio")
+                        Log.i(TAG, "Pause with the stream up and the transport not ready (${intent.cause}): pausing the buffered audio")
                         _userIntent.value = false
                         sendspinManager.pauseAudio()
                         sendspinPlayerId?.let { markPauseIfServerMayMissIt(it) }

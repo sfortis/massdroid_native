@@ -147,6 +147,17 @@ class MaWebSocketClient(
      * password sign-in that failed while another server's token was saved.
      */
     val rejectedTokens: SharedFlow<RejectedToken> = _rejectedTokens.asSharedFlow()
+
+    private val _connectionPathLost = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+
+    /**
+     * The network path to the server is gone: a probe after a network change got no answer
+     * and the MA socket was dropped, or the default network was lost with MA already down.
+     * The Sendspin socket shares that path and sees nothing either way: behind an always-on
+     * VPN it stayed open and silent for the whole outage (26 s on the S25, 2026-11-05), so
+     * SendspinCoordinator restarts it on this event and the drop path starts at once.
+     */
+    val connectionPathLost: SharedFlow<Unit> = _connectionPathLost.asSharedFlow()
     private val _startupReady = MutableStateFlow(false)
     val startupReady: StateFlow<Boolean> = _startupReady.asStateFlow()
 
@@ -646,6 +657,27 @@ class MaWebSocketClient(
             if (webSocket !== socket) return@launch
             Log.w(TAG, "Handover: no answer within ${HANDOVER_PROBE_TIMEOUT_MS}ms (${error?.message}), dropping the connection")
             socket.cancel()
+            _connectionPathLost.tryEmit(Unit)
+        }
+    }
+
+    /**
+     * The default network was lost and none replaced it. A socket on it may stay open with
+     * nothing behind it until its ping times out, so the same question as after a handover is
+     * asked. With MA already down there is nothing to ask, and only the path event is sent.
+     * Runs on this client's IO scope whatever thread calls it: evicting the pool closes TLS
+     * sockets, which is network I/O and must not run on the main thread.
+     */
+    fun checkPathAfterNetworkLoss() {
+        scope.launch {
+            okHttpClient.connectionPool.evictAll()
+            if (_connectionState.value is ConnectionState.Connected) {
+                Log.d(TAG, "Network lost with no replacement: probing the connection")
+                probeAfterHandover()
+            } else {
+                Log.d(TAG, "Network lost with no replacement while MA is down")
+                _connectionPathLost.tryEmit(Unit)
+            }
         }
     }
 
