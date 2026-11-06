@@ -175,6 +175,9 @@ interface PlayerRepository {
      * [cause] is the cause of the pause this one repeats. A pause sent again after a
      * dropped connection keeps AUDIO_FOCUS when an interruption made it, so it does not
      * cancel the resume that interruption is owed.
+     *
+     * @throws CommandNotSentException when a newer play or pause for the player was
+     *   issued while it waited to retry, so the pause was not sent.
      */
     suspend fun pauseConfirmed(playerId: String, cause: PlaybackIntentCause = PlaybackIntentCause.LISTENER)
     suspend fun playPause(playerId: String)

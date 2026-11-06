@@ -55,6 +55,7 @@ import net.asksakis.massdroidv2.data.websocket.AuthenticatedSession
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
 import net.asksakis.massdroidv2.domain.model.PlaybackState
+import net.asksakis.massdroidv2.domain.repository.LocalPlaybackGate
 import net.asksakis.massdroidv2.domain.repository.PlaybackIntentCause
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
@@ -596,11 +597,6 @@ class SendspinAudioController(
     @Volatile
     private var maDownAfterDrop = false
 
-    // The resend of an owed pause that a held stream/start started, or null. A play waits
-    // for it, so the server cannot get the play first and the pause after it.
-    @Volatile
-    private var owedPauseResend: Job? = null
-
     // Locks
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
@@ -751,9 +747,14 @@ class SendspinAudioController(
         // Audio focus has to be settled before a play command reaches the server:
         // once the server opens a stream the output starts feeding it, and the
         // playback-intent collector runs too late to take it back.
-        playerRepository.registerLocalPlaybackGate { playerId ->
-            playerId != sendspinPlayerId || hasAudioFocus || requestFocusToPlay()
-        }
+        playerRepository.registerLocalPlaybackGate(object : LocalPlaybackGate {
+            override fun allowsPlay(playerId: String): Boolean =
+                playerId != sendspinPlayerId || hasAudioFocus || requestFocusToPlay()
+
+            // The MA reconnect sends an owed pause, so the repository's own retry of it
+            // would reach MA a second time.
+            override fun ownsPause(playerId: String): Boolean = pauseOwedToServer == playerId
+        })
         // And keep it a constraint afterwards: the server can open a stream we
         // never asked for (play_media, a queue that rolls on), and every new
         // stream would otherwise un-pause the output on its own.
@@ -2137,10 +2138,9 @@ class SendspinAudioController(
             }
             AudioFocusPolicy.StreamStart.HOLD_FOR_SERVER_PAUSE -> {
                 Log.i(TAG, "Stream restarted before the server heard the pause made during the drop: keeping the output paused")
+                // Only silence: the MA reconnect is the one sender of an owed pause. A
+                // second send from here reached MA together with the reconnect's.
                 sendspinManager.pauseAudio()
-                // The stream proves the server is still playing, so send the pause now
-                // rather than waiting for an MA reconnect that may never come.
-                pauseOwedToServer?.let(::resendOwedPause)
             }
         }
     }
@@ -2174,10 +2174,6 @@ class SendspinAudioController(
      * the server playing with no pause owed, and the rejoin then streamed into a phone
      * that showed paused. MA hears the owed pause on the reconnect and this play after it.
      * A pause pressed during the wait has cleared the intent, and then nothing is sent.
-     *
-     * A resend of the owed pause that a held stream/start already started is waited for,
-     * because it runs in its own coroutine and could otherwise reach the server after this
-     * play. Clearing the debt first keeps a later stream/start from starting another one.
      */
     private suspend fun sendLocalPlay(id: String, reason: String) {
         if (!_userIntent.value) {
@@ -2185,7 +2181,6 @@ class SendspinAudioController(
             return
         }
         clearPauseOwedToServer(reason)
-        owedPauseResend?.join()
         playerRepository.play(id)
     }
 
@@ -2257,24 +2252,6 @@ class SendspinAudioController(
         if (pauseOwedToServer == null) return
         pauseOwedToServer = null
         Log.i(TAG, "Pause no longer owed to the server: $reason")
-    }
-
-    /** Send the owed pause again and wait for MA's answer; it stays owed if none comes. */
-    private fun resendOwedPause(id: String) {
-        owedPauseResend = scope.launch {
-            // A play since the stream started has settled the debt; the pause would undo it.
-            if (pauseOwedToServer != id) return@launch
-            try {
-                val answered = withTimeoutOrNull(PAUSE_REASSERT_TIMEOUT_MS) {
-                    playerRepository.pauseConfirmed(id, PlaybackIntentCause.REPEAT)
-                }
-                if (answered != null && pauseOwedToServer == id) clearPauseOwedToServer("server answered the pause")
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Log.w(TAG, "Owed pause not sent: ${e.message}")
-            }
-        }
     }
 
     /** What MA last reported for [id], or null while the player list is empty. */

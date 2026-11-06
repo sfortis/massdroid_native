@@ -31,13 +31,30 @@ data class PlaybackIntent(
 )
 
 /**
- * Decides whether the local (phone-as-speaker) player may start playing.
- *
- * Implemented by the Sendspin audio controller, which owns audio-focus policy,
- * and consulted by the repository before it sends a play command for that
- * player. Any other player id is always allowed: focus only governs audio this
- * device produces itself.
+ * A play or pause the repository did not send, because a newer play or pause for the same
+ * player was issued while it waited to retry. Thrown to a caller that waits for the
+ * server's answer, so it does not take the missing send for an answer.
  */
-fun interface LocalPlaybackGate {
+class CommandNotSentException(message: String) : Exception(message)
+
+/**
+ * What the local (phone-as-speaker) player's controller decides about play and pause
+ * commands for that player.
+ *
+ * Implemented by the Sendspin audio controller, which owns audio-focus policy and the
+ * pause owed to the server after a dropped connection, and consulted by the repository.
+ * The controller owns both answers. Any other player id is always allowed to play and
+ * never owned: focus only governs audio this device produces itself, and only this
+ * device's player has an owed pause.
+ */
+interface LocalPlaybackGate {
+    /** Whether a play command may be sent for [playerId]; asked before it is sent. */
     fun allowsPlay(playerId: String): Boolean
+
+    /**
+     * Whether the controller delivers a pause for [playerId] itself: it is owed to the
+     * server and sent again on the MA reconnect. The repository's transient retry then
+     * drops its own copy, so MA hears the pause once.
+     */
+    fun ownsPause(playerId: String): Boolean
 }

@@ -19,6 +19,7 @@ import net.asksakis.massdroidv2.domain.recommendation.distinctGenres
 import net.asksakis.massdroidv2.domain.recommendation.genreKey
 import net.asksakis.massdroidv2.domain.recommendation.normalizeGenre
 import net.asksakis.massdroidv2.domain.recommendation.trackIdentityKey
+import net.asksakis.massdroidv2.domain.repository.CommandNotSentException
 import net.asksakis.massdroidv2.domain.repository.LocalPlaybackGate
 import net.asksakis.massdroidv2.domain.repository.PlayHistoryRepository
 import net.asksakis.massdroidv2.domain.repository.PlaybackIntent
@@ -152,9 +153,14 @@ class PlayerRepositoryImpl @Inject constructor(
     override val playbackIntent: SharedFlow<PlaybackIntent> = _playbackIntent.asSharedFlow()
 
     // Consulted before a play command reaches the server, so the local output can
-    // settle audio focus first. Null whenever that output is not running.
+    // settle audio focus first, and before a pause is retried. Null whenever that output
+    // is not running.
     @Volatile
     private var localPlaybackGate: LocalPlaybackGate? = null
+
+    // The latest play or pause issued for each player, so a retry of an older one is
+    // dropped; see [PlayerCommandRetry].
+    private val transportGenerations = ConcurrentHashMap<String, Long>()
 
     private val _queueItemsChanged = MutableSharedFlow<String>(extraBufferCapacity = 1)
     override val queueItemsChanged: SharedFlow<String> = _queueItemsChanged.asSharedFlow()
@@ -1682,7 +1688,7 @@ class PlayerRepositoryImpl @Inject constructor(
         // Playing again ends the burst: the next pause is a new decision, however
         // soon it follows.
         lastPauseSentAt.remove(playerId)
-        playerCmd("play", playerId)
+        playerCmd("play", playerId, transport = nextTransport(playerId, pauses = false))
     }
 
     override suspend fun pause(playerId: String, cause: PlaybackIntentCause) {
@@ -1708,17 +1714,23 @@ class PlayerRepositoryImpl @Inject constructor(
             Log.d(TAG, "pause($cause) dropped for $playerId: one was sent ${dropped}ms ago")
             return
         }
-        playerCmd("pause", playerId)
+        playerCmd("pause", playerId, transport = nextTransport(playerId, pauses = true))
     }
 
     /**
      * Re-assert a pause and wait for the answer. Never dropped as a repeat:
      * insisting is the point, and the caller is waiting for the acknowledgement.
+     * Only the local player's controller calls this, so its retry is never left to
+     * the controller (it is the controller), and a retry dropped because a newer play
+     * or pause came in throws instead of returning as if MA had answered.
      */
     override suspend fun pauseConfirmed(playerId: String, cause: PlaybackIntentCause) {
         _playbackIntent.tryEmit(PlaybackIntent(willPlay = false, cause = cause))
         lastPauseSentAt[playerId] = elapsedMs()
-        playerCmd("pause", playerId, awaitAck = true)
+        val transport = nextTransport(playerId, pauses = true, sentByController = true)
+        if (!playerCmd("pause", playerId, awaitAck = true, transport = transport)) {
+            throw CommandNotSentException("pause for $playerId not sent: a newer play or pause was issued")
+        }
     }
 
     override suspend fun playPause(playerId: String) {
@@ -1726,8 +1738,27 @@ class PlayerRepositoryImpl @Inject constructor(
         if (willPlay && !allowedToPlay(playerId)) return
         _playbackIntent.tryEmit(PlaybackIntent(willPlay = willPlay))
         if (willPlay) lastPauseSentAt.remove(playerId) else lastPauseSentAt[playerId] = elapsedMs()
-        playerCmd("play_pause", playerId)
+        playerCmd("play_pause", playerId, transport = nextTransport(playerId, pauses = !willPlay))
     }
+
+    /**
+     * A play or pause about to be sent: its generation, whether it stops playback, and
+     * whether the local player's controller sent it itself.
+     */
+    private class TransportCommand(val generation: Long, val pauses: Boolean, val sentByController: Boolean)
+
+    private fun nextTransport(playerId: String, pauses: Boolean, sentByController: Boolean = false): TransportCommand =
+        TransportCommand(transportGenerations.merge(playerId, 1L, Long::plus) ?: 1L, pauses, sentByController)
+
+    /** Whether a transient failure of [transport] for [playerId] is sent again. */
+    private fun transportRetry(playerId: String, transport: TransportCommand): PlayerCommandRetry.Decision =
+        PlayerCommandRetry.decide(
+            sentGeneration = transport.generation,
+            currentGeneration = transportGenerations[playerId],
+            pause = transport.pauses,
+            sentByController = transport.sentByController,
+            controllerOwnsPause = localPlaybackGate?.ownsPause(playerId) == true,
+        )
 
     /**
      * Whether a play command may be sent for [playerId].
@@ -2404,13 +2435,21 @@ class PlayerRepositoryImpl @Inject constructor(
         }
     }
 
-    private suspend fun playerCmd(cmd: String, playerId: String, awaitAck: Boolean = false) {
+    /** Returns false when a play or pause was not sent because its retry was dropped. */
+    private suspend fun playerCmd(
+        cmd: String,
+        playerId: String,
+        awaitAck: Boolean = false,
+        transport: TransportCommand? = null,
+    ): Boolean {
         try {
-            sendPlayerCommandWithRetry(
+            val sent = sendPlayerCommandWithRetry(
                 MaCommands.Players.cmd(cmd),
                 PlayerIdArgs(playerId = playerId),
-                awaitAck = awaitAck
+                awaitAck = awaitAck,
+                retryDecision = transport?.let { { transportRetry(playerId, it) } },
             )
+            if (!sent) return false
             Log.d(TAG, "playerCmd sent: $cmd($playerId)")
         } catch (e: MaApiException) {
             // MA keeps the last track as current_media for display even when the
@@ -2422,23 +2461,43 @@ class PlayerRepositoryImpl @Inject constructor(
             ) {
                 Log.d(TAG, "playerCmd $cmd: queue exhausted (code=${e.code})")
                 _queueEndedEvent.tryEmit(Unit)
-                return
+                return true
             }
             throw e
         }
+        return true
     }
 
+    /**
+     * Send [command], and once more after a transient failure. [retryDecision], given for
+     * a play or pause, is asked just before that second attempt; returns false when it
+     * dropped the retry, true when the command went out.
+     */
     private suspend fun sendPlayerCommandWithRetry(
         command: String,
         args: MaCommandArgs,
         awaitAck: Boolean = false,
-    ) {
+        retryDecision: (() -> PlayerCommandRetry.Decision)? = null,
+    ): Boolean {
         var attempt = 0
         var lastError: MaApiException? = null
         while (attempt < 2) {
+            if (attempt > 0 && retryDecision != null) {
+                when (retryDecision()) {
+                    PlayerCommandRetry.Decision.RETRY -> Unit
+                    PlayerCommandRetry.Decision.SUPERSEDED -> {
+                        Log.d(TAG, "'$command' not retried: a newer play or pause for the player was issued")
+                        return false
+                    }
+                    PlayerCommandRetry.Decision.PAUSE_OWNED_BY_CONTROLLER -> {
+                        Log.d(TAG, "'$command' not retried: the pause is owed and is sent on the MA reconnect")
+                        return false
+                    }
+                }
+            }
             try {
                 wsClient.sendCommand(command, args, awaitResponse = awaitAck)
-                return
+                return true
             } catch (e: MaApiException) {
                 if (!isTransientWsCommandError(e)) throw e
                 lastError = e
