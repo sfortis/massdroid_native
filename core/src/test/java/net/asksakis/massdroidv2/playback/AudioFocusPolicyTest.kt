@@ -440,4 +440,36 @@ class AudioFocusPolicyTest {
         )
         assertThat(owed).isFalse()
     }
+
+    /**
+     * The same field test: Sendspin rejoined 0.95 s before MA, and the next track, which
+     * the server had moved on to during the drop, played on the speaker until MA was back.
+     */
+    @Test
+    fun `a rejoin while MA is down and the listener has paused stays silent`() {
+        val outcome = AudioFocusPolicy.onStreamStart(holdsFocus = true, listenerPausedWithMaDown = true) { never() }
+        assertThat(outcome).isEqualTo(AudioFocusPolicy.StreamStart.HOLD_UNTIL_MA_RETURNS)
+    }
+
+    /**
+     * Run 2 of the S25 field test: the phone played its buffer through the drop, the
+     * listener still wanted playback, and the rejoin spliced onto it. MA being down must
+     * not hold that stream.
+     */
+    @Test
+    fun `a rejoin while MA is down and the listener wants playback plays`() {
+        val outcome = AudioFocusPolicy.onStreamStart(holdsFocus = true, listenerPausedWithMaDown = false) { never() }
+        assertThat(outcome).isEqualTo(AudioFocusPolicy.StreamStart.PLAY)
+    }
+
+    /** The owed pause still wins, so the hold that resends it is the one taken. */
+    @Test
+    fun `an owed pause wins over the hold until MA returns`() {
+        val outcome = AudioFocusPolicy.onStreamStart(
+            holdsFocus = true,
+            pauseOwedToServer = true,
+            listenerPausedWithMaDown = true,
+        ) { never() }
+        assertThat(outcome).isEqualTo(AudioFocusPolicy.StreamStart.HOLD_FOR_SERVER_PAUSE)
+    }
 }

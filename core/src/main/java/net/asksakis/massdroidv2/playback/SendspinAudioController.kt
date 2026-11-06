@@ -572,13 +572,11 @@ class SendspinAudioController(
         DEFERRED_PLAY,
     }
 
-    // True from the moment a pause is issued locally until the server confirms the
-    // player is no longer playing. While it is set, a server report of PLAYING is
-    // older than that pause and must not be read as someone pressing play
-    // elsewhere. Local commands write the intent before the server answers, so
-    // this needs only latency, not reordering. See [adoptServerPlayback].
-    @Volatile
-    private var pauseAwaitingConfirmation = false
+    // The play or pause sent from here that the server has not answered yet. While a pause
+    // is pending, a server report of PLAYING is older than that pause and must not be read
+    // as someone pressing play elsewhere. Local commands write it before the server
+    // answers, so this needs only latency, not reordering. See [PendingTransportPolicy].
+    private val pendingTransport = MutableStateFlow<PendingTransport>(PendingTransport.None)
 
     // This phone's player while a pause made here may not have reached the server, or
     // null. Marked when a pause is made during a dropped connection, sent again when MA
@@ -591,6 +589,12 @@ class SendspinAudioController(
     // fails after a play has cleared the debt does not mark it again.
     @Volatile
     private var pauseOwedGeneration = 0L
+
+    // The MA connection was up and is down now. Sendspin can rejoin before MA does, and a
+    // stream it brings while the listener here has paused is held until MA is back; see
+    // AudioFocusPolicy.StreamStart.HOLD_UNTIL_MA_RETURNS.
+    @Volatile
+    private var maDownAfterDrop = false
 
     // The resend of an owed pause that a held stream/start started, or null. A play waits
     // for it, so the server cannot get the play first and the pause after it.
@@ -753,7 +757,11 @@ class SendspinAudioController(
         // And keep it a constraint afterwards: the server can open a stream we
         // never asked for (play_media, a queue that rolls on), and every new
         // stream would otherwise un-pause the output on its own.
-        sendspinManager.setOutputAllowed { hasAudioFocus }
+        // Read synchronously when the engine configures a stream, so a stream that has to stay
+        // silent never plays before settleFocusForStreamStart decides.
+        sendspinManager.setOutputAllowed {
+            hasAudioFocus && pauseOwedToServer == null && !listenerPausedWithMaDown()
+        }
         // Note: volumeCoordinator is started once by SendspinCoordinator with
         // its longer-lived scope; this controller's per-start lifecycle would
         // re-arm it across restarts and lose the syncEnabled observer.
@@ -1163,7 +1171,7 @@ class SendspinAudioController(
                     // stays quiet under it, and the duck ends with the focus gain or
                     // with the sound, see [duckUntilInterrupterEnds].
                     owedResume = null
-                    pauseAwaitingConfirmation = false
+                    pendingTransport.value = PendingTransportPolicy.afterLocalPlay(SystemClock.elapsedRealtime())
                     clearPauseOwedToServer("play")
                     if (!hasAudioFocus && !requestFocusToPlay()) return@collect
                     if (isReady) {
@@ -1175,7 +1183,9 @@ class SendspinAudioController(
                     // A pause has been sent and the server has not answered yet, so
                     // any PLAYING report still in flight describes the play BEFORE
                     // this pause and must not be adopted as remote playback.
-                    pauseAwaitingConfirmation = true
+                    val serverState = reportedServerState(selectedId)
+                    val now = SystemClock.elapsedRealtime()
+                    pendingTransport.update { PendingTransportPolicy.afterLocalPause(it, serverState, now) }
                     // A pause sent again decides nothing new: a resume owed to an
                     // interruption stays owed. The output is held down as before, in
                     // case the server streamed to it before the repeat arrived.
@@ -1354,23 +1364,27 @@ class SendspinAudioController(
                 .map { list -> list.firstOrNull { it.playerId == sendspinPlayerId }?.state }
                 .distinctUntilChanged()
                 .collect { state ->
+                    // No player at all is not a report, because the list is emptied while
+                    // the MA connection is down. Read as a confirmation, it cleared the
+                    // wait for a pause that had not reached the server, so the pause was
+                    // not owed when the connection was found dead.
+                    if (state == null) return@collect
+                    // The report ends a pending pause when it is anything but PLAYING (the
+                    // server caught up with it, so a later PLAYING can be adopted) and a
+                    // pending play when it is PLAYING; see PendingTransportPolicy.
+                    val pending = pendingTransport.updateAndGet { PendingTransportPolicy.afterServerReport(it, state) }
                     if (state != PlaybackState.PLAYING) {
-                        // Anything other than PLAYING is the server having caught
-                        // up with the pause we sent, so a PLAYING report after this
-                        // one is genuinely later and can be adopted.
-                        pauseAwaitingConfirmation = false
-                        // The same report settles a pause owed after a drop. No player
-                        // at all is not a report, because the list is emptied while
-                        // the MA connection is down.
-                        if (state != null) clearPauseOwedToServer("server reports $state")
+                        // The same report settles a pause owed after a drop.
+                        clearPauseOwedToServer("server reports $state")
                         return@collect
                     }
+                    val pausePending = pending == PendingTransport.Pause
                     val adopt = AudioFocusPolicy.adoptRemotePlaying(
                         localIntent = _userIntent.value,
-                        pauseAwaitingConfirmation = pauseAwaitingConfirmation
+                        pauseAwaitingConfirmation = pausePending
                     )
                     if (!adopt) {
-                        if (pauseAwaitingConfirmation) {
+                        if (pausePending) {
                             Log.i(TAG, "Ignoring a PLAYING report older than the pause just sent")
                         }
                         return@collect
@@ -1400,8 +1414,12 @@ class SendspinAudioController(
         // client's own backoff scheduler.
         collectorJobs += scope.launch {
             var connectedBefore = false
+            var connectedNow = false
             wsClient.connectionState.collect { state ->
                 val isConnected = state is ConnectionState.Connected
+                if (connectedNow && !isConnected) oweUnconfirmedPause()
+                connectedNow = isConnected
+                maDownAfterDrop = connectedBefore && !isConnected
                 if (isConnected && connectedBefore) {
                     val currentSsState = sendspinManager.connectionState.value
                     val sendspinIsSelected =
@@ -1581,6 +1599,8 @@ class SendspinAudioController(
         abandonPlaybackIntent()
         pauseOwedToServer = null
         pauseOwedGeneration++
+        maDownAfterDrop = false
+        pendingTransport.value = PendingTransport.None
         sendspinManager.setLocalPauseOwed(false)
         serverPlaybackRecord.value = ServerPlaybackRecord()
         _currentIsPlaying.value = false
@@ -2077,6 +2097,7 @@ class SendspinAudioController(
         val outcome = AudioFocusPolicy.onStreamStart(
             holdsFocus = hasAudioFocus,
             pauseOwedToServer = pauseOwedToServer != null,
+            listenerPausedWithMaDown = listenerPausedWithMaDown(),
         ) { requestAudioFocus() }
         when (outcome) {
             AudioFocusPolicy.StreamStart.PLAY ->
@@ -2089,6 +2110,10 @@ class SendspinAudioController(
             AudioFocusPolicy.StreamStart.STAY_SILENT -> {
                 Log.w(TAG, "Stream started without audio focus: keeping the output paused")
                 abandonPlaybackIntent()
+                sendspinManager.pauseAudio()
+            }
+            AudioFocusPolicy.StreamStart.HOLD_UNTIL_MA_RETURNS -> {
+                Log.i(TAG, "Stream started while MA is down and the listener has paused: keeping the output paused until MA is back")
                 sendspinManager.pauseAudio()
             }
             AudioFocusPolicy.StreamStart.HOLD_FOR_SERVER_PAUSE -> {
@@ -2171,6 +2196,24 @@ class SendspinAudioController(
         }
     }
 
+    /** The listener here has paused, and the MA connection that was up is down. */
+    private fun listenerPausedWithMaDown(): Boolean = maDownAfterDrop && !_userIntent.value
+
+    /**
+     * The MA connection was lost: a pause MA has not confirmed may have been written into
+     * the dead socket, so it is owed; see [PendingTransportPolicy.pauseOwedAtConnectionLoss].
+     */
+    private fun oweUnconfirmedPause() {
+        val id = sendspinPlayerId ?: return
+        val owed = PendingTransportPolicy.pauseOwedAtConnectionLoss(
+            pending = pendingTransport.value,
+            lastServerState = serverPlaybackRecord.value.state,
+        )
+        if (!owed) return
+        Log.i(TAG, "MA connection lost before it confirmed the pause")
+        markPauseOwedToServer(id)
+    }
+
     private fun markPauseIfServerMayMissIt(id: String) {
         val owed = AudioFocusPolicy.pauseOwedToServer(
             maConnected = wsClient.connectionState.value is ConnectionState.Connected,
@@ -2186,7 +2229,7 @@ class SendspinAudioController(
         // An owed pause is a pause awaiting MA's confirmation. The intent collector sets this
         // only while this phone is the selected player, and a PLAYING report from the player
         // list reloaded on the reconnect, older than this pause, was then adopted as intent.
-        pauseAwaitingConfirmation = true
+        pendingTransport.value = PendingTransport.Pause
         // Written from the field, so a mark and a clear that interleave still leave the two
         // agreeing once both have run.
         sendspinManager.setLocalPauseOwed(pauseOwedToServer != null)

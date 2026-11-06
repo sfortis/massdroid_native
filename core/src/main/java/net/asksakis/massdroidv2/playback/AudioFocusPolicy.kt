@@ -35,7 +35,16 @@ object AudioFocusPolicy {
          * A pause made here has not reached the server yet, so this is the playback
          * that pause stopped: stay paused, and leave focus and intent as they are.
          */
-        HOLD_FOR_SERVER_PAUSE
+        HOLD_FOR_SERVER_PAUSE,
+
+        /**
+         * The phone rejoined while the MA connection is still down and the listener here
+         * has paused. Whatever the server streams was not asked for here, and only MA can
+         * say whether it is a pause the server missed or a play from elsewhere: stay
+         * paused until MA is back. The reconnect refreshes Sendspin, and the stream/start
+         * that follows is decided again.
+         */
+        HOLD_UNTIL_MA_RETURNS
     }
 
     /** What should happen when audio focus comes back. */
@@ -63,9 +72,11 @@ object AudioFocusPolicy {
     fun onStreamStart(
         holdsFocus: Boolean,
         pauseOwedToServer: Boolean = false,
+        listenerPausedWithMaDown: Boolean = false,
         requestFocus: () -> FocusRequestResult
     ): StreamStart {
         if (pauseOwedToServer) return StreamStart.HOLD_FOR_SERVER_PAUSE
+        if (listenerPausedWithMaDown) return StreamStart.HOLD_UNTIL_MA_RETURNS
         if (holdsFocus) return StreamStart.PLAY
         return when (requestFocus()) {
             FocusRequestResult.GRANTED -> StreamStart.PLAY
