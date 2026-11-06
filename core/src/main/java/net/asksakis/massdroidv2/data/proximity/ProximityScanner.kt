@@ -387,7 +387,12 @@ class ProximityScanner @Inject constructor(
     @Volatile private var lastNewDeviceMs = 0L
     private val seenSinceScanStart = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
+    /** Empty reads in a row. A delivered device resets it too, see [ScannerRecoveryPolicy]. */
     @Volatile var zeroDeviceStreak = 0
+
+    /** The addresses the most recent [readSnapshot] returned; see [ScanSuspendPolicy]. */
+    @Volatile var lastReadAddresses: Set<String> = emptySet()
+        private set
 
     /** Every scan start goes through this; see [ScanStartBudget] for the platform rule it enforces. */
     private val startBudget = ScanStartBudget()
@@ -457,6 +462,7 @@ class ProximityScanner @Inject constructor(
                     val now = System.currentTimeMillis()
                     persistentLastSeen[device.address] = now
                     lastPersistentCallbackMs = now
+                    zeroDeviceStreak = 0
                     noteObservation(device, now)
                 } catch (e: Exception) { Log.w(TAG, "BLE callback error: ${e.javaClass.simpleName}") }
             }
@@ -585,7 +591,14 @@ class ProximityScanner @Inject constructor(
                 .map { it.value }
         }
         if (devices.isEmpty()) zeroDeviceStreak++ else zeroDeviceStreak = 0
+        lastReadAddresses = devices.mapTo(HashSet()) { it.address }
         return devices
+    }
+
+    /** The addresses a default [readSnapshot] would return now. Reads only, prunes nothing. */
+    fun bufferedAddresses(): Set<String> = synchronized(persistentSnapshotLock) {
+        val now = System.currentTimeMillis()
+        persistentDevices.keys.filterTo(HashSet()) { now - (persistentLastSeen[it] ?: now) <= DEVICE_RETAIN_MS }
     }
 
     /**
