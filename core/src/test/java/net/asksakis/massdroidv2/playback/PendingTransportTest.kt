@@ -123,4 +123,35 @@ class PendingTransportTest {
     fun `a pending pause for a player MA last reported paused is not owed`() {
         assertThat(policy.pauseOwedAtConnectionLoss(PendingTransport.Pause, PlaybackState.PAUSED)).isFalse()
     }
+
+    /**
+     * Emulator test of cdb8a38a: for 2.3 s between a pause and the dead socket being
+     * found, the session showed BUFFERING with playWhenReady while the output was silent,
+     * because only an owed pause showed paused. A pause sent and not yet confirmed is
+     * already silent.
+     */
+    @Test
+    fun `a pause sent and not yet confirmed shows the phone's player paused`() {
+        val pending = policy.afterLocalPause(PendingTransport.None, PlaybackState.PLAYING, nowMs = 1_000L)
+        val shown = LocalPlayingPolicy.shownPlaying(
+            serverPlaying = true,
+            localPlayerSelected = true,
+            localPausePending = policy.pauseNotYetHeard(pending),
+        )
+        assertThat(shown).isFalse()
+        val shownOffline = LocalPlayingPolicy.shownPlayingDisconnected(
+            serverPlaying = true,
+            localPlayerSelected = true,
+            localPausePending = policy.pauseNotYetHeard(pending),
+            localStreamActive = true,
+        )
+        assertThat(shownOffline).isFalse()
+    }
+
+    @Test
+    fun `a confirmed pause, a pending play or nothing pending is not a pause not yet heard`() {
+        assertThat(policy.pauseNotYetHeard(policy.afterServerReport(PendingTransport.Pause, PlaybackState.PAUSED))).isFalse()
+        assertThat(policy.pauseNotYetHeard(PendingTransport.Play(1_000L))).isFalse()
+        assertThat(policy.pauseNotYetHeard(PendingTransport.None)).isFalse()
+    }
 }

@@ -424,7 +424,7 @@ class AndroidAutoController(
                 queueSnapshot,
                 volumeOverride,
                 sendspinManager.streamActive,
-                sendspinManager.localPauseOwed,
+                sendspinManager.localPausePending,
             ) { values: Array<*> ->
                 @Suppress("UNCHECKED_CAST")
                 buildAaState(
@@ -436,7 +436,7 @@ class AndroidAutoController(
                     queueEntries = values[5] as AutoQueueSnapshot,
                     volumeOv = values[6] as Pair<Int, Long>?,
                     ssStreamActive = values[7] as Boolean,
-                    localPauseOwed = values[8] as Boolean,
+                    localPausePending = values[8] as Boolean,
                 )
             }
                 .filterNotNull()
@@ -464,7 +464,7 @@ class AndroidAutoController(
         queueEntries: AutoQueueSnapshot,
         volumeOv: Pair<Int, Long>?,
         ssStreamActive: Boolean,
-        localPauseOwed: Boolean,
+        localPausePending: Boolean,
     ): AaCompleteState? {
         player ?: return null
         val currentTrack = queue?.currentItem?.track
@@ -490,12 +490,12 @@ class AndroidAutoController(
         val volumeLevel = effectiveVolume(player.groupVolume ?: player.volumeLevel, volumeOv)
         val imageUrl = currentTrack?.imageUrl ?: queue?.currentItem?.imageUrl ?: player.currentMedia?.imageUrl
         val playback = AutoPlaybackSnapshot(
-            // A pause made here that MA has not heard yet: the server still says
+            // A pause made here that MA has not confirmed yet: the server still says
             // PLAYING, but the phone is paused, which is not buffering.
             isPlaying = LocalPlayingPolicy.shownPlaying(
                 serverPlaying = player.state == PlaybackState.PLAYING,
                 localPlayerSelected = isSendspinSelected,
-                localPauseOwed = localPauseOwed,
+                localPausePending = localPausePending,
             ),
             audioFlowing = audioFlowing,
             queueItemId = queue?.currentItem?.queueItemId,

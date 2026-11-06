@@ -28,7 +28,7 @@ import net.asksakis.massdroidv2.domain.widget.NowPlayingWidgetSnapshot
  * and pushed to every placed widget. Nothing is done while no widget is placed.
  *
  * The phone's own player, whether its stream is still playing, and a pause of it MA
- * has not heard are read as well, so play/pause follows the phone's output through a
+ * has not confirmed are read as well, so play/pause follows the phone's output through a
  * dropped connection.
  */
 @Singleton
@@ -44,7 +44,7 @@ class NowPlayingWidgetPublisher @Inject constructor(
         val player: net.asksakis.massdroidv2.domain.model.Player?,
         val connected: Boolean,
         val localPlayerId: String?,
-        val localPauseOwed: Boolean,
+        val localPausePending: Boolean,
         val localStreamActive: Boolean,
     )
 
@@ -57,10 +57,10 @@ class NowPlayingWidgetPublisher @Inject constructor(
                 playerRepository.selectedPlayer,
                 wsClient.connectionState,
                 settingsRepository.sendspinClientId,
-                sendspinManager.localPauseOwed,
+                sendspinManager.localPausePending,
                 sendspinManager.streamActive,
-            ) { player, state, localPlayerId, localPauseOwed, localStreamActive ->
-                Inputs(player, state is ConnectionState.Connected, localPlayerId, localPauseOwed, localStreamActive)
+            ) { player, state, localPlayerId, localPausePending, localStreamActive ->
+                Inputs(player, state is ConnectionState.Connected, localPlayerId, localPausePending, localStreamActive)
             }
                 .distinctUntilChanged()
                 .collect { publish(it) }
@@ -74,7 +74,7 @@ class NowPlayingWidgetPublisher @Inject constructor(
                 player = playerRepository.selectedPlayer.value,
                 connected = wsClient.connectionState.value is ConnectionState.Connected,
                 localPlayerId = settingsRepository.sendspinClientId.first(),
-                localPauseOwed = sendspinManager.localPauseOwed.value,
+                localPausePending = sendspinManager.localPausePending.value,
                 localStreamActive = sendspinManager.streamActive.value,
             ),
             force = true
@@ -95,7 +95,7 @@ class NowPlayingWidgetPublisher @Inject constructor(
             inputs.player,
             inputs.connected,
             inputs.localPlayerId,
-            inputs.localPauseOwed,
+            inputs.localPausePending,
             inputs.localStreamActive,
         ) ?: return
         if (!force && snapshot == previous) return

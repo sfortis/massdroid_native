@@ -95,31 +95,31 @@ class LocalPlayingPolicyTest {
 
     @Test
     fun `the session shows the server's playing state`() {
-        assertThat(LocalPlayingPolicy.shownPlaying(serverPlaying = true, localPlayerSelected = true, localPauseOwed = false))
+        assertThat(LocalPlayingPolicy.shownPlaying(serverPlaying = true, localPlayerSelected = true, localPausePending = false))
             .isTrue()
-        assertThat(LocalPlayingPolicy.shownPlaying(serverPlaying = false, localPlayerSelected = true, localPauseOwed = false))
+        assertThat(LocalPlayingPolicy.shownPlaying(serverPlaying = false, localPlayerSelected = true, localPausePending = false))
             .isFalse()
     }
 
     /** MA still says PLAYING after a pause it has not heard, but the phone is paused. */
     @Test
     fun `a pause MA has not heard shows the phone's own player paused`() {
-        assertThat(LocalPlayingPolicy.shownPlaying(serverPlaying = true, localPlayerSelected = true, localPauseOwed = true))
+        assertThat(LocalPlayingPolicy.shownPlaying(serverPlaying = true, localPlayerSelected = true, localPausePending = true))
             .isFalse()
     }
 
     @Test
     fun `an owed pause of the phone does not change another selected player`() {
-        assertThat(LocalPlayingPolicy.shownPlaying(serverPlaying = true, localPlayerSelected = false, localPauseOwed = true))
+        assertThat(LocalPlayingPolicy.shownPlaying(serverPlaying = true, localPlayerSelected = false, localPausePending = true))
             .isTrue()
     }
 
     private fun disconnected(
         serverPlaying: Boolean = true,
         localPlayerSelected: Boolean = true,
-        localPauseOwed: Boolean = false,
+        localPausePending: Boolean = false,
         localStreamActive: Boolean = true,
-    ) = LocalPlayingPolicy.shownPlayingDisconnected(serverPlaying, localPlayerSelected, localPauseOwed, localStreamActive)
+    ) = LocalPlayingPolicy.shownPlayingDisconnected(serverPlaying, localPlayerSelected, localPausePending, localStreamActive)
 
     @Test
     fun `while disconnected the phone's own player shows playing while its buffer plays`() {
@@ -134,7 +134,7 @@ class LocalPlayingPolicyTest {
 
     @Test
     fun `while disconnected a pause MA has not heard shows paused`() {
-        assertThat(disconnected(localPauseOwed = true)).isFalse()
+        assertThat(disconnected(localPausePending = true)).isFalse()
     }
 
     @Test

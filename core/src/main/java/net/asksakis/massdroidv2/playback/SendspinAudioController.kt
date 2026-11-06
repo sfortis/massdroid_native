@@ -1070,6 +1070,17 @@ class SendspinAudioController(
                 }
         }
 
+        // What the media session and the widget show: a pause sent from here and not yet
+        // confirmed already silenced the output, so this phone's player shows paused while
+        // the server still reports PLAYING. A collector rather than a write next to each
+        // update, so the carried value always ends at the latest state.
+        collectorJobs += scope.launch {
+            pendingTransport
+                .map { PendingTransportPolicy.pauseNotYetHeard(it) }
+                .distinctUntilChanged()
+                .collect(sendspinManager::setLocalPausePending)
+        }
+
         // Collector: settle audio focus on every protocol stream/start.
         //
         // This used to hang off the transport reaching STREAMING, which is the
@@ -1601,7 +1612,7 @@ class SendspinAudioController(
         pauseOwedGeneration++
         maDownAfterDrop = false
         pendingTransport.value = PendingTransport.None
-        sendspinManager.setLocalPauseOwed(false)
+        sendspinManager.setLocalPausePending(false)
         serverPlaybackRecord.value = ServerPlaybackRecord()
         _currentIsPlaying.value = false
         clearAllFreezes()
@@ -2230,9 +2241,6 @@ class SendspinAudioController(
         // only while this phone is the selected player, and a PLAYING report from the player
         // list reloaded on the reconnect, older than this pause, was then adopted as intent.
         pendingTransport.value = PendingTransport.Pause
-        // Written from the field, so a mark and a clear that interleave still leave the two
-        // agreeing once both have run.
-        sendspinManager.setLocalPauseOwed(pauseOwedToServer != null)
         Log.i(TAG, "Pause owed to the server until MA confirms it")
     }
 
@@ -2240,7 +2248,6 @@ class SendspinAudioController(
         pauseOwedGeneration++
         if (pauseOwedToServer == null) return
         pauseOwedToServer = null
-        sendspinManager.setLocalPauseOwed(pauseOwedToServer != null)
         Log.i(TAG, "Pause no longer owed to the server: $reason")
     }
 

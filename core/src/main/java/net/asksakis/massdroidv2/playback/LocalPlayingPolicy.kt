@@ -38,11 +38,12 @@ object LocalPlayingPolicy {
      * Whether the media session and the home screen widget show the selected player as
      * playing. The server's state is the base, and through a dropped connection its last
      * report is kept, so the phone's own player shows playing while its buffer plays. A
-     * pause made on this phone that MA has not heard yet wins for the phone's own player:
-     * the server still says PLAYING, but the phone is paused.
+     * pause made on this phone that MA has not confirmed yet wins for the phone's own
+     * player: the server still says PLAYING, but the phone's output is already silent
+     * ([PendingTransportPolicy.pauseNotYetHeard]).
      */
-    fun shownPlaying(serverPlaying: Boolean, localPlayerSelected: Boolean, localPauseOwed: Boolean): Boolean =
-        serverPlaying && !(localPlayerSelected && localPauseOwed)
+    fun shownPlaying(serverPlaying: Boolean, localPlayerSelected: Boolean, localPausePending: Boolean): Boolean =
+        serverPlaying && !(localPlayerSelected && localPausePending)
 
     /**
      * [shownPlaying] while MA is disconnected, for a view that has no buffering state to
@@ -53,9 +54,9 @@ object LocalPlayingPolicy {
     fun shownPlayingDisconnected(
         serverPlaying: Boolean,
         localPlayerSelected: Boolean,
-        localPauseOwed: Boolean,
+        localPausePending: Boolean,
         localStreamActive: Boolean,
-    ): Boolean = localPlayerSelected && localStreamActive && shownPlaying(serverPlaying, true, localPauseOwed)
+    ): Boolean = localPlayerSelected && localStreamActive && shownPlaying(serverPlaying, true, localPausePending)
 
     /**
      * Whether the transport carries audio to the output: it streams, or the stream is held

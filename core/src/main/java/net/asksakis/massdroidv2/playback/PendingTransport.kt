@@ -35,6 +35,14 @@ object PendingTransportPolicy {
     fun afterLocalPlay(nowMs: Long): PendingTransport = PendingTransport.Play(nowMs)
 
     /**
+     * Whether a pause sent from here has not been confirmed by MA. The output went silent
+     * with the pause, so what shows this phone's player shows it paused, although the
+     * server may still report PLAYING ([LocalPlayingPolicy.shownPlaying]). A pause owed
+     * after a dropped connection is always pending as well.
+     */
+    fun pauseNotYetHeard(pending: PendingTransport): Boolean = pending == PendingTransport.Pause
+
+    /**
      * A pause sent now is pending unless there is nothing to confirm: no play is in flight,
      * no pause is already pending, and the server already reports the player as not
      * playing. A pause there changes nothing on the server and no report would ever confirm

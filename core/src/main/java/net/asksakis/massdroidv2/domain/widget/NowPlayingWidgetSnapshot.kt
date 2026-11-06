@@ -38,7 +38,7 @@ data class NowPlayingWidgetSnapshot(
          * its buffer through a dropped connection, so it shows playing while that buffer
          * plays and paused after a pause made during the drop
          * ([LocalPlayingPolicy.shownPlayingDisconnected]). [localPlayerId] is the phone's
-         * Sendspin player, [localPauseOwed] a pause of it MA has not heard, and
+         * Sendspin player, [localPausePending] a pause of it MA has not confirmed, and
          * [localStreamActive] whether its stream still plays.
          */
         fun next(
@@ -46,7 +46,7 @@ data class NowPlayingWidgetSnapshot(
             player: Player?,
             connected: Boolean,
             localPlayerId: String? = null,
-            localPauseOwed: Boolean = false,
+            localPausePending: Boolean = false,
             localStreamActive: Boolean = false,
         ): NowPlayingWidgetSnapshot? =
             when {
@@ -55,19 +55,19 @@ data class NowPlayingWidgetSnapshot(
                     isPlaying = player != null && LocalPlayingPolicy.shownPlayingDisconnected(
                         serverPlaying = player.state == PlaybackState.PLAYING,
                         localPlayerSelected = player.playerId == localPlayerId,
-                        localPauseOwed = localPauseOwed,
+                        localPausePending = localPausePending,
                         localStreamActive = localStreamActive,
                     ),
                 )
                 player == null -> null
-                else -> from(player, connected = true, localPlayerId, localPauseOwed)
+                else -> from(player, connected = true, localPlayerId, localPausePending)
             }
 
         fun from(
             player: Player?,
             connected: Boolean,
             localPlayerId: String? = null,
-            localPauseOwed: Boolean = false,
+            localPausePending: Boolean = false,
         ): NowPlayingWidgetSnapshot {
             if (player == null) return NowPlayingWidgetSnapshot(connected = connected)
             val media = player.currentMedia
@@ -77,16 +77,16 @@ data class NowPlayingWidgetSnapshot(
                 title = media?.title.orEmpty(),
                 artist = media?.artist.orEmpty(),
                 imageUrl = media?.imageUrl,
-                isPlaying = shownPlaying(player, localPlayerId, localPauseOwed),
+                isPlaying = shownPlaying(player, localPlayerId, localPausePending),
                 connected = connected
             )
         }
 
-        private fun shownPlaying(player: Player, localPlayerId: String?, localPauseOwed: Boolean): Boolean =
+        private fun shownPlaying(player: Player, localPlayerId: String?, localPausePending: Boolean): Boolean =
             LocalPlayingPolicy.shownPlaying(
                 serverPlaying = player.state == PlaybackState.PLAYING,
                 localPlayerSelected = player.playerId == localPlayerId,
-                localPauseOwed = localPauseOwed,
+                localPausePending = localPausePending,
             )
     }
 }

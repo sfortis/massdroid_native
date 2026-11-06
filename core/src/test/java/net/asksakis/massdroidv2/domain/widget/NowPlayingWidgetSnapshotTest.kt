@@ -70,7 +70,7 @@ class NowPlayingWidgetSnapshotTest {
     fun `a pause of the phone during a drop shows paused`() {
         val last = NowPlayingWidgetSnapshot.from(player, connected = true, localPlayerId = "pi")
         val next = NowPlayingWidgetSnapshot.next(
-            last, player, connected = false, localPlayerId = "pi", localPauseOwed = true, localStreamActive = true
+            last, player, connected = false, localPlayerId = "pi", localPausePending = true, localStreamActive = true
         )
         assertThat(next?.isPlaying).isFalse()
     }
@@ -87,7 +87,7 @@ class NowPlayingWidgetSnapshotTest {
     @Test
     fun `a pause MA has not heard shows paused on a live connection too`() {
         val next = NowPlayingWidgetSnapshot.next(
-            NowPlayingWidgetSnapshot.Empty, player, connected = true, localPlayerId = "pi", localPauseOwed = true
+            NowPlayingWidgetSnapshot.Empty, player, connected = true, localPlayerId = "pi", localPausePending = true
         )
         assertThat(next?.isPlaying).isFalse()
     }
