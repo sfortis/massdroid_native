@@ -93,6 +93,55 @@ class LocalPlayingPolicyTest {
         assertThat(LocalPlayingPolicy.flowing(transportStreaming = false, streamActive = false)).isFalse()
     }
 
+    @Test
+    fun `the session shows the server's playing state`() {
+        assertThat(LocalPlayingPolicy.shownPlaying(serverPlaying = true, localPlayerSelected = true, localPauseOwed = false))
+            .isTrue()
+        assertThat(LocalPlayingPolicy.shownPlaying(serverPlaying = false, localPlayerSelected = true, localPauseOwed = false))
+            .isFalse()
+    }
+
+    /** MA still says PLAYING after a pause it has not heard, but the phone is paused. */
+    @Test
+    fun `a pause MA has not heard shows the phone's own player paused`() {
+        assertThat(LocalPlayingPolicy.shownPlaying(serverPlaying = true, localPlayerSelected = true, localPauseOwed = true))
+            .isFalse()
+    }
+
+    @Test
+    fun `an owed pause of the phone does not change another selected player`() {
+        assertThat(LocalPlayingPolicy.shownPlaying(serverPlaying = true, localPlayerSelected = false, localPauseOwed = true))
+            .isTrue()
+    }
+
+    private fun disconnected(
+        serverPlaying: Boolean = true,
+        localPlayerSelected: Boolean = true,
+        localPauseOwed: Boolean = false,
+        localStreamActive: Boolean = true,
+    ) = LocalPlayingPolicy.shownPlayingDisconnected(serverPlaying, localPlayerSelected, localPauseOwed, localStreamActive)
+
+    @Test
+    fun `while disconnected the phone's own player shows playing while its buffer plays`() {
+        assertThat(disconnected()).isTrue()
+    }
+
+    /** The stale server state still says PLAYING after the buffered audio has played out. */
+    @Test
+    fun `while disconnected a played out buffer shows stopped`() {
+        assertThat(disconnected(localStreamActive = false)).isFalse()
+    }
+
+    @Test
+    fun `while disconnected a pause MA has not heard shows paused`() {
+        assertThat(disconnected(localPauseOwed = true)).isFalse()
+    }
+
+    @Test
+    fun `while disconnected another selected player shows stopped`() {
+        assertThat(disconnected(localPlayerSelected = false)).isFalse()
+    }
+
     private companion object {
         const val LOCAL = "local"
     }

@@ -3,11 +3,12 @@ package net.asksakis.massdroidv2.domain.widget
 import kotlinx.serialization.Serializable
 import net.asksakis.massdroidv2.domain.model.PlaybackState
 import net.asksakis.massdroidv2.domain.model.Player
+import net.asksakis.massdroidv2.playback.LocalPlayingPolicy
 
 /**
  * What the home screen widget shows, frozen to a file so it can be drawn after the
- * process has died. Built only from the selected player and the connection state,
- * the same two things the mini player and the notification are built from.
+ * process has died. Built from the selected player and the connection state, and its
+ * play/pause follows the media session's rule ([LocalPlayingPolicy.shownPlaying]).
  */
 @Serializable
 data class NowPlayingWidgetSnapshot(
@@ -32,15 +33,42 @@ data class NowPlayingWidgetSnapshot(
          * "nothing" in either window replaced a good snapshot with an empty card. So while
          * disconnected the last known track is kept and only marked offline and stopped,
          * and a connected process with no selection yet publishes nothing and waits.
+         *
+         * The phone's own player is the exception while disconnected: it plays on from
+         * its buffer through a dropped connection, so it shows playing while that buffer
+         * plays and paused after a pause made during the drop
+         * ([LocalPlayingPolicy.shownPlayingDisconnected]). [localPlayerId] is the phone's
+         * Sendspin player, [localPauseOwed] a pause of it MA has not heard, and
+         * [localStreamActive] whether its stream still plays.
          */
-        fun next(previous: NowPlayingWidgetSnapshot, player: Player?, connected: Boolean): NowPlayingWidgetSnapshot? =
+        fun next(
+            previous: NowPlayingWidgetSnapshot,
+            player: Player?,
+            connected: Boolean,
+            localPlayerId: String? = null,
+            localPauseOwed: Boolean = false,
+            localStreamActive: Boolean = false,
+        ): NowPlayingWidgetSnapshot? =
             when {
-                !connected -> previous.copy(connected = false, isPlaying = false)
+                !connected -> previous.copy(
+                    connected = false,
+                    isPlaying = player != null && LocalPlayingPolicy.shownPlayingDisconnected(
+                        serverPlaying = player.state == PlaybackState.PLAYING,
+                        localPlayerSelected = player.playerId == localPlayerId,
+                        localPauseOwed = localPauseOwed,
+                        localStreamActive = localStreamActive,
+                    ),
+                )
                 player == null -> null
-                else -> from(player, connected = true)
+                else -> from(player, connected = true, localPlayerId, localPauseOwed)
             }
 
-        fun from(player: Player?, connected: Boolean): NowPlayingWidgetSnapshot {
+        fun from(
+            player: Player?,
+            connected: Boolean,
+            localPlayerId: String? = null,
+            localPauseOwed: Boolean = false,
+        ): NowPlayingWidgetSnapshot {
             if (player == null) return NowPlayingWidgetSnapshot(connected = connected)
             val media = player.currentMedia
             return NowPlayingWidgetSnapshot(
@@ -49,9 +77,16 @@ data class NowPlayingWidgetSnapshot(
                 title = media?.title.orEmpty(),
                 artist = media?.artist.orEmpty(),
                 imageUrl = media?.imageUrl,
-                isPlaying = player.state == PlaybackState.PLAYING,
+                isPlaying = shownPlaying(player, localPlayerId, localPauseOwed),
                 connected = connected
             )
         }
+
+        private fun shownPlaying(player: Player, localPlayerId: String?, localPauseOwed: Boolean): Boolean =
+            LocalPlayingPolicy.shownPlaying(
+                serverPlaying = player.state == PlaybackState.PLAYING,
+                localPlayerSelected = player.playerId == localPlayerId,
+                localPauseOwed = localPauseOwed,
+            )
     }
 }

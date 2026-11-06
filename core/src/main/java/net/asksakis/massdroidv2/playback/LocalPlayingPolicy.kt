@@ -35,6 +35,29 @@ object LocalPlayingPolicy {
     }
 
     /**
+     * Whether the media session and the home screen widget show the selected player as
+     * playing. The server's state is the base, and through a dropped connection its last
+     * report is kept, so the phone's own player shows playing while its buffer plays. A
+     * pause made on this phone that MA has not heard yet wins for the phone's own player:
+     * the server still says PLAYING, but the phone is paused.
+     */
+    fun shownPlaying(serverPlaying: Boolean, localPlayerSelected: Boolean, localPauseOwed: Boolean): Boolean =
+        serverPlaying && !(localPlayerSelected && localPauseOwed)
+
+    /**
+     * [shownPlaying] while MA is disconnected, for a view that has no buffering state to
+     * fall back on, such as the home screen widget. The selected player keeps its last
+     * server state through the drop, so only the phone's own player can be known to
+     * play, and only while its buffered stream still plays ([localStreamActive]).
+     */
+    fun shownPlayingDisconnected(
+        serverPlaying: Boolean,
+        localPlayerSelected: Boolean,
+        localPauseOwed: Boolean,
+        localStreamActive: Boolean,
+    ): Boolean = localPlayerSelected && localStreamActive && shownPlaying(serverPlaying, true, localPauseOwed)
+
+    /**
      * Whether the transport carries audio to the output: it streams, or the stream is held
      * through a dropped connection while the buffered audio plays.
      */

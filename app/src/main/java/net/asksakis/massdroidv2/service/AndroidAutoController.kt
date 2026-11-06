@@ -492,7 +492,11 @@ class AndroidAutoController(
         val playback = AutoPlaybackSnapshot(
             // A pause made here that MA has not heard yet: the server still says
             // PLAYING, but the phone is paused, which is not buffering.
-            isPlaying = player.state == PlaybackState.PLAYING && !(isSendspinSelected && localPauseOwed),
+            isPlaying = LocalPlayingPolicy.shownPlaying(
+                serverPlaying = player.state == PlaybackState.PLAYING,
+                localPlayerSelected = isSendspinSelected,
+                localPauseOwed = localPauseOwed,
+            ),
             audioFlowing = audioFlowing,
             queueItemId = queue?.currentItem?.queueItemId,
             trackUri = trackUri,
