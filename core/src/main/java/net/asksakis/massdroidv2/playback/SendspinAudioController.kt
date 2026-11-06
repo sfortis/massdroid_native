@@ -1220,7 +1220,15 @@ class SendspinAudioController(
                         // buffer still plays, so a pause from anywhere, the app's own
                         // buttons included, has to stop it here and be owed to the
                         // server, which cannot hear it.
-                        if (!isStreamHeldThroughDrop()) return@collect
+                        if (!isStreamHeldThroughDrop()) {
+                            // Nothing plays here, but the server may still be playing this
+                            // player, and with MA down it cannot hear the pause either. Owed,
+                            // the reconnect sends it again, and the pending pause above ends
+                            // with the server's answer instead of showing paused over a
+                            // stream MA starts later; the same as handlePause.
+                            sendspinPlayerId?.let { markPauseIfServerMayMissIt(it) }
+                            return@collect
+                        }
                         Log.i(TAG, "Pause with the stream up and the transport not ready (${intent.cause}): pausing the buffered audio")
                         _userIntent.value = false
                         sendspinManager.pauseAudio()
