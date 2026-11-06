@@ -24,6 +24,8 @@ build/
 *.md
 !README.md
 !WHATSNEW.md
+!CONTRIBUTING.md
+!.github/pull_request_template.md
 !docs/
 !docs/**/*.md
 /internal_docs/
