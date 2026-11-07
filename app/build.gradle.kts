@@ -301,6 +301,9 @@ dependencies {
     // Palette for dynamic colors
     implementation("androidx.palette:palette-ktx:1.0.0")
 
+    // QR encoding for the Party join link; the encoder only, no camera and no Android parts
+    implementation("com.google.zxing:core:3.5.4")
+
     // Media3
     implementation("androidx.media3:media3-session:1.7.1")
     implementation("androidx.media3:media3-exoplayer:1.7.1")

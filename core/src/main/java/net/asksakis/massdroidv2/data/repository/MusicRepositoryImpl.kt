@@ -10,6 +10,7 @@ import kotlinx.coroutines.flow.mapNotNull
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.*
+import net.asksakis.massdroidv2.data.party.PartyAttributes
 import net.asksakis.massdroidv2.data.websocket.*
 import net.asksakis.massdroidv2.domain.model.*
 import net.asksakis.massdroidv2.domain.model.RecommendationFolder
@@ -1447,7 +1448,8 @@ class MusicRepositoryImpl @Inject constructor(
         duration = duration,
         track = mediaItem?.toTrack(),
         imageUrl = mediaItem?.let { imageResolver.resolveItem(it) }
-            ?: image?.let { imageResolver.resolve(it) }
+            ?: image?.let { imageResolver.resolve(it) },
+        partyMark = PartyAttributes.partyMark(extraAttributes)
     )
 
     private fun sanitizeYear(year: Int?): Int? = year?.takeIf { it > 0 }

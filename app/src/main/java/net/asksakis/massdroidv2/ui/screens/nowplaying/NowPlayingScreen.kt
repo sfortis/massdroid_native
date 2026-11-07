@@ -104,6 +104,7 @@ fun NowPlayingScreen(
     onBack: () -> Unit,
     onNavigateToArtist: (itemId: String, provider: String, name: String) -> Unit = { _, _, _ -> },
     onNavigateToAlbum: (itemId: String, provider: String, name: String) -> Unit = { _, _, _ -> },
+    onOpenParty: () -> Unit = {},
     isForeground: Boolean = true,
     /**
      * Insets the top bar keeps clear of. Zero inside the expanding player sheet, which
@@ -133,6 +134,7 @@ fun NowPlayingScreen(
     val addingToPlaylistId by viewModel.addingToPlaylistId.collectAsStateWithLifecycle()
     val playlistContainsTrack by viewModel.playlistContainsTrack.collectAsStateWithLifecycle()
     val smartPlaylistsAvailable by viewModel.smartPlaylistsAvailable.collectAsStateWithLifecycle()
+    val partyAvailable by viewModel.partyAvailable.collectAsStateWithLifecycle()
     val smartPlaylistSeed by viewModel.smartPlaylistSeed.collectAsStateWithLifecycle()
     val smartPlaylists by viewModel.smartPlaylists.collectAsStateWithLifecycle()
     val isLoadingSmartPlaylists by viewModel.isLoadingSmartPlaylists.collectAsStateWithLifecycle()
@@ -531,6 +533,8 @@ fun NowPlayingScreen(
                         showNfcWrite = true
                     }
                 },
+            // The join QR never goes on a car display, where this screen shows while parked.
+            onOpenParty = onOpenParty.takeIf { partyAvailable && !net.asksakis.massdroidv2.BuildConfig.IS_AUTOMOTIVE },
             showAboutText = showAboutText,
             onShowAboutTextChange = viewModel::setShowAboutText,
             onClick = {

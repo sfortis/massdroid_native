@@ -268,6 +268,14 @@ fun ExpandingPlayerSheet(
                                     animatable.animateTo(0f, tween(300, easing = FastOutSlowInEasing))
                                     navController.navigate(Routes.albumDetail(id, prov, name))
                                 }
+                            },
+                            onOpenParty = {
+                                scope.launch {
+                                    expandOnReturnTo = navController.currentBackStackEntry?.id
+                                    expanded = false
+                                    animatable.animateTo(0f, tween(300, easing = FastOutSlowInEasing))
+                                    navController.navigate(Routes.PARTY)
+                                }
                             }
                         )
                     }

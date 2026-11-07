@@ -75,7 +75,9 @@ fun MediaItemRow(
      * stays readable. The trailing end of the row is left to state and actions, so a listing
      * that can be ordered by this value has somewhere to show it without crowding them.
      */
-    subtitleTail: String? = null
+    subtitleTail: String? = null,
+    /** A short label at the start of the information line, such as the queue's Party guest badge. */
+    infoLabel: (@Composable () -> Unit)? = null
 ) {
     val context = LocalContext.current
     val showProviderBadges = providerCache != null && providerDomains.distinct().size > 1
@@ -100,11 +102,14 @@ fun MediaItemRow(
             )
         },
         supportingContent = {
-            if (subtitle.isNotBlank() || !subtitleTail.isNullOrBlank() || showProviderBadges || typeIcon != null) {
+            if (subtitle.isNotBlank() || !subtitleTail.isNullOrBlank() || showProviderBadges || typeIcon != null ||
+                infoLabel != null
+            ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
+                    infoLabel?.invoke()
                     typeIcon?.let {
                         Icon(
                             it,

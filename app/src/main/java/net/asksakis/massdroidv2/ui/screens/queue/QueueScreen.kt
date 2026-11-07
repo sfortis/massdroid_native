@@ -2,6 +2,7 @@ package net.asksakis.massdroidv2.ui.screens.queue
 
 import net.asksakis.massdroidv2.ui.components.MdIconButton
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -69,6 +70,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import net.asksakis.massdroidv2.domain.model.displayName
 import net.asksakis.massdroidv2.domain.model.PlaybackState
 import net.asksakis.massdroidv2.domain.model.MediaType
+import net.asksakis.massdroidv2.domain.model.PartyMark
 import net.asksakis.massdroidv2.domain.model.QueueItem
 import net.asksakis.massdroidv2.ui.components.MediaItemRow
 import net.asksakis.massdroidv2.ui.components.PlayerNameWithBadge
@@ -319,6 +321,7 @@ fun QueueSheet(
                                         Color.Unspecified
                                     },
                                     showEqualizer = item.queueItemId == currentQueueItemId && isPlaying,
+                                    infoLabel = item.partyMark?.let { mark -> { PartyBadge(mark) } },
                                     onMoreClick = { actionSheetItemId = item.queueItemId },
                                     dragHandle = {
                                         Icon(
@@ -582,6 +585,33 @@ private fun <T> MutableList<T>.move(fromIndex: Int, toIndex: Int) {
     if (fromIndex == toIndex || fromIndex !in indices || toIndex !in indices) return
     val item = removeAt(fromIndex)
     add(toIndex, item)
+}
+
+/** Marks a song a Party guest added, in Music Assistant's words. */
+@Composable
+private fun PartyBadge(mark: PartyMark) {
+    val (label, container, content) = when (mark) {
+        PartyMark.GUEST -> Triple(
+            "Guest",
+            MaterialTheme.colorScheme.secondaryContainer,
+            MaterialTheme.colorScheme.onSecondaryContainer
+        )
+        PartyMark.BOOSTED -> Triple(
+            "Boosted",
+            MaterialTheme.colorScheme.tertiaryContainer,
+            MaterialTheme.colorScheme.onTertiaryContainer
+        )
+    }
+    Text(
+        text = label,
+        style = MaterialTheme.typography.labelSmall,
+        color = content,
+        maxLines = 1,
+        modifier = Modifier
+            .clip(MaterialTheme.shapes.extraSmall)
+            .background(container)
+            .padding(horizontal = 6.dp, vertical = 1.dp)
+    )
 }
 
 /**

@@ -18,6 +18,7 @@ import net.asksakis.massdroidv2.data.repository.PlayHistoryRepositoryImpl
 import net.asksakis.massdroidv2.data.repository.PlayerRepositoryImpl
 import net.asksakis.massdroidv2.data.repository.SettingsRepositoryImpl
 import net.asksakis.massdroidv2.data.repository.SmartListeningRepositoryImpl
+import net.asksakis.massdroidv2.data.repository.PartyRepositoryImpl
 import net.asksakis.massdroidv2.data.repository.SmartPlaylistRepositoryImpl
 import net.asksakis.massdroidv2.data.repository.queue.QueueItemsCoordinator
 import net.asksakis.massdroidv2.data.websocket.MaAuthProbe
@@ -29,6 +30,7 @@ import net.asksakis.massdroidv2.domain.repository.PlayHistoryRepository
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
 import net.asksakis.massdroidv2.domain.repository.SmartListeningRepository
+import net.asksakis.massdroidv2.domain.repository.PartyRepository
 import net.asksakis.massdroidv2.domain.repository.SmartPlaylistRepository
 import javax.inject.Singleton
 
@@ -117,6 +119,13 @@ object RepositoryModule {
         wsClient: MaWebSocketClient,
         providerManifestCache: ProviderManifestCache
     ): SmartPlaylistRepository = SmartPlaylistRepositoryImpl(wsClient, providerManifestCache)
+
+    @Provides
+    @Singleton
+    fun providePartyRepository(
+        wsClient: MaWebSocketClient,
+        providerManifestCache: ProviderManifestCache
+    ): PartyRepository = PartyRepositoryImpl(wsClient, providerManifestCache)
 
     @Provides
     @Singleton

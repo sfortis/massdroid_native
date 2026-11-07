@@ -488,12 +488,14 @@ private fun MassDroidApp(
         currentRoute == Routes.SETTINGS ||
         currentRoute == Routes.ONBOARDING ||
         currentRoute == Routes.RECOMMENDATION_INSIGHTS ||
+        currentRoute == Routes.PARTY ||
         currentRoute?.startsWith("room_setup") == true
     val showNav = !hideNav && currentRoute != null
     val showMiniPlayer = currentRoute != Routes.NOW_PLAYING &&
         currentRoute != Routes.SETTINGS &&
         currentRoute != Routes.ONBOARDING &&
         currentRoute != Routes.RECOMMENDATION_INSIGHTS &&
+        currentRoute != Routes.PARTY &&
         currentRoute?.startsWith("room_setup") != true
 
     val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE

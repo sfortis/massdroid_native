@@ -1457,21 +1457,25 @@ class MaWebSocketClient(
             (cause is javax.net.ssl.SSLHandshakeException &&
                 cause.message?.contains("not verified", ignoreCase = true) == true)
     }
+}
 
-    private fun isPrivateHost(host: String): Boolean {
-        if (host == "localhost" || host.endsWith(".local") || host.endsWith(".lan") || host.endsWith(".ts.net")) return true
-        val parts = host.split(".")
-        if (parts.size != 4) return false
-        val nums = parts.mapNotNull { it.toIntOrNull() }
-        if (nums.size != 4) return false
-        return when {
-            nums[0] == 10 -> true
-            nums[0] == 172 && nums[1] in 16..31 -> true
-            nums[0] == 192 && nums[1] == 168 -> true
-            nums[0] == 127 -> true
-            nums[0] == 100 && nums[1] in 64..127 -> true // CGNAT / Tailscale
-            else -> false
-        }
+/**
+ * Whether [host] is on a private network: a private or loopback IPv4 address, the CGNAT range
+ * Tailscale uses, localhost, or a .local, .lan or .ts.net name.
+ */
+internal fun isPrivateHost(host: String): Boolean {
+    if (host == "localhost" || host.endsWith(".local") || host.endsWith(".lan") || host.endsWith(".ts.net")) return true
+    val parts = host.split(".")
+    if (parts.size != 4) return false
+    val nums = parts.mapNotNull { it.toIntOrNull() }
+    if (nums.size != 4) return false
+    return when {
+        nums[0] == 10 -> true
+        nums[0] == 172 && nums[1] in 16..31 -> true
+        nums[0] == 192 && nums[1] == 168 -> true
+        nums[0] == 127 -> true
+        nums[0] == 100 && nums[1] in 64..127 -> true // CGNAT / Tailscale
+        else -> false
     }
 }
 

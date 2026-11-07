@@ -94,6 +94,19 @@ object MaCommands {
         const val CREATE = "smart_playlists/create"
     }
 
+    /**
+     * The Party plugin (MA 2.8 and later), which lets guests add songs from a join link. These
+     * commands are registered only while the plugin is loaded, like [SmartPlaylists].
+     */
+    object Party {
+        const val PLUGIN_DOMAIN = "party"
+        /** The guest join link, or null while guest access is off. */
+        const val URL = "party/url"
+        /** The queue that receives the guests' songs, or null when there is none. */
+        const val PLAYER = "party/player"
+        const val CONFIG = "party/config"
+    }
+
     object PlayerQueues {
         const val ITEMS = "player_queues/items"
         const val PLAY_MEDIA = "player_queues/play_media"

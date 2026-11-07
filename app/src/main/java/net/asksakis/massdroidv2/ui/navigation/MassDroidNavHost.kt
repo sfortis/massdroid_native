@@ -19,6 +19,7 @@ import net.asksakis.massdroidv2.ui.screens.library.PodcastDetailScreen
 import net.asksakis.massdroidv2.ui.screens.nowplaying.NowPlayingScreen
 import net.asksakis.massdroidv2.ui.screens.onboarding.OnboardingScreen
 import net.asksakis.massdroidv2.ui.screens.search.SearchScreen
+import net.asksakis.massdroidv2.ui.screens.party.PartyScreen
 import net.asksakis.massdroidv2.ui.screens.settings.RecommendationInsightsScreen
 import net.asksakis.massdroidv2.ui.screens.settings.RoomSetupScreen
 import net.asksakis.massdroidv2.ui.screens.settings.SettingsCategory
@@ -34,6 +35,7 @@ object Routes {
     const val RECOMMENDATION_INSIGHTS = "recommendation_insights"
     const val ROOM_SETUP = "room_setup?roomId={roomId}"
     const val ONBOARDING = "onboarding"
+    const val PARTY = "party"
 
     fun settings(category: SettingsCategory? = null): String =
         if (category != null) "settings?category=${category.name}" else "settings"
@@ -172,8 +174,15 @@ fun MassDroidNavHost(
                 },
                 onNavigateToAlbum = { itemId, provider, name ->
                     navController.navigate(Routes.albumDetail(itemId, provider, name))
-                }
+                },
+                onOpenParty = { navController.navigate(Routes.PARTY) }
             )
+        }
+
+        composable(Routes.PARTY) {
+            // The screen closes itself as well as on Back. Popping by route does nothing once
+            // Party is gone, so two closes in the same frame cannot pop Now Playing under it.
+            PartyScreen(onBack = { navController.popBackStack(Routes.PARTY, inclusive = true) })
         }
 
         composable(

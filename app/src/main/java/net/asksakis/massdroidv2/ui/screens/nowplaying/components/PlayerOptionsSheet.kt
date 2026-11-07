@@ -12,6 +12,7 @@ import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Bedtime
 import androidx.compose.material.icons.filled.Block
+import androidx.compose.material.icons.filled.Celebration
 import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.filled.Nfc
 import androidx.compose.material.icons.filled.Radio
@@ -38,7 +39,8 @@ import net.asksakis.massdroidv2.ui.components.SheetDefaults
  *    and block / unblock the current artist
  *  - Player: player settings, transfer queue (only when other players exist) and the sleep
  *    timer (with live remaining label when active)
- *  - More: the album info switch and write an NFC tag (only when there is something to write)
+ *  - More: the album info switch, Party (only while the plugin is loaded, and never on a car
+ *    display) and write an NFC tag (only when there is something to write)
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -62,6 +64,8 @@ internal fun PlayerOptionsSheet(
      * to write, which a track without one and a phone without a chip both mean.
      */
     onWriteNfcTag: (() -> Unit)?,
+    /** Open the Party screen with the guests' join QR. Null when that is not on offer. */
+    onOpenParty: (() -> Unit)?,
     /** The few words about the album or the artist under the cover in portrait. */
     showAboutText: Boolean,
     onShowAboutTextChange: (Boolean) -> Unit,
@@ -275,6 +279,29 @@ internal fun PlayerOptionsSheet(
                 trailingContent = { Switch(checked = showAboutText, onCheckedChange = null) },
                 modifier = Modifier.clickable { onShowAboutTextChange(!showAboutText) }
             )
+            if (onOpenParty != null) {
+                ListItem(
+                    colors = SheetDefaults.listItemColors(),
+                    headlineContent = { Text("Party") },
+                    supportingContent = {
+                        Text(
+                            "Let guests add songs with a QR code",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    },
+                    leadingContent = {
+                        Icon(
+                            imageVector = Icons.Default.Celebration,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurface
+                        )
+                    },
+                    modifier = Modifier.clickable {
+                        onOpenParty()
+                        onDismiss()
+                    }
+                )
+            }
             if (onWriteNfcTag != null) {
                 ListItem(
                     colors = SheetDefaults.listItemColors(),

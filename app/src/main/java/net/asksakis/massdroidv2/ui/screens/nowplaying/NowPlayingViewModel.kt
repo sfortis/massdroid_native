@@ -57,6 +57,7 @@ import net.asksakis.massdroidv2.domain.repository.MusicRepository
 import net.asksakis.massdroidv2.domain.repository.PlayerDiscontinuityCommand
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 import net.asksakis.massdroidv2.domain.repository.SmartListeningRepository
+import net.asksakis.massdroidv2.domain.repository.PartyRepository
 import net.asksakis.massdroidv2.domain.repository.SmartPlaylistRepository
 import javax.inject.Inject
 import net.asksakis.massdroidv2.data.proximity.withRoomPlayer
@@ -199,6 +200,7 @@ class NowPlayingViewModel @Inject constructor(
     private val musicRepository: MusicRepository,
     private val smartListeningRepository: SmartListeningRepository,
     smartPlaylistRepository: SmartPlaylistRepository,
+    partyRepository: PartyRepository,
     private val trackDisliker: TrackDisliker,
     aboutTextResolver: AboutTextResolver,
     private val settingsRepository: net.asksakis.massdroidv2.domain.repository.SettingsRepository,
@@ -298,6 +300,10 @@ class NowPlayingViewModel @Inject constructor(
 
     /** True while the server's Smart Playlists plugin is loaded; the action shows only then. */
     val smartPlaylistsAvailable: StateFlow<Boolean> = smartPlaylistSeeds.available
+        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    /** True while the server's Party plugin is loaded; the Party entry shows only then. */
+    val partyAvailable: StateFlow<Boolean> = partyRepository.available
         .stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
     /** The track the smart playlist picker is open for, or null when it is closed. */
