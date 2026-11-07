@@ -161,16 +161,40 @@ interface MusicRepository {
     suspend fun playTrackThenFeed(queueId: String, trackUri: String, feedUri: String)
 
     /**
-     * Replace the queue with the album or regular playlist [containerUri], starting at
-     * [trackUri], so the tracks after it follow.
+     * Play the album or regular playlist [containerUri] from [trackUri] on, so the tracks
+     * after it follow, enqueued with [option] ("replace" or "play") and in the [sortKey] order.
      *
      * Not for a dynamic playlist, where the server ignores the start item; that one goes
      * through [playTrackThenFeed]. When the server does not find [trackUri] in the container
-     * it refuses, and [trackUri] is then played on its own. The refusal leaves the queue items
-     * as they were, but the server has already recorded the container as the queue's source;
-     * the replace that plays the track records its own.
+     * it refuses, and [trackUri] is then played on its own with the same option. The refusal
+     * leaves the queue items as they were, but the server has already recorded the container
+     * as the queue's source; the play that follows records its own.
      */
-    suspend fun playContainerFrom(queueId: String, containerUri: String, trackUri: String)
+    suspend fun playContainerFrom(
+        queueId: String,
+        containerUri: String,
+        trackUri: String,
+        option: String = "replace",
+        sortKey: PlaylistSortKey? = null
+    )
+
+    /**
+     * Play a track tapped in the listing of its album or playlist, the way the server's
+     * default for a track says.
+     *
+     * When that default plays the track now ("play" or "replace"), the container
+     * [containerUri] plays from the track on with that option, so the rest of the listing
+     * follows as it does on the server's own UI. When it queues the track ("add" or "next"),
+     * or cannot be read, or there is no [containerUri], the track goes alone with no option
+     * and the server applies its default to it, as a tap always did. Pass [containerUri] only
+     * when the container plays in the order on screen, sorted by [sortKey].
+     */
+    suspend fun playTappedTrack(
+        queueId: String,
+        trackUri: String,
+        containerUri: String?,
+        sortKey: PlaylistSortKey? = null
+    )
     suspend fun createPlaylist(name: String): Playlist
     suspend fun addTrackToPlaylist(playlist: Playlist, trackUri: String)
     suspend fun removeTrackFromPlaylist(playlist: Playlist, position: Int)

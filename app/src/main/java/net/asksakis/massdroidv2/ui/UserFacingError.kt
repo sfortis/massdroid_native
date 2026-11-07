@@ -21,6 +21,12 @@ fun Throwable.failureMessage(what: String): String =
     failureReason()?.let { "$what. $it" } ?: what
 
 /**
+ * True when the server did not answer in time. A play it is still resolving, such as a long
+ * playlist on a slow provider, can start after that, so it must not be reported as failed.
+ */
+fun Throwable.isUnanswered(): Boolean = this is MaApiException && isTimeout
+
+/**
  * Why it failed, or null when there is nothing worth adding.
  *
  * The server's own words are used when it refused, because they say what is actually in

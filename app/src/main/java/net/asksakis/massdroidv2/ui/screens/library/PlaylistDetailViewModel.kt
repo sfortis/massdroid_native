@@ -1,6 +1,7 @@
 package net.asksakis.massdroidv2.ui.screens.library
 
 import net.asksakis.massdroidv2.ui.failureMessage
+import net.asksakis.massdroidv2.ui.isUnanswered
 import android.util.Log
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
@@ -295,29 +296,38 @@ class PlaylistDetailViewModel @Inject constructor(
     /**
      * Play a tapped track. In a dynamic playlist the track starts and the playlist's
      * feed carries on after it; played on its own, it would leave a queue of one track,
-     * because the server ignores a start item for a dynamic playlist.
+     * because the server ignores a start item for a dynamic playlist. In any other playlist
+     * the playlist plays from the track on when the server's default for a track starts it
+     * now, and the track goes alone otherwise ([MusicRepository.playTappedTrack]).
      */
     fun playTrack(track: Track) {
-        if (!isDynamic || playlistUri.isBlank()) {
-            playUri(track.uri)
-            return
-        }
         val queueId = playerRepository.requireSelectedPlayerId() ?: return
-        // Two commands in a row: a second tap in between would interleave two pairs and
-        // rebuild the feed twice, so it waits like the play buttons do.
+        // A second tap while the first is in flight would send a second play (two pairs, for a
+        // dynamic playlist, which would rebuild the feed twice), so it waits like the buttons do.
         if (_sending.value) return
+        val dynamic = isDynamic && playlistUri.isNotBlank()
+        val order = sortKey.value
+        // The playlist can carry the tap only where it plays in the order on screen: a
+        // favourites-filtered listing or a server too old to sort leaves the track alone.
+        val container = playlistUri.takeIf {
+            it.isNotBlank() && !_favoritesOnly.value && musicRepository.supportsServerSideSort(order)
+        }
         viewModelScope.launch {
             _sending.value = true
             try {
                 playerRepository.setQueueFilterMode(queueId, PlayerRepository.QueueFilterMode.NORMAL)
-                musicRepository.playTrackThenFeed(queueId, track.uri, playlistUri)
+                if (dynamic) {
+                    musicRepository.playTrackThenFeed(queueId, track.uri, playlistUri)
+                } else {
+                    musicRepository.playTappedTrack(queueId, track.uri, container, order)
+                }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: EverythingBlockedException) {
                 _error.tryEmit("That track is by an artist you blocked")
             } catch (e: Exception) {
-                Log.w(TAG, "playTrack in dynamic playlist failed: ${e.message}")
-                _error.tryEmit(e.failureMessage("Couldn't start playback"))
+                Log.w(TAG, "playTrack failed (dynamic=$dynamic): ${e.message}")
+                if (!e.isUnanswered()) _error.tryEmit(e.failureMessage("Couldn't start playback"))
             } finally {
                 _sending.value = false
             }

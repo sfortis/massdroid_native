@@ -50,6 +50,7 @@ class MusicRepositoryImpl @Inject constructor(
         private const val OPTION_PLAY = "play"
         private const val OPTION_REPLACE = "replace"
         private const val KEY_ENQUEUE_OPTION_PLAYLIST = "default_enqueue_option_playlist"
+        private const val KEY_ENQUEUE_OPTION_TRACK = "default_enqueue_option_track"
 
         /**
          * Whether a play_media with this option starts playback. No option means the
@@ -858,19 +859,28 @@ class MusicRepositoryImpl @Inject constructor(
         playMedia(queueId, feedUri, option = "add", awaitResponse = true)
     }
 
-    override suspend fun playContainerFrom(queueId: String, containerUri: String, trackUri: String) {
-        Log.d(TAG, "playContainerFrom: $containerUri from $trackUri")
+    override suspend fun playContainerFrom(
+        queueId: String,
+        containerUri: String,
+        trackUri: String,
+        option: String,
+        sortKey: PlaylistSortKey?
+    ) {
+        Log.d(TAG, "playContainerFrom: $containerUri from $trackUri ($option, $sortKey)")
+        // The same guard as playMedia: a sort the server would silently ignore is not sent.
+        val serverSort = sortKey?.takeIf { supportsServerSideSort(it) && it.serverKey != null }
         try {
             // No blocked-artist plan: the start item is the track the listener picked, and the
             // blocked tracks after it are removed by the queue cleanup as in any container.
-            sendPlayMedia(queueId, OPTION_REPLACE, awaitResponse = true) {
+            sendPlayMedia(queueId, option, awaitResponse = true) {
                 wsClient.sendCommand(
                     MaCommands.PlayerQueues.PLAY_MEDIA,
                     playMediaArgs(
                         queueId = queueId,
                         uris = listOf(containerUri),
-                        option = OPTION_REPLACE,
+                        option = option,
                         radioMode = false,
+                        sortKey = serverSort,
                         startItem = trackUri
                     ),
                     awaitResponse = true
@@ -882,7 +892,26 @@ class MusicRepositoryImpl @Inject constructor(
             // start item among them leaves it nothing to play.
             if (!e.isMediaNotFound) throw e
             Log.w(TAG, "$trackUri does not start $containerUri; playing it alone")
-            playMedia(queueId, trackUri, option = OPTION_REPLACE, awaitResponse = true)
+            playMedia(queueId, trackUri, option = option, awaitResponse = true)
+        }
+    }
+
+    override suspend fun playTappedTrack(
+        queueId: String,
+        trackUri: String,
+        containerUri: String?,
+        sortKey: PlaylistSortKey?
+    ) {
+        val trackDefault = containerUri?.let {
+            QueueConfigParser.coreValue(serverQueueDefaults(), KEY_ENQUEUE_OPTION_TRACK)
+        }
+        // Only a default that starts the track now carries the container with it.
+        val option = trackDefault?.takeIf { it == OPTION_PLAY || it == OPTION_REPLACE }
+        if (containerUri != null && option != null) {
+            playContainerFrom(queueId, containerUri, trackUri, option, sortKey)
+        } else {
+            Log.d(TAG, "playTappedTrack: $trackUri alone (track default $trackDefault)")
+            playMedia(queueId, trackUri)
         }
     }
 
