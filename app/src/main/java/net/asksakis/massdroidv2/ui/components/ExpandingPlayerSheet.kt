@@ -29,6 +29,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.Saver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -75,7 +77,6 @@ fun ExpandingPlayerSheet(
 ) {
     val miniPlayerUiState by miniPlayerViewModel.miniPlayerUiState.collectAsStateWithLifecycle()
     val hasMiniPlayer = showMiniPlayer && miniPlayerUiState.hasPlayer
-    if (!hasMiniPlayer) return
 
     val density = LocalDensity.current
     val config = LocalConfiguration.current
@@ -92,26 +93,51 @@ fun ExpandingPlayerSheet(
     // the queue sheet on top of it.
     var expanded by rememberSaveable { mutableStateOf(false) }
     var showQueueSheet by rememberSaveable { mutableStateOf(false) }
-    // The back stack entry of the screen the full player was opened over, when it left for
-    // an artist or an album. Only Back to that same screen opens it again.
-    var expandOnReturnTo by rememberSaveable { mutableStateOf<String?>(null) }
+    // The screen the full player was opened over, when it left for an artist, an album or
+    // Party. Only Back to that same screen opens it again.
+    var returnTarget by rememberSaveable(stateSaver = ReturnTarget.Saver) { mutableStateOf<ReturnTarget?>(null) }
     // Start the animation where the restored state says it already is, otherwise a
     // sheet that comes back expanded would be drawn collapsed until something moved it.
     val animatable = remember { Animatable(if (expanded) 1f else 0f) }
     val scope = rememberCoroutineScope()
 
-    // Re-expand on the way back from a detail screen opened from Now Playing. Matching the
-    // route the player left for instead treated any later navigation as the way back, so an
-    // album opened from that artist page brought the player up over the album.
+    // Re-expand on the way back from a screen opened from Now Playing. Matching the route the
+    // player left for instead treated any later navigation as the way back, so an album
+    // opened from that artist page brought the player up over the album.
+    //
+    // This and the state above stay composed while the sheet is hidden. Party hides the
+    // sheet, and a sheet that left composition there came back without its return target,
+    // so Back from Party landed on the screen under the player instead of the player.
+    val visible by rememberUpdatedState(hasMiniPlayer)
     LaunchedEffect(Unit) {
         navController.currentBackStackEntryFlow.collect { entry ->
-            if (expandOnReturnTo != null && entry.id == expandOnReturnTo && !expanded) {
-                expandOnReturnTo = null
+            val target = returnTarget
+            if (target != null && entry.id == target.entryId && !expanded) {
+                returnTarget = null
+                // A sheet with no player to show stays closed, or it would pop up open by
+                // itself the next time a player is selected.
+                if (!visible) return@collect
                 expanded = true
-                animatable.animateTo(1f, tween(400, easing = FastOutSlowInEasing))
+                when (target.reopen) {
+                    ReturnTarget.Reopen.Animate -> animatable.animateTo(1f, tween(400, easing = FastOutSlowInEasing))
+                    ReturnTarget.Reopen.Snap -> animatable.snapTo(1f)
+                }
             }
         }
     }
+    // A player or a queue sheet left open on a screen that hides the sheet comes back
+    // closed, as it did when the sheet left composition there. Only a return target reopens
+    // the player.
+    LaunchedEffect(hasMiniPlayer) {
+        if (!hasMiniPlayer) {
+            showQueueSheet = false
+            if (expanded) {
+                expanded = false
+                animatable.snapTo(0f)
+            }
+        }
+    }
+    if (!hasMiniPlayer) return
 
     BackHandler(enabled = expanded) {
         expanded = false
@@ -255,7 +281,9 @@ fun ExpandingPlayerSheet(
                             onBack = { expanded = false; scope.launch { animatable.animateTo(0f, tween(450, easing = FastOutSlowInEasing)) } },
                             onNavigateToArtist = { id, prov, name ->
                                 scope.launch {
-                                    expandOnReturnTo = navController.currentBackStackEntry?.id
+                                    returnTarget = navController.currentBackStackEntry?.let {
+                                        ReturnTarget(it.id, ReturnTarget.Reopen.Animate)
+                                    }
                                     expanded = false
                                     animatable.animateTo(0f, tween(300, easing = FastOutSlowInEasing))
                                     navController.navigate(Routes.artistDetail(id, prov, name))
@@ -263,17 +291,24 @@ fun ExpandingPlayerSheet(
                             },
                             onNavigateToAlbum = { id, prov, name ->
                                 scope.launch {
-                                    expandOnReturnTo = navController.currentBackStackEntry?.id
+                                    returnTarget = navController.currentBackStackEntry?.let {
+                                        ReturnTarget(it.id, ReturnTarget.Reopen.Animate)
+                                    }
                                     expanded = false
                                     animatable.animateTo(0f, tween(300, easing = FastOutSlowInEasing))
                                     navController.navigate(Routes.albumDetail(id, prov, name))
                                 }
                             },
                             onOpenParty = {
+                                // Party covers the whole screen and hides the sheet, so the
+                                // player closes at once instead of sliding down first, and
+                                // comes back open at once: a step forward and back.
                                 scope.launch {
-                                    expandOnReturnTo = navController.currentBackStackEntry?.id
+                                    returnTarget = navController.currentBackStackEntry?.let {
+                                        ReturnTarget(it.id, ReturnTarget.Reopen.Snap)
+                                    }
                                     expanded = false
-                                    animatable.animateTo(0f, tween(300, easing = FastOutSlowInEasing))
+                                    animatable.snapTo(0f)
                                     navController.navigate(Routes.PARTY)
                                 }
                             }
@@ -363,3 +398,19 @@ private data class SheetShape(val collapsedHeightDp: Float, val expandedHeightDp
 }
 private val SHEET_SHADOW_COLOR = Color.Black.copy(alpha = 0.7f)
 
+/**
+ * Where the full player returns to after it left for another screen: the back stack entry it
+ * was opened over, and whether it slides up there again or is simply open.
+ */
+private data class ReturnTarget(val entryId: String, val reopen: Reopen) {
+    enum class Reopen { Animate, Snap }
+
+    companion object {
+        val Saver: Saver<ReturnTarget?, Any> = Saver(
+            save = { target -> target?.let { arrayListOf(it.entryId, it.reopen.name) } },
+            restore = { saved ->
+                (saved as? List<*>)?.let { ReturnTarget(it[0] as String, Reopen.valueOf(it[1] as String)) }
+            }
+        )
+    }
+}
