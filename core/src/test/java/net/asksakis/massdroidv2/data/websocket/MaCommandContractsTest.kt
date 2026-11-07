@@ -3,7 +3,10 @@ package net.asksakis.massdroidv2.data.websocket
 import com.google.common.truth.Truth.assertThat
 import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.int
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Test
 
@@ -88,5 +91,21 @@ class MaCommandContractsTest {
         val json = LibraryItemsArgs(limit = 10, offset = 0, genreIds = listOf(33, 47)).toJson()
         assertThat(json["genre"]?.jsonArray?.map { it.jsonPrimitive.content }).containsExactly("33", "47").inOrder()
         assertThat(LibraryItemsArgs(limit = 10, offset = 0, genreIds = emptyList()).toJson().containsKey("genre")).isFalse()
+    }
+
+    @Test
+    fun `smart playlist args use the plugin's parameter names`() {
+        assertThat(SmartPlaylistIdArgs("uuid-1").toJson()["playlist_id"]?.jsonPrimitive?.content)
+            .isEqualTo("uuid-1")
+
+        val rules = buildJsonObject { put("limit", JsonPrimitive(50)) }
+        val update = SmartPlaylistUpdateRulesArgs("uuid-1", rules).toJson()
+        assertThat(update["playlist_id"]?.jsonPrimitive?.content).isEqualTo("uuid-1")
+        assertThat(update["rules"]?.jsonObject).isEqualTo(rules)
+
+        val create = SmartPlaylistCreateArgs("Mix", rules).toJson()
+        assertThat(create["name"]?.jsonPrimitive?.content).isEqualTo("Mix")
+        assertThat(create["rules"]?.jsonObject).isEqualTo(rules)
+        assertThat(create["is_dynamic"]?.jsonPrimitive?.boolean).isTrue()
     }
 }

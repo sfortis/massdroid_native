@@ -11,12 +11,14 @@ import net.asksakis.massdroidv2.data.database.AppDatabase
 import net.asksakis.massdroidv2.data.database.PlayHistoryDao
 import net.asksakis.massdroidv2.data.genre.GenreSpellingResolver
 import net.asksakis.massdroidv2.data.musicbrainz.MusicBrainzGenreResolver
+import net.asksakis.massdroidv2.data.provider.ProviderManifestCache
 import net.asksakis.massdroidv2.data.repository.MaAuthRepositoryImpl
 import net.asksakis.massdroidv2.data.repository.MusicRepositoryImpl
 import net.asksakis.massdroidv2.data.repository.PlayHistoryRepositoryImpl
 import net.asksakis.massdroidv2.data.repository.PlayerRepositoryImpl
 import net.asksakis.massdroidv2.data.repository.SettingsRepositoryImpl
 import net.asksakis.massdroidv2.data.repository.SmartListeningRepositoryImpl
+import net.asksakis.massdroidv2.data.repository.SmartPlaylistRepositoryImpl
 import net.asksakis.massdroidv2.data.repository.queue.QueueItemsCoordinator
 import net.asksakis.massdroidv2.data.websocket.MaAuthProbe
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
@@ -27,6 +29,7 @@ import net.asksakis.massdroidv2.domain.repository.PlayHistoryRepository
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
 import net.asksakis.massdroidv2.domain.repository.SmartListeningRepository
+import net.asksakis.massdroidv2.domain.repository.SmartPlaylistRepository
 import javax.inject.Singleton
 
 @Module
@@ -107,6 +110,13 @@ object RepositoryModule {
         json: Json,
         playerRepository: dagger.Lazy<PlayerRepository>
     ): MusicRepository = MusicRepositoryImpl(wsClient, imageResolver, json, playerRepository)
+
+    @Provides
+    @Singleton
+    fun provideSmartPlaylistRepository(
+        wsClient: MaWebSocketClient,
+        providerManifestCache: ProviderManifestCache
+    ): SmartPlaylistRepository = SmartPlaylistRepositoryImpl(wsClient, providerManifestCache)
 
     @Provides
     @Singleton

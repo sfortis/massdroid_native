@@ -22,12 +22,14 @@ import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
 import net.asksakis.massdroidv2.data.websocket.SessionEventBus
 import net.asksakis.massdroidv2.domain.model.*
 import net.asksakis.massdroidv2.domain.playlist.PlaylistMembershipController
+import net.asksakis.massdroidv2.domain.playlist.SmartPlaylistSeedController
 import net.asksakis.massdroidv2.domain.recommendation.MediaIdentity
 import net.asksakis.massdroidv2.domain.repository.EverythingBlockedException
 import net.asksakis.massdroidv2.domain.repository.MusicRepository
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
 import net.asksakis.massdroidv2.domain.repository.SmartListeningRepository
+import net.asksakis.massdroidv2.domain.repository.SmartPlaylistRepository
 import javax.inject.Inject
 
 private const val TAG = "LibraryVM"
@@ -58,7 +60,8 @@ class LibraryViewModel @Inject constructor(
     private val libraryGenreSearch: LibraryGenreSearch,
     private val libraryGenreEnricher: LibraryGenreEnricher,
     val providerManifestCache: net.asksakis.massdroidv2.data.provider.ProviderManifestCache,
-    private val sessionEventBus: SessionEventBus
+    private val sessionEventBus: SessionEventBus,
+    smartPlaylistRepository: SmartPlaylistRepository
 ) : ViewModel() {
 
     private val _currentTab = MutableStateFlow(savedStateHandle[STATE_CURRENT_TAB] ?: 0)
@@ -481,9 +484,24 @@ class LibraryViewModel @Inject constructor(
     val addingToPlaylistId: StateFlow<String?> = playlistMembership.pendingPlaylistId
     val playlistContainsTrack: StateFlow<Set<String>> = playlistMembership.containsTrack
 
+    private val smartPlaylistSeeds = SmartPlaylistSeedController(smartPlaylistRepository, viewModelScope)
+
+    /** True while the server's Smart Playlists plugin is loaded; the action shows only then. */
+    val smartPlaylistsAvailable: StateFlow<Boolean> = smartPlaylistSeeds.available
+        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    /** The track or artist the smart playlist picker is open for, or null when it is closed. */
+    val smartPlaylistSeed: StateFlow<SmartPlaylistSeed?> = smartPlaylistSeeds.seed
+    val smartPlaylists: StateFlow<List<SmartPlaylistSummary>> = smartPlaylistSeeds.playlists
+    val isLoadingSmartPlaylists: StateFlow<Boolean> = smartPlaylistSeeds.isLoading
+    val smartPlaylistPendingId: StateFlow<String?> = smartPlaylistSeeds.pendingPlaylistId
+
     init {
         viewModelScope.launch {
             playlistMembership.errors.collect { _error.tryEmit(it) }
+        }
+        viewModelScope.launch {
+            smartPlaylistSeeds.events.collect { _error.tryEmit(smartPlaylistMessage(it)) }
         }
         // Load all settings eagerly before any data loading
         viewModelScope.launch {
@@ -1037,6 +1055,31 @@ class LibraryViewModel @Inject constructor(
             name,
             onCreated = { playlist -> playlistsPager.update { it + playlist } }
         )
+    }
+
+    // ---- smart playlist seeds ----------------------------------------------------------------------
+
+    fun openSmartPlaylistPicker(seed: SmartPlaylistSeed) = smartPlaylistSeeds.open(seed)
+
+    fun closeSmartPlaylistPicker() = smartPlaylistSeeds.close()
+
+    fun reloadSmartPlaylists() = smartPlaylistSeeds.reload()
+
+    fun addSeedToSmartPlaylist(playlist: SmartPlaylistSummary) = smartPlaylistSeeds.add(playlist)
+
+    fun createSmartPlaylist(name: String) = smartPlaylistSeeds.create(name)
+
+    private fun smartPlaylistMessage(event: SmartPlaylistSeedController.Event): String = when (event) {
+        is SmartPlaylistSeedController.Event.Added -> "Added to ${event.playlistName}"
+        is SmartPlaylistSeedController.Event.AlreadyPresent -> "${event.itemName} is already in ${event.playlistName}"
+        is SmartPlaylistSeedController.Event.Full ->
+            "Can't add more to ${event.playlistName}. It already has $SMART_PLAYLIST_MAX_SEEDS seeds"
+        is SmartPlaylistSeedController.Event.Created -> "Created ${event.playlistName}"
+        is SmartPlaylistSeedController.Event.LoadFailed -> event.error.failureMessage("Couldn't load the smart playlists")
+        is SmartPlaylistSeedController.Event.AddFailed ->
+            event.error.failureMessage("Couldn't add that to the smart playlist")
+        is SmartPlaylistSeedController.Event.CreateFailed ->
+            event.error.failureMessage("Couldn't create the smart playlist")
     }
 
     // ---- item state toggles ----------------------------------------------------------------------

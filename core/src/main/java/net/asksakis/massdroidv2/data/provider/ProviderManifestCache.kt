@@ -37,6 +37,14 @@ class ProviderManifestCache @Inject constructor() {
     val musicProviders: List<MusicProvider> get() = _musicProviders.value
     val musicProvidersFlow: StateFlow<List<MusicProvider>> = _musicProviders.asStateFlow()
 
+    /**
+     * The domains of every provider instance the server has loaded, plugins included. A
+     * plugin's API commands exist only while it is loaded, so this is how a feature that
+     * needs one (smart_playlist) knows whether to show itself, without sending a probe.
+     */
+    private val _loadedDomains = MutableStateFlow<Set<String>>(emptySet())
+    val loadedDomains: StateFlow<Set<String>> = _loadedDomains.asStateFlow()
+
     suspend fun fetchManifests(wsClient: MaWebSocketClient, json: Json) {
         try {
             val result = wsClient.sendCommand(MaCommands.Providers.MANIFESTS) ?: return
@@ -63,6 +71,7 @@ class ProviderManifestCache @Inject constructor() {
                 kotlinx.serialization.builtins.ListSerializer(ProviderInstance.serializer()),
                 result
             )
+            _loadedDomains.value = instances.mapTo(HashSet()) { it.domain }
             val refreshedMusicProviders = instances
                 .filter { it.type == "music" && it.domain != "builtin" }
                 .map { MusicProvider(it.instanceId, it.domain, it.name, it.supportedFeatures.toSet()) }
