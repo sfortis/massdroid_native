@@ -257,7 +257,6 @@ class PlayerRepositoryImpl @Inject constructor(
     private val manualSkipByQueue = ConcurrentHashMap<String, String>()
     private val queueReplacementByQueue = ConcurrentHashMap<String, String>()
     private val blockedAutoSkipByQueue = ConcurrentHashMap<String, Pair<String, Long>>()
-    private val blockedQueueCleanupAtByQueue = ConcurrentHashMap<String, Long>()
     private val queueFilterModeByQueue = ConcurrentHashMap<String, PlayerRepository.QueueFilterMode>()
     // The list the app sent to a generated queue, so a reconnect can tell whether the queue
     // still plays it (see recheckGeneratedQueue).
@@ -265,6 +264,12 @@ class PlayerRepositoryImpl @Inject constructor(
     // Generated modes set aside at a disconnect, until the queue is seen again.
     private val generatedModesAwaitingRecheck = ConcurrentHashMap<String, PlayerRepository.QueueFilterMode>()
     private var blockedQueueCleanupJob: Job? = null
+    private val blockedCleanupPacer = BlockedCleanupPacer(
+        scope = scope,
+        cooldownMs = BLOCKED_QUEUE_CLEANUP_COOLDOWN_MS,
+        now = System::currentTimeMillis,
+        run = ::startBlockedQueueCleanup
+    )
     // Debounced authoritative player resync. PLAYER_ADDED/REMOVED events carry
     // each player's can_group_with as of ITS registration; when players register
     // at staggered times (notably an MA server restart, where players re-appear
@@ -342,7 +347,7 @@ class PlayerRepositoryImpl @Inject constructor(
                         manualSkipByQueue.clear()
                         queueReplacementByQueue.clear()
                         blockedAutoSkipByQueue.clear()
-                        blockedQueueCleanupAtByQueue.clear()
+                        blockedCleanupPacer.reset()
                         setAsideGeneratedModes()
                         blockedQueueCleanupJob?.cancel()
                         suppressedArtistUrisSnapshot = emptySet()
@@ -441,7 +446,7 @@ class PlayerRepositoryImpl @Inject constructor(
         manualSkipByQueue.clear()
         queueReplacementByQueue.clear()
         blockedAutoSkipByQueue.clear()
-        blockedQueueCleanupAtByQueue.clear()
+        blockedCleanupPacer.reset()
         queueFilterModeByQueue.clear()
         generatedQueueContent.clear()
         generatedModesAwaitingRecheck.clear()
@@ -582,7 +587,7 @@ class PlayerRepositoryImpl @Inject constructor(
                     _players.update { list -> list.filter { it.playerId != id } }
                     queueTracking.remove(id)
                     blockedAutoSkipByQueue.remove(id)
-                    blockedQueueCleanupAtByQueue.remove(id)
+                    blockedCleanupPacer.forget(id)
                     queueFilterModeByQueue.remove(id)
                     generatedQueueContent.remove(id)
                     generatedModesAwaitingRecheck.remove(id)
@@ -1059,10 +1064,13 @@ class PlayerRepositoryImpl @Inject constructor(
         // screen stuck on the spinner / showing a stale member queue.
         val queueId = effectiveQueueId() ?: return
         if (requestedId != selectedPlayerId && requestedId != queueId) return
-        val now = System.currentTimeMillis()
-        val lastAt = blockedQueueCleanupAtByQueue[queueId] ?: 0L
-        if (!force && now - lastAt < BLOCKED_QUEUE_CLEANUP_COOLDOWN_MS) return
-        blockedQueueCleanupAtByQueue[queueId] = now
+        blockedCleanupPacer.request(queueId, reason, force)
+    }
+
+    /** Run by [blockedCleanupPacer], at once or when its cooldown ends. */
+    private fun startBlockedQueueCleanup(queueId: String, reason: String) {
+        // A run that waited out the cooldown checks again: the selection may have moved on.
+        if (effectiveQueueId() != queueId) return
         blockedQueueCleanupJob?.cancel()
         blockedQueueCleanupJob = scope.launch {
             purgeBlockedTracksFromQueue(queueId, reason)
