@@ -34,11 +34,11 @@ import net.asksakis.massdroidv2.ui.components.SheetDefaults
  * Long-press / "more" sheet on the Now Playing screen, in three sections:
  *
  *  - This Track: start song radio (only when the queue has a current track), add to a smart
- *    playlist (only for a music track while the plugin is loaded), the album info switch,
- *    chapters (audiobooks) and block / unblock the current artist
+ *    playlist (only for a music track while the plugin is loaded), chapters (audiobooks)
+ *    and block / unblock the current artist
  *  - Player: player settings, transfer queue (only when other players exist) and the sleep
  *    timer (with live remaining label when active)
- *  - More: write an NFC tag, shown with its header only when there is something to write
+ *  - More: the album info switch and write an NFC tag (only when there is something to write)
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -89,8 +89,8 @@ internal fun PlayerOptionsSheet(
                 )
                 HorizontalDivider(modifier = Modifier.padding(top = 6.dp, bottom = 4.dp))
             }
-            // This Track always shows Album Info and the artist row, and Player always shows
-            // Player Settings, so only More can be empty and lose its header.
+            // Each section always has a row (the artist row, Player Settings and Album Info),
+            // so every header always shows.
             SettingsSectionHeader("This Track")
             if (onStartSongRadio != null) {
                 ListItem(
@@ -135,27 +135,6 @@ internal fun PlayerOptionsSheet(
                     modifier = Modifier.clickable(onClick = onAddToSmartPlaylist)
                 )
             }
-            // The sheet stays open: the switch shows the change, and the text under the cover
-            // opens or closes behind it.
-            ListItem(
-                colors = SheetDefaults.listItemColors(),
-                headlineContent = { Text("Album Info") },
-                supportingContent = {
-                    Text(
-                        "A few words about the album or the artist under the cover",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                },
-                leadingContent = {
-                    Icon(
-                        imageVector = Icons.Default.Info,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurface
-                    )
-                },
-                trailingContent = { Switch(checked = showAboutText, onCheckedChange = null) },
-                modifier = Modifier.clickable { onShowAboutTextChange(!showAboutText) }
-            )
             if (chapterCount > 0) {
                 ListItem(
                     colors = SheetDefaults.listItemColors(),
@@ -274,8 +253,29 @@ internal fun PlayerOptionsSheet(
                     onDismiss()
                 }
             )
+            SettingsSectionHeader("More")
+            // The sheet stays open: the switch shows the change, and the text under the cover
+            // opens or closes behind it.
+            ListItem(
+                colors = SheetDefaults.listItemColors(),
+                headlineContent = { Text("Album Info") },
+                supportingContent = {
+                    Text(
+                        "A few words about the album or the artist under the cover",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                },
+                leadingContent = {
+                    Icon(
+                        imageVector = Icons.Default.Info,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurface
+                    )
+                },
+                trailingContent = { Switch(checked = showAboutText, onCheckedChange = null) },
+                modifier = Modifier.clickable { onShowAboutTextChange(!showAboutText) }
+            )
             if (onWriteNfcTag != null) {
-                SettingsSectionHeader("More")
                 ListItem(
                     colors = SheetDefaults.listItemColors(),
                     headlineContent = { Text("Write NFC tag") },
