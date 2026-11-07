@@ -3,6 +3,8 @@ package net.asksakis.massdroidv2.domain.party
 import com.google.common.truth.Truth.assertThat
 import net.asksakis.massdroidv2.domain.party.PartyFit.Companion.BALL_TOP_DP
 import net.asksakis.massdroidv2.domain.party.PartyFit.Companion.COMPACT_TOP_DP
+import net.asksakis.massdroidv2.domain.party.PartyFit.Companion.GAP_COUNT
+import net.asksakis.massdroidv2.domain.party.PartyFit.Companion.MAX_EXTRA_GAP_DP
 import net.asksakis.massdroidv2.domain.party.PartyFit.Companion.QR_MAX_DP
 import net.asksakis.massdroidv2.domain.party.PartyFit.Companion.QR_MIN_DP
 import org.junit.Test
@@ -14,7 +16,32 @@ class PartyFitTest {
     fun `a tall phone gets the full QR code and the full room for the ball`() {
         val fit = PartyFit.withQr(availableDp = 650f, belowDp = 212f, widthDp = 312f)
 
-        assertThat(fit).isEqualTo(PartyFit(BALL_TOP_DP, QR_MAX_DP, showBall = true))
+        assertThat(fit.topDp).isEqualTo(BALL_TOP_DP)
+        assertThat(fit.qrDp).isEqualTo(QR_MAX_DP)
+        assertThat(fit.showBall).isTrue()
+    }
+
+    /** 438 dp of room, 184 for the ball and 220 for the code leave 34 dp for three gaps. */
+    @Test
+    fun `spare height is spread over the gaps under the code`() {
+        val fit = PartyFit.withQr(availableDp = 650f, belowDp = 212f, widthDp = 312f)
+
+        assertThat(fit.gapDp).isWithin(0.01f).of(34f / GAP_COUNT)
+        assertThat(fit.topDp + fit.qrDp + 212f + fit.gapDp * GAP_COUNT).isWithin(0.01f).of(650f)
+    }
+
+    @Test
+    fun `the extra gaps stop at their maximum`() {
+        assertThat(PartyFit.withQr(availableDp = 900f, belowDp = 212f, widthDp = 312f).gapDp)
+            .isEqualTo(MAX_EXTRA_GAP_DP)
+    }
+
+    @Test
+    fun `the gaps give up their extra before the QR code shrinks`() {
+        val fit = PartyFit.withQr(availableDp = 600f, belowDp = 212f, widthDp = 312f)
+
+        assertThat(fit.gapDp).isEqualTo(0f)
+        assertThat(fit.qrDp).isLessThan(QR_MAX_DP)
     }
 
     @Test
@@ -30,7 +57,7 @@ class PartyFitTest {
     fun `with the QR code at its smallest the ball's room shrinks`() {
         val fit = PartyFit.withQr(availableDp = 650f, belowDp = 300f, widthDp = 312f)
 
-        assertThat(fit).isEqualTo(PartyFit(170f, QR_MIN_DP, showBall = true))
+        assertThat(fit).isEqualTo(PartyFit(170f, QR_MIN_DP, showBall = true, gapDp = 0f))
     }
 
     /**
@@ -45,6 +72,7 @@ class PartyFitTest {
         assertThat(fit.showBall).isFalse()
         assertThat(fit.topDp).isEqualTo(COMPACT_TOP_DP)
         assertThat(fit.qrDp).isAtLeast(QR_MIN_DP)
+        assertThat(fit.gapDp).isEqualTo(0f)
         assertThat(fit.topDp + fit.qrDp + 300f).isAtMost(504f)
     }
 

@@ -182,9 +182,10 @@ fun PartyScreen(
 
 /**
  * The QR code with what guests need to know under it, fitted to the height there is: the code
- * shrinks first, then the room for the ball (see [PartyFit]). The content under the code is
- * measured once it is laid out, so the fit follows the warning or the hint appearing. Only a
- * very small screen or a large font still scrolls.
+ * shrinks first, then the room for the ball (see [PartyFit]), and spare height widens the gaps
+ * under the code. The content under the code is measured once it is laid out, so the fit
+ * follows the warning or the hint appearing. Only a very small screen or a large font still
+ * scrolls.
  */
 @Composable
 private fun PartyReady(state: PartyUiState.Ready, isDark: Boolean, ballRoom: MutableState<Dp?>) {
@@ -205,16 +206,21 @@ private fun PartyReady(state: PartyUiState.Ready, isDark: Boolean, ballRoom: Mut
                 .padding(start = SIDE_PADDING, end = SIDE_PADDING, top = fit.topDp.dp, bottom = BOTTOM_PADDING),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
+            val extraGap = fit.gapDp.dp
             QrCard(url = state.link.url, title = state.title, isDark = isDark, size = fit.qrDp.dp)
-            Spacer(Modifier.height(QR_GAP))
+            Spacer(Modifier.height(QR_GAP + extraGap))
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .onSizeChanged { below = with(density) { it.height.toDp() } },
+                    // Measured without the extra gaps inside it, so the fit never feeds itself.
+                    .onSizeChanged { below = with(density) { it.height.toDp() } - extraGap * INNER_GAPS },
                 horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(CONTENT_GAP)
+                verticalArrangement = Arrangement.spacedBy(CONTENT_GAP + extraGap)
             ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
                     Text(
                         text = state.title,
                         style = MaterialTheme.typography.headlineSmall,
@@ -275,8 +281,7 @@ private fun QrCard(url: String, title: String, isDark: Boolean, size: Dp) {
 
 /**
  * The player guest songs go to. While nothing plays there is no player worth naming, so the
- * card says so instead, and the name comes back as soon as a player starts. While the app
- * asks the server again after a player change, the card names nobody.
+ * card says so instead, and the name comes back once the server names a player that plays.
  */
 @Composable
 private fun PartyPlayerCard(target: PartyTarget, isDark: Boolean) {
@@ -295,7 +300,6 @@ private fun PartyPlayerCard(target: PartyTarget, isDark: Boolean) {
     val name = when (target) {
         PartyTarget.GuestSession -> "Each guest's own phone"
         PartyTarget.GuestSessionUnavailable -> "Not available"
-        PartyTarget.Checking -> "Checking..."
         is PartyTarget.SelectedPlayer -> target.name.label()
         is PartyTarget.OtherPlayer -> target.name.label()
         PartyTarget.Idle -> return
@@ -412,6 +416,9 @@ private val SIDE_PADDING = 24.dp
 private val BOTTOM_PADDING = 16.dp
 private val QR_GAP = 16.dp
 private val CONTENT_GAP = 12.dp
+
+/** The gaps between the title, the player card and the footer, which also share spare height. */
+private const val INNER_GAPS = 2
 
 /** The title, the player card and the footer under the QR code, with their gaps. */
 private val ESTIMATED_BELOW = 170.dp

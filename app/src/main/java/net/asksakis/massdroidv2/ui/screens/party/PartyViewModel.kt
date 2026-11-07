@@ -8,21 +8,21 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import net.asksakis.massdroidv2.domain.model.PartyInfo
 import net.asksakis.massdroidv2.domain.model.PartyJoinLink
 import net.asksakis.massdroidv2.domain.model.PartyMode
 import net.asksakis.massdroidv2.domain.party.PartyTarget
+import net.asksakis.massdroidv2.domain.party.PartyTargetFollower
+import net.asksakis.massdroidv2.domain.party.PartyTargetSnapshot
 import net.asksakis.massdroidv2.domain.repository.PartyRepository
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
@@ -58,32 +58,25 @@ class PartyViewModel @Inject constructor(
         data object Loading : Loaded
         data object GuestAccessOff : Loaded
         data class Failed(val message: String) : Loaded
-        data class Party(val link: PartyJoinLink, val target: TargetRead, val info: PartyInfo) : Loaded
-    }
-
-    /** The queue id `party/player` named, or a read of it in progress after a player change. */
-    private sealed interface TargetRead {
-        data class Known(val queueId: String?) : TargetRead
-
-        /** [previous] is shown again if the read fails or is cancelled. */
-        data class Rereading(val previous: String?) : TargetRead
+        data class Party(val link: PartyJoinLink, val target: PartyTargetSnapshot, val info: PartyInfo) : Loaded
     }
 
     private val loaded = MutableStateFlow<Loaded>(Loaded.Loading)
     private var loadJob: Job? = null
 
     /**
-     * The target is matched live, so the warning follows when the listener picks another
-     * player while the screen is open. The queue id the server named is read on each load and
-     * again by [followTarget].
+     * The target is resolved from the last snapshot the server answered, read on each load and
+     * again by [followTarget], and never from the live players alone. The card then changes
+     * only when the resolved target does, so players starting and stopping around the house do
+     * not make it, or the QR code sized around it, jump. The selected player is matched live,
+     * so the warning follows when the listener picks another player while the screen is open.
      */
     val state: StateFlow<PartyUiState> = combine(
         loaded,
-        playerRepository.players,
         playerRepository.selectedPlayer,
         playerRepository.queueState,
         settingsRepository.sendspinClientId
-    ) { loaded, players, selected, queue, thisPhone ->
+    ) { loaded, selected, queue, thisPhone ->
         when (loaded) {
             Loaded.Loading -> PartyUiState.Loading
             Loaded.GuestAccessOff -> PartyUiState.GuestAccessOff
@@ -92,19 +85,12 @@ class PartyViewModel @Inject constructor(
                 link = loaded.link,
                 title = loaded.info.name ?: DEFAULT_TITLE,
                 qrText = loaded.info.qrText,
-                target = when (val read = loaded.target) {
-                    // The target named before a player started or stopped may be stale, so
-                    // the screen names nobody until the server answers again.
-                    is TargetRead.Rereading -> PartyTarget.Checking
-                    is TargetRead.Known -> PartyTarget.resolve(
-                        targetQueueId = read.queueId,
-                        mode = loaded.info.mode,
-                        players = players,
-                        // The queue the Queue screen shows for the selected player.
-                        selectedQueueId = queue?.queueId ?: selected?.playerId,
-                        thisPhonePlayerId = thisPhone
-                    )
-                }
+                target = loaded.target.resolve(
+                    mode = loaded.info.mode,
+                    // The queue the Queue screen shows for the selected player.
+                    selectedQueueId = queue?.queueId ?: selected?.playerId,
+                    thisPhonePlayerId = thisPhone
+                )
             )
         }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MS), PartyUiState.Loading)
@@ -141,7 +127,10 @@ class PartyViewModel @Inject constructor(
                     // valid QR still shows when one of them fails.
                     val target = async { orNull("party player") { partyRepository.targetQueueId() } }
                     val info = async { orNull("party settings") { partyRepository.info() } ?: DEFAULT_INFO }
-                    partyRepository.joinLink()?.let { Loaded.Party(it, TargetRead.Known(target.await()), info.await()) }
+                    partyRepository.joinLink()?.let { link ->
+                        val snapshot = PartyTargetSnapshot(target.await(), playerRepository.players.value)
+                        Loaded.Party(link, snapshot, info.await())
+                    }
                         ?: Loaded.GuestAccessOff
                 }
             } catch (e: CancellationException) {
@@ -154,40 +143,14 @@ class PartyViewModel @Inject constructor(
     }
 
     /**
-     * Reads the party player again whenever a player starts or stops, until cancelled. The
-     * plugin's automatic choice follows whichever queue is playing, so in the car a home
-     * speaker that starts playing takes the guests' songs; this keeps the screen's warning
-     * true. The screen runs it only while it is resumed. Bursts of changes are folded into
-     * one read [TARGET_SETTLE_MS] after the last of them, and the screen names no player until
-     * that read answers.
+     * Follows the party player while the screen is resumed: a new snapshot replaces the shown
+     * one after players start or stop, see [PartyTargetFollower]. A load in progress is left
+     * alone, because it reads the target itself.
      */
     suspend fun followTarget() {
-        playerRepository.players
-            .map { players -> players.map { it.playerId to it.state } }
-            .distinctUntilChanged()
-            .drop(1)
-            .collectLatest {
-                val current = loaded.value as? Loaded.Party ?: return@collectLatest
-                val previous = when (val read = current.target) {
-                    is TargetRead.Known -> read.queueId
-                    is TargetRead.Rereading -> read.previous
-                }
-                val rereading = current.copy(target = TargetRead.Rereading(previous))
-                // Only onto the same load: a refresh that started meanwhile wins.
-                if (!loaded.compareAndSet(current, rereading)) return@collectLatest
-                // A failed or cancelled read shows the previous target again, so a stalled
-                // connection or leaving the screen never leaves it on "checking".
-                var answer = previous
-                try {
-                    delay(TARGET_SETTLE_MS)
-                    answer = partyRepository.targetQueueId()
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    Log.w(TAG, "Could not read the party player again, keeping the current one: ${e.message}")
-                } finally {
-                    loaded.compareAndSet(rereading, rereading.copy(target = TargetRead.Known(answer)))
-                }
+        PartyTargetFollower.updates(playerRepository.players, partyRepository::targetQueueId)
+            .collect { snapshot ->
+                loaded.update { current -> (current as? Loaded.Party)?.copy(target = snapshot) ?: current }
             }
     }
 
@@ -204,7 +167,6 @@ class PartyViewModel @Inject constructor(
         const val TAG = "PartyVM"
         const val DEFAULT_TITLE = "Party"
         const val STOP_TIMEOUT_MS = 5_000L
-        const val TARGET_SETTLE_MS = 1_000L
         val DEFAULT_INFO = PartyInfo(name = null, qrText = null, mode = PartyMode.UNKNOWN)
     }
 }

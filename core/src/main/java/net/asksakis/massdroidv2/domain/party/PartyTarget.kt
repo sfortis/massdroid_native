@@ -21,9 +21,6 @@ sealed interface PartyTarget {
      */
     data object Idle : PartyTarget
 
-    /** A player started or stopped, and the app is asking the server for the party player again. */
-    data object Checking : PartyTarget
-
     /** The silent disco: every guest listens on their own device. */
     data object GuestSession : PartyTarget
 
