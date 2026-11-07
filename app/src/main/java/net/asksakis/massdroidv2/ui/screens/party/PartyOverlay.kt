@@ -17,6 +17,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -56,6 +57,8 @@ fun PartyOverlay(visible: Boolean, onClose: () -> Unit) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
+                // Nothing of Party is drawn beside the sliding panel.
+                .clipToBounds()
                 // Vertical drags the screen does not use itself would otherwise reach the
                 // expanding player under it and pull it closed with Party inside.
                 .pointerInput(Unit) { detectVerticalDragGestures { change, _ -> change.consume() } }

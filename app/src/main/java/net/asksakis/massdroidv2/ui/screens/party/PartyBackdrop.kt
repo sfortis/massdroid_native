@@ -149,8 +149,10 @@ internal fun PartyBackdrop(
             modifier = Modifier
                 .fillMaxSize()
                 // Its own layer, so each frame records only these lights and not the cover,
-                // the scrims and the content under the same destination.
-                .graphicsLayer()
+                // the scrims and the content under the same destination. Clipped, because the
+                // beams reach far past the screen and the specks drift off its edge, and while
+                // Party slides over Now Playing they would light up the player beside it.
+                .graphicsLayer(clip = true)
                 .drawWithCache {
                     val room = ballRoom.value
                     // The ball hangs from just under the top of the app bar down to a small gap
