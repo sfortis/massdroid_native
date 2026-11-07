@@ -58,7 +58,15 @@ class PartyViewModel @Inject constructor(
         data object Loading : Loaded
         data object GuestAccessOff : Loaded
         data class Failed(val message: String) : Loaded
-        data class Party(val link: PartyJoinLink, val targetQueueId: String?, val info: PartyInfo) : Loaded
+        data class Party(val link: PartyJoinLink, val target: TargetRead, val info: PartyInfo) : Loaded
+    }
+
+    /** The queue id `party/player` named, or a read of it in progress after a player change. */
+    private sealed interface TargetRead {
+        data class Known(val queueId: String?) : TargetRead
+
+        /** [previous] is shown again if the read fails or is cancelled. */
+        data class Rereading(val previous: String?) : TargetRead
     }
 
     private val loaded = MutableStateFlow<Loaded>(Loaded.Loading)
@@ -84,14 +92,19 @@ class PartyViewModel @Inject constructor(
                 link = loaded.link,
                 title = loaded.info.name ?: DEFAULT_TITLE,
                 qrText = loaded.info.qrText,
-                target = PartyTarget.resolve(
-                    targetQueueId = loaded.targetQueueId,
-                    mode = loaded.info.mode,
-                    players = players,
-                    // The queue the Queue screen shows for the selected player.
-                    selectedQueueId = queue?.queueId ?: selected?.playerId,
-                    thisPhonePlayerId = thisPhone
-                )
+                target = when (val read = loaded.target) {
+                    // The target named before a player started or stopped may be stale, so
+                    // the screen names nobody until the server answers again.
+                    is TargetRead.Rereading -> PartyTarget.Checking
+                    is TargetRead.Known -> PartyTarget.resolve(
+                        targetQueueId = read.queueId,
+                        mode = loaded.info.mode,
+                        players = players,
+                        // The queue the Queue screen shows for the selected player.
+                        selectedQueueId = queue?.queueId ?: selected?.playerId,
+                        thisPhonePlayerId = thisPhone
+                    )
+                }
             )
         }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MS), PartyUiState.Loading)
@@ -128,7 +141,7 @@ class PartyViewModel @Inject constructor(
                     // valid QR still shows when one of them fails.
                     val target = async { orNull("party player") { partyRepository.targetQueueId() } }
                     val info = async { orNull("party settings") { partyRepository.info() } ?: DEFAULT_INFO }
-                    partyRepository.joinLink()?.let { Loaded.Party(it, target.await(), info.await()) }
+                    partyRepository.joinLink()?.let { Loaded.Party(it, TargetRead.Known(target.await()), info.await()) }
                         ?: Loaded.GuestAccessOff
                 }
             } catch (e: CancellationException) {
@@ -145,7 +158,8 @@ class PartyViewModel @Inject constructor(
      * plugin's automatic choice follows whichever queue is playing, so in the car a home
      * speaker that starts playing takes the guests' songs; this keeps the screen's warning
      * true. The screen runs it only while it is resumed. Bursts of changes are folded into
-     * one read [TARGET_SETTLE_MS] after the last of them.
+     * one read [TARGET_SETTLE_MS] after the last of them, and the screen names no player until
+     * that read answers.
      */
     suspend fun followTarget() {
         playerRepository.players
@@ -153,20 +167,27 @@ class PartyViewModel @Inject constructor(
             .distinctUntilChanged()
             .drop(1)
             .collectLatest {
-                delay(TARGET_SETTLE_MS)
                 val current = loaded.value as? Loaded.Party ?: return@collectLatest
-                // A failed read keeps the target shown, so a stalled connection does not turn
-                // a known player into "None right now".
-                val target = try {
-                    partyRepository.targetQueueId()
+                val previous = when (val read = current.target) {
+                    is TargetRead.Known -> read.queueId
+                    is TargetRead.Rereading -> read.previous
+                }
+                val rereading = current.copy(target = TargetRead.Rereading(previous))
+                // Only onto the same load: a refresh that started meanwhile wins.
+                if (!loaded.compareAndSet(current, rereading)) return@collectLatest
+                // A failed or cancelled read shows the previous target again, so a stalled
+                // connection or leaving the screen never leaves it on "checking".
+                var answer = previous
+                try {
+                    delay(TARGET_SETTLE_MS)
+                    answer = partyRepository.targetQueueId()
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
                     Log.w(TAG, "Could not read the party player again, keeping the current one: ${e.message}")
-                    return@collectLatest
+                } finally {
+                    loaded.compareAndSet(rereading, rereading.copy(target = TargetRead.Known(answer)))
                 }
-                // Only onto the same load: a refresh that started meanwhile wins.
-                loaded.compareAndSet(current, current.copy(targetQueueId = target))
             }
     }
 

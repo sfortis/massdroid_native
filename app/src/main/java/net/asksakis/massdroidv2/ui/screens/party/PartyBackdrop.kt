@@ -8,10 +8,13 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.statusBars
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
+import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -68,13 +71,18 @@ private class PartyMotion {
  * Everything moves from one clock that is read only while drawing, in a layer of its own, so
  * a frame redraws that layer and never recomposes. The clock runs only while the screen is
  * resumed. With animations turned off in the system settings it draws one still frame with no
- * strobe. [showBall] is false on a screen too short for the ball above the QR code.
+ * strobe.
+ *
+ * [ballRoom] is the room the content leaves above itself, under the app bar. The ball is made
+ * as large as that room holds, up to its full size, and is left out while it is null. It is
+ * read only while drawing, so a change in the content's fit redraws and never recomposes.
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun PartyBackdrop(
     artworkUrl: String?,
     isDark: Boolean,
-    showBall: Boolean,
+    ballRoom: State<Dp?>,
     modifier: Modifier = Modifier
 ) {
     val surface = MaterialTheme.colorScheme.surface
@@ -85,7 +93,7 @@ internal fun PartyBackdrop(
     val tintA = animateColorAsState(tints?.first ?: NEUTRAL_TINT_A, tween(TINT_FADE_MS), label = "partyTintA")
     val tintB = animateColorAsState(tints?.second ?: NEUTRAL_TINT_B, tween(TINT_FADE_MS), label = "partyTintB")
     val look = if (isDark) DarkLook else LightLook
-    val ballTop = with(LocalDensity.current) { WindowInsets.statusBars.getTop(this).toDp() } + BALL_TOP_BELOW_STATUS_BAR
+    val statusBar = with(LocalDensity.current) { WindowInsets.statusBars.getTop(this).toDp() }
     val dot = remember { softDot() }
     val ball = remember(dot) { DiscoBall(dot) }
     val specks = remember { PartySpecks() }
@@ -119,8 +127,14 @@ internal fun PartyBackdrop(
                 // the scrims and the content under the same destination.
                 .graphicsLayer()
                 .drawWithCache {
-                    val center = Offset(size.width / 2f, (ballTop + BALL_SIZE / 2).toPx())
-                    val radius = (BALL_SIZE * BALL_RADIUS_SHARE).toPx()
+                    val room = ballRoom.value
+                    // The ball hangs from just under the top of the app bar down to a small gap
+                    // above the content, and is never larger than its full size.
+                    val ballTop = statusBar + BALL_TOP_BELOW_STATUS_BAR
+                    val ballSize = room?.let { minOf(BALL_SIZE, statusBar + TopAppBarDefaults.TopAppBarExpandedHeight + it - BALL_GAP - ballTop) }
+                    val showBall = ballSize != null && ballSize > 0.dp
+                    val center = Offset(size.width / 2f, (ballTop + (ballSize ?: BALL_SIZE) / 2).toPx())
+                    val radius = ((ballSize ?: BALL_SIZE) * BALL_RADIUS_SHARE).toPx()
                     val beams = Brush.sweepGradient(*beamStops(look.beamAlphas), center = center)
                     val beamReach = size.maxDimension * BEAM_REACH_SCALE
                     val rim = Brush.radialGradient(
@@ -308,6 +322,10 @@ private const val BALL_RADIUS_SHARE = 0.47f
 
 /** The 64 dp app bar and a small gap under it. */
 private val BALL_TOP_BELOW_STATUS_BAR: Dp = 74.dp
+
+
+/** The space kept between the ball and the content under it. */
+private val BALL_GAP: Dp = 12.dp
 private val LINE_WIDTH: Dp = 2.dp
 private val GLINT_LENGTH: Dp = 11.dp
 private val GLINT_STROKE: Dp = 1.dp
