@@ -68,6 +68,7 @@ import kotlinx.coroutines.withContext
 import net.asksakis.massdroidv2.ui.screens.nowplaying.components.landscapeArtSurfaceWidth
 import net.asksakis.massdroidv2.ui.screens.nowplaying.components.KeepScreenOn
 import net.asksakis.massdroidv2.ui.screens.nowplaying.components.PlayerOptionsSheet
+import net.asksakis.massdroidv2.ui.screens.party.PartyOverlay
 import net.asksakis.massdroidv2.ui.screens.nowplaying.components.QualityActionRow
 import net.asksakis.massdroidv2.ui.screens.nowplaying.components.SeekBar
 import net.asksakis.massdroidv2.ui.screens.nowplaying.components.SendspinStatusSheet
@@ -104,7 +105,6 @@ fun NowPlayingScreen(
     onBack: () -> Unit,
     onNavigateToArtist: (itemId: String, provider: String, name: String) -> Unit = { _, _, _ -> },
     onNavigateToAlbum: (itemId: String, provider: String, name: String) -> Unit = { _, _, _ -> },
-    onOpenParty: () -> Unit = {},
     isForeground: Boolean = true,
     /**
      * Insets the top bar keeps clear of. Zero inside the expanding player sheet, which
@@ -115,6 +115,7 @@ fun NowPlayingScreen(
     viewModel: NowPlayingViewModel = hiltViewModel()
 ) {
     var showQueueSheet by rememberSaveable { mutableStateOf(false) }
+    var showParty by rememberSaveable { mutableStateOf(false) }
     val player by viewModel.selectedPlayer.collectAsStateWithLifecycle()
     val queueState by viewModel.queueState.collectAsStateWithLifecycle()
     // The position is read only where it is shown (the seek bar and the lyrics), so the
@@ -534,7 +535,7 @@ fun NowPlayingScreen(
                     }
                 },
             // The join QR never goes on a car display, where this screen shows while parked.
-            onOpenParty = onOpenParty.takeIf { partyAvailable && !net.asksakis.massdroidv2.BuildConfig.IS_AUTOMOTIVE },
+            onOpenParty = { showParty = true }.takeIf { partyAvailable && !net.asksakis.massdroidv2.BuildConfig.IS_AUTOMOTIVE },
             showAboutText = showAboutText,
             onShowAboutTextChange = viewModel::setShowAboutText,
             onClick = {
@@ -686,6 +687,11 @@ fun NowPlayingScreen(
             onDismiss = { showSleepTimerDialog = false }
         )
     }
+
+    // Party opens over this screen rather than as a destination of its own, so closing it
+    // reveals the player exactly as it was, in the expanding sheet and on the full-screen
+    // route alike.
+    PartyOverlay(visible = showParty, onClose = { showParty = false })
 
     if (showQueueSheet) {
         net.asksakis.massdroidv2.ui.screens.queue.QueueSheet(
