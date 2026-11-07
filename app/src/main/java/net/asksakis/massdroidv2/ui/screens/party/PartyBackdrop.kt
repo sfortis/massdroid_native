@@ -1,7 +1,7 @@
 package net.asksakis.massdroidv2.ui.screens.party
 
 import android.animation.ValueAnimator
-import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.Animatable
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Spacer
@@ -44,9 +44,12 @@ import androidx.core.graphics.ColorUtils
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
 import net.asksakis.massdroidv2.domain.party.PartyLights
 import net.asksakis.massdroidv2.domain.party.PartySpecks
 import net.asksakis.massdroidv2.ui.shared.AlbumArtBackdrop
+import net.asksakis.massdroidv2.ui.shared.BackdropTints
 import net.asksakis.massdroidv2.ui.shared.rememberBackdropTints
 import net.asksakis.massdroidv2.ui.shared.rememberSettledArtwork
 import kotlin.math.PI
@@ -70,8 +73,8 @@ private class PartyMotion {
  *
  * Everything moves from one clock that is read only while drawing, in a layer of its own, so
  * a frame redraws that layer and never recomposes. The clock runs only while the screen is
- * resumed. With animations turned off in the system settings it draws one still frame with no
- * strobe.
+ * visible, from the start of its enter transition. With animations turned off in the system
+ * settings it draws one still frame with no strobe.
  *
  * [ballRoom] is the room the content leaves above itself, under the app bar. The ball is made
  * as large as that room holds, up to its full size, and is left out while it is null. It is
@@ -88,10 +91,29 @@ internal fun PartyBackdrop(
     val surface = MaterialTheme.colorScheme.surface
     val artwork = rememberSettledArtwork(artworkUrl)
     val tints = rememberBackdropTints(artwork)
-    // The same 900 ms as the cover's own crossfade, so the tints turn over with the picture.
-    // Read only while drawing, so the fade redraws and never recomposes.
-    val tintA = animateColorAsState(tints?.first ?: NEUTRAL_TINT_A, tween(TINT_FADE_MS), label = "partyTintA")
-    val tintB = animateColorAsState(tints?.second ?: NEUTRAL_TINT_B, tween(TINT_FADE_MS), label = "partyTintB")
+    // Read only while drawing, so a fade redraws and never recomposes.
+    val tintA = remember { Animatable(NEUTRAL_TINT_A) }
+    val tintB = remember { Animatable(NEUTRAL_TINT_B) }
+    val shownTints = remember { mutableStateOf<BackdropTints?>(null) }
+    LaunchedEffect(tints) {
+        // A track without a cover takes the lights back to neutral, as the cover clears.
+        val next = tints ?: BackdropTints(NEUTRAL_TINT_A, NEUTRAL_TINT_B).takeIf { shownTints.value != null }
+            ?: return@LaunchedEffect
+        if (shownTints.value == null) {
+            // The cover playing when the screen opens: in colour from the start, with no
+            // fade up from grey.
+            tintA.snapTo(next.first)
+            tintB.snapTo(next.second)
+        } else {
+            // A track change: the same 900 ms as the cover's own crossfade, so the tints
+            // turn over with the picture.
+            coroutineScope {
+                launch { tintA.animateTo(next.first, tween(TINT_FADE_MS)) }
+                launch { tintB.animateTo(next.second, tween(TINT_FADE_MS)) }
+            }
+        }
+        shownTints.value = next
+    }
     val look = if (isDark) DarkLook else LightLook
     val statusBar = with(LocalDensity.current) { WindowInsets.statusBars.getTop(this).toDp() }
     val dot = remember { softDot() }
@@ -104,8 +126,11 @@ internal fun PartyBackdrop(
     val motion = remember { PartyMotion() }
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     LaunchedEffect(lifecycle, motion) {
-        lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
-            // Read on every resume, so turning animations off in the settings takes effect here.
+        // Started rather than resumed: a destination reaches resumed only once its enter
+        // transition ends, about 700 ms after it shows, and the lights stood still until then.
+        // They still stop as soon as the screen is no longer visible.
+        lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            // Read on every start, so turning animations off in the settings takes effect here.
             if (!ValueAnimator.areAnimatorsEnabled()) {
                 motion.moving = false
                 return@repeatOnLifecycle
@@ -191,7 +216,7 @@ internal fun PartyBackdrop(
 }
 
 /**
- * Advances [motion] on every display frame until the screen stops being resumed. The screen
+ * Advances [motion] on every display frame until the screen is no longer visible. The screen
  * closes itself after a minute without a touch, so the lights never run for long unattended.
  *
  * A deliberate exception to the project's fixed-step rule (delay(50) + snapTo), decided by the
@@ -201,10 +226,10 @@ internal fun PartyBackdrop(
  */
 private suspend fun runLights(motion: PartyMotion) {
     motion.moving = true
-    val resumedAt = motion.elapsedMs
+    val startedAt = motion.elapsedMs
     val start = withFrameNanos { it }
     while (true) {
-        withFrameNanos { now -> motion.elapsedMs = resumedAt + (now - start) / NANOS_PER_MS }
+        withFrameNanos { now -> motion.elapsedMs = startedAt + (now - start) / NANOS_PER_MS }
     }
 }
 

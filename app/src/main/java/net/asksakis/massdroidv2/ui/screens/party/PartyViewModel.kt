@@ -20,6 +20,7 @@ import kotlinx.coroutines.launch
 import net.asksakis.massdroidv2.domain.model.PartyInfo
 import net.asksakis.massdroidv2.domain.model.PartyJoinLink
 import net.asksakis.massdroidv2.domain.model.PartyMode
+import net.asksakis.massdroidv2.domain.model.QueueState
 import net.asksakis.massdroidv2.domain.party.PartyTarget
 import net.asksakis.massdroidv2.domain.party.PartyTargetFollower
 import net.asksakis.massdroidv2.domain.party.PartyTargetSnapshot
@@ -95,11 +96,19 @@ class PartyViewModel @Inject constructor(
         }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MS), PartyUiState.Loading)
 
-    /** The cover of the track playing on the selected player, behind the screen. */
+    /**
+     * The cover of the track playing on the selected player, behind the screen. It starts
+     * from the cover already playing rather than from null: the backdrop holds a changed
+     * cover back for 800 ms, so a null first value kept the screen bare for that long.
+     */
     val artworkUrl: StateFlow<String?> = playerRepository.queueState
-        .map { queue -> queue?.currentItem?.let { it.track?.imageUrl ?: it.imageUrl } }
+        .map { it.artworkUrl() }
         .distinctUntilChanged()
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MS), null)
+        .stateIn(
+            viewModelScope,
+            SharingStarted.WhileSubscribed(STOP_TIMEOUT_MS),
+            playerRepository.queueState.value.artworkUrl()
+        )
 
     /**
      * False once the server no longer has the plugin, after it was turned off or after a
@@ -155,6 +164,8 @@ class PartyViewModel @Inject constructor(
                 loaded.update { current -> (current as? Loaded.Party)?.copy(target = snapshot) ?: current }
             }
     }
+
+    private fun QueueState?.artworkUrl(): String? = this?.currentItem?.let { it.track?.imageUrl ?: it.imageUrl }
 
     private suspend fun <T> orNull(what: String, read: suspend () -> T): T? = try {
         read()
