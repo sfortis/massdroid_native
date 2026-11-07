@@ -86,6 +86,7 @@ import net.asksakis.massdroidv2.domain.model.AudioFormatInfo
 import net.asksakis.massdroidv2.domain.model.skipAvailability
 import net.asksakis.massdroidv2.domain.recommendation.MediaIdentity
 import net.asksakis.massdroidv2.ui.components.AddToPlaylistDialog
+import net.asksakis.massdroidv2.ui.components.AddToSmartPlaylistDialog
 import net.asksakis.massdroidv2.ui.components.SheetDefaults
 import net.asksakis.massdroidv2.domain.nfc.NfcTagAction
 import net.asksakis.massdroidv2.ui.nfc.NfcWriteChoice
@@ -131,6 +132,11 @@ fun NowPlayingScreen(
     val isLoadingPlaylists by viewModel.isLoadingPlaylists.collectAsStateWithLifecycle()
     val addingToPlaylistId by viewModel.addingToPlaylistId.collectAsStateWithLifecycle()
     val playlistContainsTrack by viewModel.playlistContainsTrack.collectAsStateWithLifecycle()
+    val smartPlaylistsAvailable by viewModel.smartPlaylistsAvailable.collectAsStateWithLifecycle()
+    val smartPlaylistSeed by viewModel.smartPlaylistSeed.collectAsStateWithLifecycle()
+    val smartPlaylists by viewModel.smartPlaylists.collectAsStateWithLifecycle()
+    val isLoadingSmartPlaylists by viewModel.isLoadingSmartPlaylists.collectAsStateWithLifecycle()
+    val smartPlaylistPendingId by viewModel.smartPlaylistPendingId.collectAsStateWithLifecycle()
 
     val currentTrack = queueState?.currentItem?.track
     val currentArtistUri = MediaIdentity.canonicalArtistKey(
@@ -467,6 +473,19 @@ fun NowPlayingScreen(
         )
     }
 
+    if (smartPlaylistSeed != null) {
+        AddToSmartPlaylistDialog(
+            playlists = smartPlaylists,
+            isLoading = isLoadingSmartPlaylists,
+            pendingPlaylistId = smartPlaylistPendingId,
+            suggestedName = "",
+            onDismiss = viewModel::closeSmartPlaylistPicker,
+            onRetry = viewModel::reloadSmartPlaylists,
+            onPlaylistClick = viewModel::addSeedToSmartPlaylist,
+            onCreatePlaylist = viewModel::createSmartPlaylist
+        )
+    }
+
     if (showPlayerMenu) {
         val otherPlayers = allPlayers.filter { it.available && it.playerId != player?.playerId }
         PlayerOptionsSheet(
@@ -489,6 +508,14 @@ fun NowPlayingScreen(
             onSleepTimer = { showSleepTimerDialog = true },
             onStartSongRadio = currentTrack?.uri?.let { uri ->
                 { viewModel.startSongRadio(uri) }
+            },
+            onAddToSmartPlaylist = if (smartPlaylistsAvailable && currentTrack?.isSmartPlaylistSeed() == true) {
+                {
+                    showPlayerMenu = false
+                    viewModel.openSmartPlaylistPicker()
+                }
+            } else {
+                null
             },
             // The album, not the track: a tag is worth a sitting's worth of music, and a
             // single track would be a queue of one. A track whose album the server did not

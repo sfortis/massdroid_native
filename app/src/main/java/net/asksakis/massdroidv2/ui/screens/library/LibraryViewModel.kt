@@ -1,5 +1,6 @@
 package net.asksakis.massdroidv2.ui.screens.library
 
+import net.asksakis.massdroidv2.ui.components.message
 import net.asksakis.massdroidv2.ui.failureMessage
 import android.util.Log
 import androidx.lifecycle.SavedStateHandle
@@ -501,7 +502,7 @@ class LibraryViewModel @Inject constructor(
             playlistMembership.errors.collect { _error.tryEmit(it) }
         }
         viewModelScope.launch {
-            smartPlaylistSeeds.events.collect { _error.tryEmit(smartPlaylistMessage(it)) }
+            smartPlaylistSeeds.events.collect { _error.tryEmit(it.message()) }
         }
         // Load all settings eagerly before any data loading
         viewModelScope.launch {
@@ -1068,19 +1069,6 @@ class LibraryViewModel @Inject constructor(
     fun addSeedToSmartPlaylist(playlist: SmartPlaylistSummary) = smartPlaylistSeeds.add(playlist)
 
     fun createSmartPlaylist(name: String) = smartPlaylistSeeds.create(name)
-
-    private fun smartPlaylistMessage(event: SmartPlaylistSeedController.Event): String = when (event) {
-        is SmartPlaylistSeedController.Event.Added -> "Added to ${event.playlistName}"
-        is SmartPlaylistSeedController.Event.AlreadyPresent -> "${event.itemName} is already in ${event.playlistName}"
-        is SmartPlaylistSeedController.Event.Full ->
-            "Can't add more to ${event.playlistName}. It already has $SMART_PLAYLIST_MAX_SEEDS seeds"
-        is SmartPlaylistSeedController.Event.Created -> "Created ${event.playlistName}"
-        is SmartPlaylistSeedController.Event.LoadFailed -> event.error.failureMessage("Couldn't load the smart playlists")
-        is SmartPlaylistSeedController.Event.AddFailed ->
-            event.error.failureMessage("Couldn't add that to the smart playlist")
-        is SmartPlaylistSeedController.Event.CreateFailed ->
-            event.error.failureMessage("Couldn't create the smart playlist")
-    }
 
     // ---- item state toggles ----------------------------------------------------------------------
 

@@ -9,6 +9,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.MenuBook
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Bedtime
 import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.PersonAdd
@@ -26,16 +27,18 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import net.asksakis.massdroidv2.ui.components.SettingsSectionHeader
 import net.asksakis.massdroidv2.ui.components.SheetDefaults
 
 /**
- * Long-press / "more" sheet on the Now Playing screen. Surfaces:
+ * Long-press / "more" sheet on the Now Playing screen, in three sections:
  *
- *  - Player settings (rename, crossfade, volume normalization, sendspin format)
- *  - Transfer queue to another player (only when other players exist)
- *  - Start song radio (only when the queue has a current track)
- *  - Sleep timer (with live remaining label when active)
- *  - Block / unblock the current artist
+ *  - This Track: start song radio (only when the queue has a current track), add to a smart
+ *    playlist (only for a music track while the plugin is loaded), the album info switch,
+ *    chapters (audiobooks) and block / unblock the current artist
+ *  - Player: player settings, transfer queue (only when other players exist) and the sleep
+ *    timer (with live remaining label when active)
+ *  - More: write an NFC tag, shown with its header only when there is something to write
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -52,6 +55,8 @@ internal fun PlayerOptionsSheet(
     onTransferQueue: () -> Unit,
     onSleepTimer: () -> Unit,
     onStartSongRadio: (() -> Unit)?,
+    /** Add the current track as a smart playlist seed. Null when that is not on offer. */
+    onAddToSmartPlaylist: (() -> Unit)?,
     /**
      * Write the album this track belongs to onto an NFC tag. Null when there is no album
      * to write, which a track without one and a phone without a chip both mean.
@@ -84,23 +89,72 @@ internal fun PlayerOptionsSheet(
                 )
                 HorizontalDivider(modifier = Modifier.padding(top = 6.dp, bottom = 4.dp))
             }
+            // This Track always shows Album Info and the artist row, and Player always shows
+            // Player Settings, so only More can be empty and lose its header.
+            SettingsSectionHeader("This Track")
+            if (onStartSongRadio != null) {
+                ListItem(
+                    colors = SheetDefaults.listItemColors(),
+                    headlineContent = { Text("Start Song Radio") },
+                    supportingContent = {
+                        Text(
+                            "Play similar tracks based on current song",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    },
+                    leadingContent = {
+                        Icon(
+                            imageVector = Icons.Default.Radio,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurface
+                        )
+                    },
+                    modifier = Modifier.clickable {
+                        onStartSongRadio()
+                        onDismiss()
+                    }
+                )
+            }
+            if (onAddToSmartPlaylist != null) {
+                ListItem(
+                    colors = SheetDefaults.listItemColors(),
+                    headlineContent = { Text("Add to Smart Playlist") },
+                    supportingContent = {
+                        Text(
+                            "Use this track as a seed",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    },
+                    leadingContent = {
+                        Icon(
+                            imageVector = Icons.Default.AutoAwesome,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurface
+                        )
+                    },
+                    modifier = Modifier.clickable(onClick = onAddToSmartPlaylist)
+                )
+            }
+            // The sheet stays open: the switch shows the change, and the text under the cover
+            // opens or closes behind it.
             ListItem(
                 colors = SheetDefaults.listItemColors(),
-                headlineContent = { Text("Player Settings") },
+                headlineContent = { Text("Album Info") },
                 supportingContent = {
                     Text(
-                        "Rename player, crossfade and volume normalization",
+                        "A few words about the album or the artist under the cover",
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 },
                 leadingContent = {
                     Icon(
-                        imageVector = Icons.Default.Tune,
+                        imageVector = Icons.Default.Info,
                         contentDescription = null,
                         tint = MaterialTheme.colorScheme.onSurface
                     )
                 },
-                modifier = Modifier.clickable(onClick = onPlayerSettings)
+                trailingContent = { Switch(checked = showAboutText, onCheckedChange = null) },
+                modifier = Modifier.clickable { onShowAboutTextChange(!showAboutText) }
             )
             if (chapterCount > 0) {
                 ListItem(
@@ -125,117 +179,6 @@ internal fun PlayerOptionsSheet(
                     }
                 )
             }
-            if (hasOtherPlayers) {
-                ListItem(
-                    colors = SheetDefaults.listItemColors(),
-                    headlineContent = { Text("Transfer Queue") },
-                    supportingContent = {
-                        Text(
-                            "Move playback to another player",
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    },
-                    leadingContent = {
-                        Icon(
-                            imageVector = Icons.Default.SwapHoriz,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSurface
-                        )
-                    },
-                    modifier = Modifier.clickable(onClick = onTransferQueue)
-                )
-            }
-            if (onWriteNfcTag != null) {
-                ListItem(
-                    colors = SheetDefaults.listItemColors(),
-                    headlineContent = { Text("Write NFC tag") },
-                    supportingContent = {
-                        Text(
-                            "Tap the tag later to play this album here",
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    },
-                    leadingContent = {
-                        Icon(
-                            imageVector = Icons.Default.Nfc,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSurface
-                        )
-                    },
-                    modifier = Modifier.clickable {
-                        onWriteNfcTag()
-                        onDismiss()
-                    }
-                )
-            }
-            if (onStartSongRadio != null) {
-                ListItem(
-                    colors = SheetDefaults.listItemColors(),
-                    headlineContent = { Text("Start Song Radio") },
-                    supportingContent = {
-                        Text(
-                            "Play similar tracks based on current song",
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    },
-                    leadingContent = {
-                        Icon(
-                            imageVector = Icons.Default.Radio,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSurface
-                        )
-                    },
-                    modifier = Modifier.clickable {
-                        onStartSongRadio()
-                        onDismiss()
-                    }
-                )
-            }
-            ListItem(
-                colors = SheetDefaults.listItemColors(),
-                headlineContent = {
-                    Text(if (sleepTimerActive) "Sleep Timer ($sleepTimerLabel)" else "Sleep Timer")
-                },
-                supportingContent = {
-                    Text(
-                        if (sleepTimerActive) "Tap to change or cancel" else "Stop playback after a set time",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                },
-                leadingContent = {
-                    Icon(
-                        imageVector = Icons.Default.Bedtime,
-                        contentDescription = null,
-                        tint = if (sleepTimerActive) MaterialTheme.colorScheme.primary
-                            else MaterialTheme.colorScheme.onSurface
-                    )
-                },
-                modifier = Modifier.clickable {
-                    onSleepTimer()
-                    onDismiss()
-                }
-            )
-            // The sheet stays open: the switch shows the change, and the text under the cover
-            // opens or closes behind it.
-            ListItem(
-                colors = SheetDefaults.listItemColors(),
-                headlineContent = { Text("Album Info") },
-                supportingContent = {
-                    Text(
-                        "A few words about the album or the artist under the cover",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                },
-                leadingContent = {
-                    Icon(
-                        imageVector = Icons.Default.Info,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurface
-                    )
-                },
-                trailingContent = { Switch(checked = showAboutText, onCheckedChange = null) },
-                modifier = Modifier.clickable { onShowAboutTextChange(!showAboutText) }
-            )
             ListItem(
                 colors = SheetDefaults.listItemColors(),
                 headlineContent = {
@@ -268,6 +211,93 @@ internal fun PlayerOptionsSheet(
                 },
                 modifier = Modifier.clickable(enabled = canToggleArtistBlock, onClick = onClick)
             )
+            SettingsSectionHeader("Player")
+            ListItem(
+                colors = SheetDefaults.listItemColors(),
+                headlineContent = { Text("Player Settings") },
+                supportingContent = {
+                    Text(
+                        "Rename player, crossfade and volume normalization",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                },
+                leadingContent = {
+                    Icon(
+                        imageVector = Icons.Default.Tune,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurface
+                    )
+                },
+                modifier = Modifier.clickable(onClick = onPlayerSettings)
+            )
+            if (hasOtherPlayers) {
+                ListItem(
+                    colors = SheetDefaults.listItemColors(),
+                    headlineContent = { Text("Transfer Queue") },
+                    supportingContent = {
+                        Text(
+                            "Move playback to another player",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    },
+                    leadingContent = {
+                        Icon(
+                            imageVector = Icons.Default.SwapHoriz,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurface
+                        )
+                    },
+                    modifier = Modifier.clickable(onClick = onTransferQueue)
+                )
+            }
+            ListItem(
+                colors = SheetDefaults.listItemColors(),
+                headlineContent = {
+                    Text(if (sleepTimerActive) "Sleep Timer ($sleepTimerLabel)" else "Sleep Timer")
+                },
+                supportingContent = {
+                    Text(
+                        if (sleepTimerActive) "Tap to change or cancel" else "Stop playback after a set time",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                },
+                leadingContent = {
+                    Icon(
+                        imageVector = Icons.Default.Bedtime,
+                        contentDescription = null,
+                        tint = if (sleepTimerActive) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurface
+                    )
+                },
+                modifier = Modifier.clickable {
+                    onSleepTimer()
+                    onDismiss()
+                }
+            )
+            if (onWriteNfcTag != null) {
+                SettingsSectionHeader("More")
+                ListItem(
+                    colors = SheetDefaults.listItemColors(),
+                    headlineContent = { Text("Write NFC tag") },
+                    supportingContent = {
+                        Text(
+                            "Tap the tag later to play this album here",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    },
+                    leadingContent = {
+                        Icon(
+                            imageVector = Icons.Default.Nfc,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurface
+                        )
+                    },
+                    modifier = Modifier.clickable {
+                        onWriteNfcTag()
+                        onDismiss()
+                    }
+                )
+            }
         }
     }
 }

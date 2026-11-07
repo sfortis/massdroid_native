@@ -37,7 +37,11 @@ import net.asksakis.massdroidv2.domain.model.Chapter
 import net.asksakis.massdroidv2.domain.model.MediaType
 import net.asksakis.massdroidv2.domain.model.QueueSource
 import net.asksakis.massdroidv2.domain.model.Playlist
+import net.asksakis.massdroidv2.domain.model.SmartPlaylistSeed
+import net.asksakis.massdroidv2.domain.model.SmartPlaylistSeedKind
+import net.asksakis.massdroidv2.domain.model.SmartPlaylistSummary
 import net.asksakis.massdroidv2.domain.playlist.PlaylistMembershipController
+import net.asksakis.massdroidv2.domain.playlist.SmartPlaylistSeedController
 import net.asksakis.massdroidv2.domain.player.QueueTransfer
 import net.asksakis.massdroidv2.domain.player.QueueTransferOutcome
 import net.asksakis.massdroidv2.domain.player.userMessage
@@ -53,10 +57,12 @@ import net.asksakis.massdroidv2.domain.repository.MusicRepository
 import net.asksakis.massdroidv2.domain.repository.PlayerDiscontinuityCommand
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 import net.asksakis.massdroidv2.domain.repository.SmartListeningRepository
+import net.asksakis.massdroidv2.domain.repository.SmartPlaylistRepository
 import javax.inject.Inject
 import net.asksakis.massdroidv2.data.proximity.withRoomPlayer
 import net.asksakis.massdroidv2.data.repository.DynamicQueueSource
 import net.asksakis.massdroidv2.ui.components.autoplayRefillText
+import net.asksakis.massdroidv2.ui.components.message
 
 private const val TAG = "NowPlayingVM"
 private const val SENDSPIN_UI_DBG = "SendspinUiDbg"
@@ -180,11 +186,19 @@ sealed interface LyricsEntry {
     data class Ready(val content: LyricsProvider.LyricsContent) : LyricsEntry
 }
 
+/**
+ * Whether this queue item can be a smart playlist seed: a music track, not an audiobook, an
+ * episode or a stream. A media type the app does not know also parses to TRACK, so the uri
+ * has to name a track as well.
+ */
+internal fun Track.isSmartPlaylistSeed(): Boolean = mediaType == MediaType.TRACK && "://track/" in uri
+
 @HiltViewModel
 class NowPlayingViewModel @Inject constructor(
     private val playerRepository: PlayerRepository,
     private val musicRepository: MusicRepository,
     private val smartListeningRepository: SmartListeningRepository,
+    smartPlaylistRepository: SmartPlaylistRepository,
     private val trackDisliker: TrackDisliker,
     aboutTextResolver: AboutTextResolver,
     private val settingsRepository: net.asksakis.massdroidv2.domain.repository.SettingsRepository,
@@ -279,6 +293,18 @@ class NowPlayingViewModel @Inject constructor(
     val isLoadingPlaylists: StateFlow<Boolean> = playlistMembership.isLoading
     val addingToPlaylistId: StateFlow<String?> = playlistMembership.pendingPlaylistId
     val playlistContainsTrack: StateFlow<Set<String>> = playlistMembership.containsTrack
+
+    private val smartPlaylistSeeds = SmartPlaylistSeedController(smartPlaylistRepository, viewModelScope)
+
+    /** True while the server's Smart Playlists plugin is loaded; the action shows only then. */
+    val smartPlaylistsAvailable: StateFlow<Boolean> = smartPlaylistSeeds.available
+        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    /** The track the smart playlist picker is open for, or null when it is closed. */
+    val smartPlaylistSeed: StateFlow<SmartPlaylistSeed?> = smartPlaylistSeeds.seed
+    val smartPlaylists: StateFlow<List<SmartPlaylistSummary>> = smartPlaylistSeeds.playlists
+    val isLoadingSmartPlaylists: StateFlow<Boolean> = smartPlaylistSeeds.isLoading
+    val smartPlaylistPendingId: StateFlow<String?> = smartPlaylistSeeds.pendingPlaylistId
 
     private val _lyricsEntries = MutableStateFlow<Map<String, LyricsEntry>>(emptyMap())
     private val _lyricsTimingOffsetMs = MutableStateFlow(0)
@@ -520,6 +546,9 @@ class NowPlayingViewModel @Inject constructor(
     init {
         viewModelScope.launch {
             playlistMembership.errors.collect { _error.tryEmit(it) }
+        }
+        viewModelScope.launch {
+            smartPlaylistSeeds.events.collect { _error.tryEmit(it.message()) }
         }
         viewModelScope.launch {
             smartListeningRepository.blockedArtistUris.collect { _blockedArtistUris.value = it }
@@ -1238,6 +1267,20 @@ class NowPlayingViewModel @Inject constructor(
     fun onPlaylistsVisible(playlistUris: List<String>) {
         playlistMembership.onPlaylistsVisible(playlistUris)
     }
+
+    /** Open the smart playlist picker for the track playing now; anything but a music track is ignored. */
+    fun openSmartPlaylistPicker() {
+        val track = queueState.value?.currentItem?.track?.takeIf { it.isSmartPlaylistSeed() } ?: return
+        smartPlaylistSeeds.open(SmartPlaylistSeed(SmartPlaylistSeedKind.TRACK, track.uri, track.name))
+    }
+
+    fun closeSmartPlaylistPicker() = smartPlaylistSeeds.close()
+
+    fun reloadSmartPlaylists() = smartPlaylistSeeds.reload()
+
+    fun addSeedToSmartPlaylist(playlist: SmartPlaylistSummary) = smartPlaylistSeeds.add(playlist)
+
+    fun createSmartPlaylist(name: String) = smartPlaylistSeeds.create(name)
 
     fun preloadLyrics() {
         when (currentLyricsEntry.value) {
