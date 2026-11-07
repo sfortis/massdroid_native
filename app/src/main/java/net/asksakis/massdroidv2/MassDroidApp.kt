@@ -157,6 +157,8 @@ class MassDroidApp : Application(), ImageLoaderFactory {
         signInSession.start()
         // Clears the cached MA answers when a connection reaches another MA server.
         maAnswerCacheGuard.start()
+        // A plugin turned on or off in MA shows or hides its features without a reconnect.
+        appScope.launch { providerManifestCache.followProviderChanges(wsClient, json) }
         appScope.launch {
             wsClient.connectionState.collect { state ->
                 when (state) {
