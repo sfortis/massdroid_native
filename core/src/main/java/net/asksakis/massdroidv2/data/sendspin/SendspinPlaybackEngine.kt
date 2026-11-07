@@ -1133,7 +1133,8 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
         routedDeviceType = newType
         routedDeviceId = newId
         routedProductName = newName
-        Log.d(TAG, "Routed device: type=$newType ($newName) id=$id")
+        // Type and id only: the product name can be a personal device name.
+        Log.i(TAG, "Routed device: type=$newType id=$id")
         onRoutingChanged?.invoke()
     }
 

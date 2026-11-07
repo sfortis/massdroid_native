@@ -199,7 +199,7 @@ class SendspinAudioController(
         override fun onReceive(ctx: Context, intent: Intent) {
             if (intent.action == AudioManager.ACTION_AUDIO_BECOMING_NOISY) {
                 if (sendspinPlayerId == null) return
-                Log.d(TAG, "Audio becoming noisy -> clean pause")
+                Log.i(TAG, "Audio becoming noisy")
                 volumeCoordinator.onOutputRouteChanging()
                 // Poke the unified car-route evaluation. If this is a real disconnect the
                 // coordinator's settle timer will confirm (Oboe no longer routed to the car) and
@@ -308,7 +308,7 @@ class SendspinAudioController(
             // (Android serves a different per-route STREAM_MUSIC level each flap).
             volumeCoordinator.onOutputRouteChanging()
             val gen = ++routeChangeGeneration
-            Log.d(TAG, "Audio route changed: $oldRoute -> $newRoute (gen=$gen)")
+            Log.i(TAG, "Audio route changed: $oldRoute -> $newRoute (gen=$gen)")
             when {
                 // Lost an external sink to the phone speaker: silence now, pause only
                 // if it stays lost (see [holdForRouteLoss]).
@@ -481,7 +481,7 @@ class SendspinAudioController(
         // right after, leaving a clean paused stream.
         sendspinManager.setMuted(true)
         freezeOutput("route")
-        Log.d(TAG, "External sink lost -> clean pause (resume ticket: ${identityForm(lostSink)})")
+        Log.i(TAG, "External sink lost -> clean pause (resume ticket: ${identityForm(lostSink)})")
         abandonPlaybackIntent()
         resumeTicket = lostSink
         sendspinManager.pauseAudio()
