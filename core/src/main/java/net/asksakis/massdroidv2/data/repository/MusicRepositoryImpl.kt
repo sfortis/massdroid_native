@@ -858,6 +858,34 @@ class MusicRepositoryImpl @Inject constructor(
         playMedia(queueId, feedUri, option = "add", awaitResponse = true)
     }
 
+    override suspend fun playContainerFrom(queueId: String, containerUri: String, trackUri: String) {
+        Log.d(TAG, "playContainerFrom: $containerUri from $trackUri")
+        try {
+            // No blocked-artist plan: the start item is the track the listener picked, and the
+            // blocked tracks after it are removed by the queue cleanup as in any container.
+            sendPlayMedia(queueId, OPTION_REPLACE, awaitResponse = true) {
+                wsClient.sendCommand(
+                    MaCommands.PlayerQueues.PLAY_MEDIA,
+                    playMediaArgs(
+                        queueId = queueId,
+                        uris = listOf(containerUri),
+                        option = OPTION_REPLACE,
+                        radioMode = false,
+                        startItem = trackUri
+                    ),
+                    awaitResponse = true
+                )
+            }
+        } catch (e: MaApiException) {
+            // The server leaves out tracks it will not play from the container (unavailable
+            // ones, or ones outside the library when albums play library tracks only), and a
+            // start item among them leaves it nothing to play.
+            if (!e.isMediaNotFound) throw e
+            Log.w(TAG, "$trackUri does not start $containerUri; playing it alone")
+            playMedia(queueId, trackUri, option = OPTION_REPLACE, awaitResponse = true)
+        }
+    }
+
     private fun QueueChoice.withGlobal(core: JsonObject?): QueueChoice =
         copy(globalValue = QueueConfigParser.coreValue(core, key))
 

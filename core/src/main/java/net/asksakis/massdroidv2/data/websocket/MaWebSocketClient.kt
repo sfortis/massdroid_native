@@ -1583,9 +1583,20 @@ class MaApiException(message: String, val code: Int) : Exception(message) {
      */
     val isProviderUnavailable: Boolean get() = code == PROVIDER_UNAVAILABLE_CODE
 
+    /**
+     * True when the server refused because it found nothing to play or no such item. A
+     * `play_media` whose start item is not in the container gets this answer before the
+     * server changes the queue items, but after a replace has already recorded the
+     * container as the queue's source.
+     */
+    val isMediaNotFound: Boolean get() = code == MEDIA_NOT_FOUND_CODE
+
     companion object {
         /** MA's ProviderUnavailableError error code. */
         const val PROVIDER_UNAVAILABLE_CODE = 1
+
+        /** MA's MediaNotFoundError error code. */
+        const val MEDIA_NOT_FOUND_CODE = 2
 
         /** MA's InsufficientPermissions error code. */
         const val INSUFFICIENT_PERMISSIONS_CODE = 22

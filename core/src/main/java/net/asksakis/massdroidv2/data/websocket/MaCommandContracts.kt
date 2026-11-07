@@ -379,7 +379,8 @@ data class PlayMediaArgs(
      * after applying the sort.
      *
      * Used to keep a blocked artist at the head of a playlist from being heard, without
-     * expanding the playlist into a track list. Like [sortBy], it means nothing for a list of
+     * expanding the playlist into a track list, and to start an album or a playlist at the
+     * track tapped in Android Auto. Like [sortBy], it means nothing for a list of
      * tracks, which the caller has already trimmed.
      */
     val startItem: String? = null
