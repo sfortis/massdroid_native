@@ -27,6 +27,7 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import net.asksakis.massdroidv2.ui.components.SettingsSectionHeader
 import net.asksakis.massdroidv2.ui.components.SheetDefaults
@@ -102,8 +103,10 @@ internal fun PlayerOptionsSheet(
                     headlineContent = { Text("Start Song Radio") },
                     supportingContent = {
                         Text(
-                            "Play similar tracks based on current song",
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            "Similar tracks to this song",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                     },
                     leadingContent = {
@@ -126,7 +129,9 @@ internal fun PlayerOptionsSheet(
                     supportingContent = {
                         Text(
                             "Use this track as a seed",
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                     },
                     leadingContent = {
@@ -146,7 +151,9 @@ internal fun PlayerOptionsSheet(
                     supportingContent = {
                         Text(
                             "Jump to a chapter ($chapterCount)",
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                     },
                     leadingContent = {
@@ -176,9 +183,11 @@ internal fun PlayerOptionsSheet(
                 },
                 supportingContent = {
                     Text(
-                        if (artistBlocked) "Artist can appear again in queue and recommendations"
-                        else "Hide this artist from queue and smart listening",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        if (artistBlocked) "Show again in queue and mixes"
+                        else "Hide from queue and recommendations",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 },
                 leadingContent = {
@@ -200,8 +209,10 @@ internal fun PlayerOptionsSheet(
                 headlineContent = { Text("Player Settings") },
                 supportingContent = {
                     Text(
-                        "Rename player, crossfade and volume normalization",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        "Name, crossfade, normalization",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 },
                 leadingContent = {
@@ -220,7 +231,9 @@ internal fun PlayerOptionsSheet(
                     supportingContent = {
                         Text(
                             "Move playback to another player",
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                     },
                     leadingContent = {
@@ -241,7 +254,9 @@ internal fun PlayerOptionsSheet(
                 supportingContent = {
                     Text(
                         if (sleepTimerActive) "Tap to change or cancel" else "Stop playback after a set time",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 },
                 leadingContent = {
@@ -265,8 +280,10 @@ internal fun PlayerOptionsSheet(
                 headlineContent = { Text("Album Info") },
                 supportingContent = {
                     Text(
-                        "A few words about the album or the artist under the cover",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        "About the album, under the cover",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 },
                 leadingContent = {
@@ -285,8 +302,10 @@ internal fun PlayerOptionsSheet(
                     headlineContent = { Text("Party") },
                     supportingContent = {
                         Text(
-                            "Let guests add songs with a QR code",
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            "Guests add songs with a QR code",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                     },
                     leadingContent = {
@@ -308,8 +327,10 @@ internal fun PlayerOptionsSheet(
                     headlineContent = { Text("Write NFC tag") },
                     supportingContent = {
                         Text(
-                            "Tap the tag later to play this album here",
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            "Tap it later to play this album",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                     },
                     leadingContent = {
