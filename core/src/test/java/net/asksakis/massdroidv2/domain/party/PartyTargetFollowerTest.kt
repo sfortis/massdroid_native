@@ -31,9 +31,9 @@ class PartyTargetFollowerTest {
     private var reads = 0
     private val snapshots = mutableListOf<PartyTargetSnapshot>()
 
-    private fun TestScope.follow(fail: Boolean = false) {
+    private fun TestScope.follow(fail: Boolean = false, shown: List<Player>? = live.value) {
         backgroundScope.launch {
-            PartyTargetFollower.updates(live) {
+            PartyTargetFollower.updates(live, shown) {
                 reads++
                 if (fail) error("timeout")
                 serverTarget
@@ -109,6 +109,27 @@ class PartyTargetFollowerTest {
         runCurrent()
 
         assertThat(reads).isEqualTo(1)
+    }
+
+    /** A player started while the screen was in the background, and no reconnect followed. */
+    @Test
+    fun `on resume a change made in the background is read at once`() = runTest {
+        val shown = players(kitchen = PlaybackState.IDLE)
+        serverTarget = "kitchen"
+        follow(shown = shown)
+
+        assertThat(reads).isEqualTo(1)
+        assertThat(snapshots.single().shown())
+            .isEqualTo(PartyTarget.OtherPlayer(PartyPlayerName.Named("Kitchen"), PlaybackState.PLAYING))
+    }
+
+    @Test
+    fun `on resume with nothing changed nothing is read`() = runTest {
+        follow(shown = live.value)
+        advanceTimeBy(PartyTargetFollower.SETTLE_MS * 5)
+        runCurrent()
+
+        assertThat(reads).isEqualTo(0)
     }
 
     @Test

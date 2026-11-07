@@ -7,8 +7,9 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.transformLatest
+import kotlinx.coroutines.flow.withIndex
 import net.asksakis.massdroidv2.domain.model.PartyMode
 import net.asksakis.massdroidv2.domain.model.Player
 
@@ -31,14 +32,25 @@ object PartyTargetFollower {
      * cancelled. The plugin's automatic choice follows whichever queue plays, so in the car a
      * home speaker that starts playing takes the guests' songs. A burst of changes gives one
      * read, and a failed read gives no snapshot, so the last one stays on screen.
+     *
+     * [shownPlayers] are the players of the snapshot on screen. When the players already
+     * differ from them as the follow starts, for example after a player started while the
+     * screen was in the background, the party player is read at once. Null means no snapshot
+     * is shown, and the load in progress reads the target itself.
      */
     @OptIn(ExperimentalCoroutinesApi::class)
-    fun updates(players: StateFlow<List<Player>>, readTarget: suspend () -> String?): Flow<PartyTargetSnapshot> =
-        players
+    fun updates(
+        players: StateFlow<List<Player>>,
+        shownPlayers: List<Player>?,
+        readTarget: suspend () -> String?
+    ): Flow<PartyTargetSnapshot> {
+        val shownStates = shownPlayers?.playStates()
+        return players
             .distinctUntilChanged { old, new -> old.playStates() == new.playStates() }
-            .drop(1)
-            .transformLatest {
-                delay(SETTLE_MS)
+            .withIndex()
+            .filter { (index, current) -> index > 0 || (shownStates != null && current.playStates() != shownStates) }
+            .transformLatest { (index, _) ->
+                if (index > 0) delay(SETTLE_MS)
                 val queueId = try {
                     readTarget()
                 } catch (e: CancellationException) {
@@ -49,6 +61,7 @@ object PartyTargetFollower {
                 }
                 emit(PartyTargetSnapshot(queueId, players.value))
             }
+    }
 
     private fun List<Player>.playStates() = map { it.playerId to it.state }
 

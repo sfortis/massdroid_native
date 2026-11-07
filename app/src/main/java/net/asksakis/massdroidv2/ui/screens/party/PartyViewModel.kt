@@ -145,10 +145,12 @@ class PartyViewModel @Inject constructor(
     /**
      * Follows the party player while the screen is resumed: a new snapshot replaces the shown
      * one after players start or stop, see [PartyTargetFollower]. A load in progress is left
-     * alone, because it reads the target itself.
+     * alone, because it reads the target itself. A change made while the screen was in the
+     * background is caught on resume, by comparing the players with the shown snapshot's.
      */
     suspend fun followTarget() {
-        PartyTargetFollower.updates(playerRepository.players, partyRepository::targetQueueId)
+        val shownPlayers = (loaded.value as? Loaded.Party)?.target?.players
+        PartyTargetFollower.updates(playerRepository.players, shownPlayers, partyRepository::targetQueueId)
             .collect { snapshot ->
                 loaded.update { current -> (current as? Loaded.Party)?.copy(target = snapshot) ?: current }
             }
