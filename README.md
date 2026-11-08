@@ -53,29 +53,20 @@ MassDroid is a full-featured Music Assistant companion app built around music ex
 ## What's New ![NEW](https://img.shields.io/badge/-NEW-brightgreen)
 
 ### Added
-- A short welcome on first launch, and the app asks for notifications only when a feature needs them.
-- Sign-in lists the Music Assistant servers on your network, on the phone and on Android TV.
-- Each server keeps its own account, with Continue as, recently used servers and Forget.
-- Change server from Settings while you stay signed in.
-- Home shows the Music Assistant rows you choose, in your order.
-- Library can show only album artists and filters albums by type, on the phone and on Android TV.
-- Android TV and Android Automotive: sign in with Home Assistant.
+- Party mode: a Party screen in the player options shows the QR code guests scan to add songs, and the queue marks guest and boosted songs. (#85)
+- Add a track or an artist to a Music Assistant smart playlist with a long press, or add the playing track from the player options.
 
 ### Improved
-- The home screen widget shows the artist on a one-row widget, with a bigger title. (#73)
-- Servers on your network are found more reliably on Android 13 and older.
-- The phone speaker resumes after a Bluetooth or server reconnect only when it should.
-- Android Automotive: signing in, the dock and the notification open the media center.
-- Android TV: the keyboard opens when you press OK.
+- Android Auto: a track tapped in an album or a playlist plays the album or playlist from that track. (#84)
+- A track tapped in an album or a playlist follows your Music Assistant play setting, playing on from that track or alone.
+- The phone keeps playing through a short network drop, and play/pause keeps working while the server is unreachable, on the phone and on Android TV.
+- The player options are shorter and grouped into This Track, Player and More.
+- A plugin turned on or off in Music Assistant shows or hides its features at once.
 
 ### Fixed
-- Typing a server address with a space no longer closes the app.
-- Signing in on the wrong port now says which port Music Assistant uses.
-- A password that starts or ends with a space now signs in.
-- A failed switch to another server keeps you on the server you were using.
-- After switching servers, an artist you blocked on the other server no longer blocks a different artist.
-- Switching between servers no longer erases what the app learned about your artists.
-- Android TV: BACK in a text field acts once, BACK in Change server returns to your server, and reopening the app after Change server reconnects.
+- Follow Me no longer misses your arrival while the phone lies still.
+- A song by a blocked artist right after you start an album or a playlist is removed before it plays.
+- In a car over Bluetooth, the music comes back after a long spoken message instead of staying paused.
 
 ## Screenshots
 
@@ -116,6 +107,7 @@ MassDroid is a full-featured Music Assistant companion app built around music ex
 - **Queue Management** : View, drag-to-reorder, transfer between players, and manage the playback queue with action sheets
 - **Favorites** : Mark artists, albums, tracks, and playlists as favorites, filter library by favorites
 - **Phone as Speaker** : Sendspin protocol turns your phone into a Music Assistant player, solo or grouped with other MA players in tight sync. Audio streams as Opus, FLAC, or PCM over WebSocket, decoded and played through your phone speaker, headphones, or Bluetooth device. Smart mode picks the format from the network you are on. A built-in acoustic calibration measures real Bluetooth latency via microphone so grouped playback stays in sync even on wireless speakers. A streaming status sheet shows live sync graph, output latency, network mode, and a static delay control.
+- **Party Mode** : With Music Assistant's Party plugin, a Party screen in the player options shows the QR code guests scan to add songs to the queue, with the party player and a disco ball background. The queue marks guest and boosted songs.
 - **Follow Me** : Room detection with auto-transfer, per-room playlists, volume, and scheduling. Uses BLE fingerprinting by default, with optional Wi-Fi BSSID or SSID matching for distinct locations.
 - **Artist Blocking** : Block any artist from all recommendations, radio stations, and Smart Mix results
 - **Media Session** : Android media notification with playback controls

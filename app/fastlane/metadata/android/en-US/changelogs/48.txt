@@ -1,0 +1,2 @@
+Party mode shows the QR code guests scan to add songs, and tracks or artists can be added to Music Assistant smart playlists.
+Playback and play/pause hold up through a short network drop, and Follow Me no longer misses an arrival on a still phone.
