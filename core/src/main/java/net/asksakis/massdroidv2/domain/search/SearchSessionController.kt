@@ -102,7 +102,12 @@ data class SearchSession(
     val resultsQuery: String = "",
     val isSearching: Boolean = false,
     /** The categories whose chip is fetching more of them. */
-    val deepening: Set<MediaType> = emptySet()
+    val deepening: Set<MediaType> = emptySet(),
+    /**
+     * Where the search looks. [results] answer this scope whenever [resultsQuery] matches the
+     * query, because a change of scope clears [resultsQuery] until the new scope has answered.
+     */
+    val scope: SearchScope = SearchScope.ALL
 )
 
 /**
@@ -186,6 +191,30 @@ class SearchSessionController(
         search(query, SearchTrigger.SUBMIT)
     }
 
+    /**
+     * Where the search looks, from the Library chip: the library and every provider, or the
+     * library alone. The text in the field is searched again in the new scope at once.
+     */
+    fun setScope(searchScope: SearchScope) {
+        val current = _session.value
+        if (current.scope == searchScope) return
+        cancelDeepens()
+        deepened.clear()
+        // The results of the other scope stay on screen until the new answer, but they no
+        // longer count as one: an empty full answer must not read as an empty library.
+        _session.value = current.copy(scope = searchScope, resultsQuery = "", deepening = emptySet())
+        val q = current.query
+        val searched = q.length >= MIN_SEARCH_QUERY_LENGTH || current.resultsQuery == q
+        if (q.isNotBlank() && searched) {
+            launchRun(q, debounceMs = 0L)
+        } else {
+            // A run belongs to one scope, so even one for text too short to search again
+            // stops here: left running, it would ask for the old scope's answer forever.
+            searchJob?.cancel()
+            _session.value = _session.value.copy(isSearching = false)
+        }
+    }
+
     /** Drop everything, for a server change that makes the current results meaningless. */
     fun reset() {
         searchJob?.cancel()
@@ -203,7 +232,7 @@ class SearchSessionController(
             // The job cancelled above is the one that would have cleared the progress
             // line, so a cleared field used to leave it running with nothing behind it
             // until some later search finished.
-            _session.value = SearchSession(query = newQuery)
+            _session.value = SearchSession(query = newQuery, scope = _session.value.scope)
             // The field was emptied, so the next query starts a new run.
             recordedThisRun = null
             return
@@ -221,19 +250,27 @@ class SearchSessionController(
             _session.value = _session.value.copy(query = newQuery, isSearching = true, deepening = emptySet())
             return
         }
-        searchJob?.cancel()
-        _session.value = _session.value.copy(query = newQuery, deepening = emptySet())
-        searchJob = scope.launch { run(newQuery, trigger.debounceMs) }
+        launchRun(newQuery, trigger.debounceMs)
     }
 
-    /** Searches [start], then whatever the field holds by the time each answer comes in. */
+    private fun launchRun(newQuery: String, debounceMs: Long) {
+        searchJob?.cancel()
+        _session.value = _session.value.copy(query = newQuery, deepening = emptySet())
+        searchJob = scope.launch { run(newQuery, debounceMs) }
+    }
+
+    /**
+     * Searches [start], then whatever the field holds by the time each answer comes in. A change
+     * of scope cancels the run and starts another, so the scope is fixed for the whole run.
+     */
     private suspend fun run(start: String, debounceMs: Long) {
+        val searchScope = _session.value.scope
         var query = start
         var wait = debounceMs
         while (true) {
             if (wait > 0) delay(wait)
             _session.value = _session.value.copy(isSearching = true)
-            if (answer(query)) break
+            if (answer(query, searchScope)) break
             query = _session.value.query
             wait = debounceLeft()
         }
@@ -246,18 +283,47 @@ class SearchSessionController(
         return (SEARCH_DEBOUNCE_MS.milliseconds - since).inWholeMilliseconds
     }
 
-    /** Whether the field moved on from [query] while its answer was on the way. */
-    private fun movedOn(query: String) = _session.value.query != query
+    /** Whether the field moved on from [query] or [searchScope] while its answer was on the way. */
+    private fun movedOn(query: String, searchScope: SearchScope) =
+        _session.value.query != query || _session.value.scope != searchScope
 
     /**
-     * Asks the server for [query] and shows the answer. False when the text changed while it
-     * waited: the answer is dropped and the caller asks for the new text.
-     *
-     * The library is asked first and its matches are shown while the full search runs. The
-     * full answer then replaces them; the server puts library items first in it, so they stay
-     * on top.
+     * Asks the server for [query] in [searchScope] and shows the answer. False when the text
+     * changed while it waited: the answer is dropped and the caller asks for the new text.
      */
-    private suspend fun answer(query: String): Boolean = try {
+    private suspend fun answer(query: String, searchScope: SearchScope): Boolean = when (searchScope) {
+        SearchScope.ALL -> answerEverywhere(query)
+        SearchScope.LIBRARY -> answerFromLibrary(query)
+    }
+
+    /**
+     * The search narrowed to the library: one request, shown as it comes. No slow provider takes
+     * part, so an empty answer is final and nothing is asked again.
+     */
+    private suspend fun answerFromLibrary(query: String): Boolean = try {
+        val result = musicRepository.search(query, limit = FIRST_PAGE_LIMIT, scope = SearchScope.LIBRARY)
+        // An answer that lands after its search was cancelled, for newer text or for the
+        // other scope, is not shown.
+        coroutineContext.ensureActive()
+        if (movedOn(query, SearchScope.LIBRARY)) {
+            false
+        } else {
+            show(query, result)
+            true
+        }
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        fail(query, e)
+        true
+    }
+
+    /**
+     * The search everywhere. The library is asked first and its matches are shown while the
+     * full search runs. The full answer then replaces them; the server puts library items
+     * first in it, so they stay on top.
+     */
+    private suspend fun answerEverywhere(query: String): Boolean = try {
         showLibraryMatches(query)
         val asked = timeSource.markNow()
         val first = askFor(query)
@@ -353,7 +419,7 @@ class SearchSessionController(
         } catch (e: Exception) {
             Result.failure(e)
         }
-        return if (movedOn(query)) null else result.getOrThrow()
+        return if (movedOn(query, SearchScope.ALL)) null else result.getOrThrow()
     }
 
     private suspend fun ask(query: String): SearchResult {
@@ -400,6 +466,7 @@ class SearchSessionController(
      * the kind of thing I am looking for". A category the first page did not fill has
      * nothing more to give, so it costs no request. The deeper page replaces the list only
      * when it is longer: a slow provider cut off from it would otherwise shrink the list.
+     * In the library scope the deeper page comes from the library alone.
      */
     fun deepen(mediaType: MediaType) {
         val current = _session.value
@@ -412,17 +479,17 @@ class SearchSessionController(
         _session.value = current.copy(deepening = current.deepening + mediaType)
         // Started once it is in the map, so even a failure before the first suspension
         // finds itself there and clears its own spinner.
-        val job = scope.launch(start = CoroutineStart.LAZY) { deepenInto(q, mediaType) }
+        val job = scope.launch(start = CoroutineStart.LAZY) { deepenInto(q, mediaType, current.scope) }
         deepenJobs[mediaType] = job
         job.start()
     }
 
-    private suspend fun deepenInto(q: String, mediaType: MediaType) {
+    private suspend fun deepenInto(q: String, mediaType: MediaType, searchScope: SearchScope) {
         val self = coroutineContext.job
         try {
-            val more = musicRepository.search(q, listOf(mediaType), DEEP_SEARCH_LIMIT)
-            // The field may have moved on to other text while the request was in flight.
-            if (_session.value.resultsQuery != q) return
+            val more = musicRepository.search(q, listOf(mediaType), DEEP_SEARCH_LIMIT, searchScope)
+            // The field may have moved on to other text or scope while the request was in flight.
+            if (_session.value.resultsQuery != q || _session.value.scope != searchScope) return
             val shown = _session.value.results
             if (more.count(mediaType) > shown.count(mediaType)) {
                 _session.value = _session.value.copy(results = shown.replacing(mediaType, more))

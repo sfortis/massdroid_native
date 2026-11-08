@@ -557,6 +557,181 @@ class SearchSessionControllerTest {
         assertThat(controller.session.value.isSearching).isFalse()
     }
 
+    // --- the library scope, from the Library chip ---
+
+    @Test
+    fun `in the library scope only the library is asked, even when it answers slowly`() = runTest {
+        val f = fixture()
+        coEvery { f.music.search("eels", any(), any(), LIBRARY) } coAnswers {
+            delay(SLOW_ANSWER_MS + 500)
+            SearchResult()
+        }
+        val controller = controllerOver(f)
+        controller.setScope(SearchScope.LIBRARY)
+
+        controller.updateQuery("eels")
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) { f.music.search("eels", any(), FIRST_PAGE_LIMIT, LIBRARY) }
+        coVerify(exactly = 0) { f.music.search(any(), any(), any(), ALL) }
+    }
+
+    @Test
+    fun `an empty library answer is final in the library scope`() = runTest {
+        val f = fixture()
+        val controller = controllerOver(f)
+        controller.setScope(SearchScope.LIBRARY)
+
+        controller.updateQuery("zzzz")
+        advanceTimeBy(600 + 100)
+
+        // The screen reads this as "No results in your library", with nothing left to wait for.
+        val session = controller.session.value
+        assertThat(session.scope).isEqualTo(SearchScope.LIBRARY)
+        assertThat(session.resultsQuery).isEqualTo("zzzz")
+        assertThat(session.results.isEmpty).isTrue()
+        assertThat(session.isSearching).isFalse()
+        coVerify(exactly = 0) { f.music.search(any(), any(), any(), ALL) }
+    }
+
+    @Test
+    fun `a change of scope searches the current text again in the new scope`() = runTest {
+        val f = fixture()
+        coEvery { f.music.search("eels", any(), any(), LIBRARY) } returns hit("Mine")
+        coEvery { f.music.search("eels", any(), any(), ALL) } returns
+            SearchResult(albums = listOf(album("Mine"), album("Spotify")))
+        val controller = controllerOver(f)
+        controller.updateQuery("eels")
+        advanceUntilIdle()
+
+        controller.setScope(SearchScope.LIBRARY)
+        advanceUntilIdle()
+        assertThat(controller.session.value.results.albums.map { it.name }).containsExactly("Mine")
+        assertThat(controller.session.value.resultsQuery).isEqualTo("eels")
+        coVerify(exactly = 1) { f.music.search("eels", any(), any(), ALL) }
+
+        controller.setScope(SearchScope.ALL)
+        advanceUntilIdle()
+        assertThat(controller.session.value.results.albums).hasSize(2)
+        coVerify(exactly = 2) { f.music.search("eels", any(), any(), ALL) }
+    }
+
+    @Test
+    fun `an answer of the previous scope is dropped`() = runTest {
+        val f = fixture()
+        var libraryCalls = 0
+        // The first library answer is already on its way when the scope changes.
+        coEvery { f.music.search("eels", any(), any(), LIBRARY) } coAnswers {
+            if (libraryCalls++ == 0) {
+                withContext(NonCancellable) { delay(300) }
+                hit("Old")
+            } else {
+                delay(50)
+                SearchResult()
+            }
+        }
+        coEvery { f.music.search("eels", any(), any(), ALL) } coAnswers {
+            delay(1_000)
+            hit("New")
+        }
+        val controller = controllerOver(f)
+        controller.setScope(SearchScope.LIBRARY)
+        controller.updateQuery("eels")
+        advanceTimeBy(700)
+
+        controller.setScope(SearchScope.ALL)
+        advanceTimeBy(300)
+        assertThat(controller.session.value.results.isEmpty).isTrue()
+        assertThat(controller.session.value.resultsQuery).isEmpty()
+
+        advanceUntilIdle()
+        assertThat(controller.session.value.results.albums.map { it.name }).containsExactly("New")
+        assertThat(controller.session.value.scope).isEqualTo(SearchScope.ALL)
+        // The stale answer and the new run's library pass, and no third request from the
+        // cancelled run asking again for its own text.
+        coVerify(exactly = 2) { f.music.search("eels", any(), any(), LIBRARY) }
+    }
+
+    @Test
+    fun `an empty full answer does not read as an empty library while the library is asked`() = runTest {
+        val f = fixture()
+        coEvery { f.music.search("zzzz", any(), any(), ALL) } returns SearchResult()
+        coEvery { f.music.search("zzzz", any(), any(), LIBRARY) } coAnswers {
+            delay(2_000)
+            SearchResult()
+        }
+        val controller = controllerOver(f)
+        controller.updateQuery("zzzz")
+        advanceTimeBy(600 + 2_000 + 100)
+        assertThat(controller.session.value.resultsQuery).isEqualTo("zzzz")
+
+        controller.setScope(SearchScope.LIBRARY)
+        advanceTimeBy(100)
+
+        // "No results in your library" waits for the library's own answer.
+        assertThat(controller.session.value.resultsQuery).isEmpty()
+        assertThat(controller.session.value.isSearching).isTrue()
+
+        advanceUntilIdle()
+        assertThat(controller.session.value.resultsQuery).isEqualTo("zzzz")
+    }
+
+    @Test
+    fun `a chip in the library scope asks the library for more`() = runTest {
+        val f = fixture()
+        coEvery { f.music.search("eels", any(), FIRST_PAGE_LIMIT, LIBRARY) } returns
+            SearchResult(albums = albums(FIRST_PAGE_LIMIT))
+        coEvery { f.music.search("eels", listOf(MediaType.ALBUM), any(), LIBRARY) } returns
+            SearchResult(albums = albums(DEEP_SEARCH_LIMIT))
+        val controller = controllerOver(f)
+        controller.setScope(SearchScope.LIBRARY)
+        controller.updateQuery("eels")
+        advanceUntilIdle()
+
+        controller.deepen(MediaType.ALBUM)
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) { f.music.search("eels", listOf(MediaType.ALBUM), DEEP_SEARCH_LIMIT, LIBRARY) }
+        coVerify(exactly = 0) { f.music.search(any(), any(), any(), ALL) }
+        assertThat(controller.session.value.results.albums).hasSize(DEEP_SEARCH_LIMIT)
+    }
+
+    @Test
+    fun `a change of scope stops a short submitted search that has not answered yet`() = runTest {
+        val f = fixture()
+        coEvery { f.music.search("a", any(), any(), ALL) } coAnswers {
+            delay(1_000)
+            hit("A")
+        }
+        val controller = controllerOver(f)
+        controller.updateQuery("a")
+        controller.submitQuery()
+        advanceTimeBy(500)
+
+        controller.setScope(SearchScope.LIBRARY)
+        advanceTimeBy(5_000)
+
+        // The answer of the old scope never lands, and nothing is left asking for it again.
+        assertThat(controller.session.value.results.isEmpty).isTrue()
+        assertThat(controller.session.value.isSearching).isFalse()
+        coVerify(exactly = 1) { f.music.search("a", any(), any(), ALL) }
+    }
+
+    @Test
+    fun `clearing the field keeps the library scope, and a reset returns to all`() = runTest {
+        val f = fixture()
+        val controller = controllerOver(f)
+        controller.setScope(SearchScope.LIBRARY)
+        controller.updateQuery("eels")
+        advanceUntilIdle()
+
+        controller.updateQuery("")
+        assertThat(controller.session.value.scope).isEqualTo(SearchScope.LIBRARY)
+
+        controller.reset()
+        assertThat(controller.session.value.scope).isEqualTo(SearchScope.ALL)
+    }
+
     // --- one search at a time while typing ---
 
     @Test

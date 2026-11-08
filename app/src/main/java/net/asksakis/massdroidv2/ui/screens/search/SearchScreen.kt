@@ -52,6 +52,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import net.asksakis.massdroidv2.domain.search.MIN_SEARCH_QUERY_LENGTH
 import net.asksakis.massdroidv2.domain.model.*
 import net.asksakis.massdroidv2.domain.repository.SearchResult
+import net.asksakis.massdroidv2.domain.repository.SearchScope
 import net.asksakis.massdroidv2.ui.components.ActionSheetItem
 import net.asksakis.massdroidv2.ui.components.MediaActionSheet
 import net.asksakis.massdroidv2.ui.components.MediaItemGrid
@@ -83,6 +84,7 @@ fun SearchScreen(
     val recentSearches by viewModel.recentSearches.collectAsStateWithLifecycle()
     val resultsQuery = session.resultsQuery
     val deepening = session.deepening
+    val searchScope = session.scope
     val players by viewModel.players.collectAsStateWithLifecycle()
     // Sheets and dialogs keep only the item uri, so they survive rotation. The item is
     // rebuilt from the results (a uri names its media type) and closes if it is gone.
@@ -140,8 +142,21 @@ fun SearchScreen(
     }
 
     val providerCounts = remember(results) { collectProviderCounts(results) }
+    val libraryCount = remember(results) { countLibraryItems(results) }
     val hasResults = !results.isEmpty
     val totalCount = providerCounts.values.sum()
+    // In the library scope the row holds the chip that turns it off, so it stays up while the
+    // library is searched and when it has nothing.
+    val showSourceChips = (hasResults && !isSearching) || searchScope == SearchScope.LIBRARY
+    val allSelected = selectedProviders.isEmpty() && searchScope == SearchScope.ALL
+    val librarySelected = searchScope == SearchScope.LIBRARY
+    val selectAll = {
+        selectedProviders = emptySet()
+        viewModel.setSearchScope(SearchScope.ALL)
+    }
+    val toggleLibrary = {
+        viewModel.setSearchScope(if (librarySelected) SearchScope.ALL else SearchScope.LIBRARY)
+    }
 
     val filtered = if (selectedProviders.isEmpty()) results else filterByProviders(results, selectedProviders)
 
@@ -174,7 +189,7 @@ fun SearchScreen(
                     .padding(horizontal = 8.dp, vertical = 2.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                val hasChips = hasResults && !isSearching
+                val hasChips = showSourceChips
                 MdSearchField(
                     value = query,
                     onValueChange = { viewModel.updateQuery(it) },
@@ -191,7 +206,7 @@ fun SearchScreen(
                         .then(if (hasChips) Modifier.widthIn(min = 200.dp, max = 320.dp) else Modifier.weight(1f))
                         .focusRequester(focusRequester)
                 )
-                if (hasResults && !isSearching) {
+                if (showSourceChips) {
                     Spacer(modifier = Modifier.width(8.dp))
                     LazyRow(
                         modifier = Modifier.weight(1f),
@@ -199,15 +214,21 @@ fun SearchScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         item {
-                            val allSelected = selectedProviders.isEmpty()
                             FilterChip(
                                 selected = allSelected,
-                                onClick = { selectedProviders = emptySet() },
+                                onClick = selectAll,
                                 label = { Text("All $totalCount") },
                                 colors = if (allSelected) FilterChipDefaults.filterChipColors(
                                     selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
                                     selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
                                 ) else FilterChipDefaults.filterChipColors()
+                            )
+                        }
+                        item {
+                            FilterChip(
+                                selected = librarySelected,
+                                onClick = toggleLibrary,
+                                label = { Text("Library $libraryCount") }
                             )
                         }
                         items(sortedProviders) { (provider, count) ->
@@ -280,7 +301,7 @@ fun SearchScreen(
             }
             }
 
-            if (hasResults && !isSearching) {
+            if (showSourceChips) {
                 Row(
                     modifier = Modifier.padding(start = 16.dp, end = 8.dp, top = 4.dp, bottom = 8.dp),
                     verticalAlignment = Alignment.CenterVertically
@@ -292,10 +313,9 @@ fun SearchScreen(
                 ) {
                 // "All" chip
                 item {
-                    val allSelected = selectedProviders.isEmpty()
                     FilterChip(
                         selected = allSelected,
-                        onClick = { selectedProviders = emptySet() },
+                        onClick = selectAll,
                         label = {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Text("All")
@@ -313,6 +333,23 @@ fun SearchScreen(
                             )
                         } else {
                             FilterChipDefaults.filterChipColors()
+                        }
+                    )
+                }
+                // The Library chip changes the search itself, not only what is shown.
+                item {
+                    FilterChip(
+                        selected = librarySelected,
+                        onClick = toggleLibrary,
+                        label = {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text("Library")
+                                Spacer(Modifier.width(4.dp))
+                                Text(
+                                    "$libraryCount",
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                                )
+                            }
                         }
                     )
                 }
@@ -380,12 +417,19 @@ fun SearchScreen(
                     modifier = Modifier.fillMaxSize().padding(horizontal = 32.dp),
                     contentAlignment = Alignment.Center
                 ) {
-                    Text(
-                        "No results for \"$query\"",
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        textAlign = TextAlign.Center
-                    )
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(
+                            if (librarySelected) "No results in your library" else "No results for \"$query\"",
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center
+                        )
+                        if (librarySelected) {
+                            MdTextButton(onClick = { viewModel.setSearchScope(SearchScope.ALL) }) {
+                                Text("Search everywhere")
+                            }
+                        }
+                    }
                 }
                 // Nothing has been searched yet, so the screen offers the last
                 // searches instead of an empty page.
@@ -943,6 +987,18 @@ private fun collectProviderCounts(results: SearchResult): Map<String, Int> {
     results.audiobooks.forEach { addDomains(it.providerDomains) }
     results.podcasts.forEach { addDomains(it.providerDomains) }
     return counts
+}
+
+/** The results that are in the library, which is every result in the library scope. */
+private fun countLibraryItems(results: SearchResult): Int {
+    fun inLibrary(uri: String) = uri.startsWith("library://")
+    return results.artists.count { inLibrary(it.uri) } +
+        results.albums.count { inLibrary(it.uri) } +
+        results.tracks.count { inLibrary(it.uri) } +
+        results.playlists.count { inLibrary(it.uri) } +
+        results.radios.count { inLibrary(it.uri) } +
+        results.audiobooks.count { inLibrary(it.uri) } +
+        results.podcasts.count { inLibrary(it.uri) }
 }
 
 private fun filterByProviders(results: SearchResult, selected: Set<String>): SearchResult {
