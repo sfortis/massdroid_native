@@ -40,6 +40,8 @@ import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -80,6 +82,7 @@ fun SearchScreen(
     val gridMode by viewModel.gridMode.collectAsStateWithLifecycle()
     val recentSearches by viewModel.recentSearches.collectAsStateWithLifecycle()
     val resultsQuery = session.resultsQuery
+    val deepening = session.deepening
     val players by viewModel.players.collectAsStateWithLifecycle()
     // Sheets and dialogs keep only the item uri, so they survive rotation. The item is
     // rebuilt from the results (a uri names its media type) and closes if it is gone.
@@ -233,6 +236,7 @@ fun SearchScreen(
                 TypeFilterChips(
                     result = filtered,
                     selected = selectedType,
+                    deepening = deepening,
                     onSelect = {
                         selectedType = it
                         it?.let { t -> viewModel.deepenSearch(t.mediaType) }
@@ -342,6 +346,7 @@ fun SearchScreen(
             TypeFilterChips(
                 result = filtered,
                 selected = selectedType,
+                deepening = deepening,
                 onSelect = {
                     selectedType = it
                     // Narrowing to one category is the moment to fetch more of it.
@@ -830,6 +835,7 @@ private enum class SearchTypeFilter(val label: String, val mediaType: MediaType)
 private fun TypeFilterChips(
     result: SearchResult,
     selected: SearchTypeFilter?,
+    deepening: Set<MediaType>,
     onSelect: (SearchTypeFilter?) -> Unit
 ) {
     val present = SearchTypeFilter.entries.filter { it.count(result) > 0 }
@@ -853,17 +859,37 @@ private fun TypeFilterChips(
         }
         items(present) { type ->
             val isSelected = selected == type
+            val loading = type.mediaType in deepening
             FilterChip(
                 selected = isSelected,
                 onClick = { onSelect(if (isSelected) null else type) },
+                modifier = if (loading) {
+                    Modifier.semantics { stateDescription = "Loading more" }
+                } else {
+                    Modifier
+                },
                 label = {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(type.label)
                         Spacer(Modifier.width(4.dp))
-                        Text(
-                            "${type.count(result)}",
-                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
-                        )
+                        // The count is about to change while more of the category loads.
+                        // The spinner sits over it, so the chip keeps its width and the
+                        // chips beside it stay put.
+                        Box(contentAlignment = Alignment.Center) {
+                            Text(
+                                "${type.count(result)}",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(
+                                    alpha = if (loading) 0f else 0.7f
+                                )
+                            )
+                            if (loading) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(12.dp),
+                                    color = LocalContentColor.current,
+                                    strokeWidth = 2.dp
+                                )
+                            }
+                        }
                     }
                 }
             )
