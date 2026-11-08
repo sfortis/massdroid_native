@@ -327,7 +327,11 @@ data class MarkUnplayedArgs(val mediaItem: JsonElement) : MaCommandArgs {
 data class SearchArgs(
     val query: String,
     val limit: Int,
-    val mediaTypes: List<String>? = null
+    val mediaTypes: List<String>? = null,
+    /** Provider instance ids to search, or null for all of them. MA 2.10.0 and later. */
+    val providers: List<String>? = null,
+    /** The library alone, on MA before 2.10.0, which has no [providers]. */
+    val libraryOnly: Boolean = false
 ) : MaCommandArgs {
     override fun toJson(): JsonObject = buildJsonObject {
         put("search_query", query)
@@ -335,6 +339,10 @@ data class SearchArgs(
         mediaTypes?.let { types ->
             put("media_types", JsonArray(types.map { JsonPrimitive(it) }))
         }
+        providers?.let { ids ->
+            put("providers", JsonArray(ids.map { JsonPrimitive(it) }))
+        }
+        if (libraryOnly) put("library_only", true)
     }
 }
 

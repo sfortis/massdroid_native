@@ -6,6 +6,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -14,9 +15,11 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import net.asksakis.massdroidv2.domain.model.MediaType
 import net.asksakis.massdroidv2.domain.repository.MusicRepository
 import net.asksakis.massdroidv2.domain.repository.SearchResult
+import net.asksakis.massdroidv2.domain.repository.SearchScope
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
 import kotlin.coroutines.coroutineContext
 import kotlin.time.Duration.Companion.milliseconds
@@ -46,6 +49,14 @@ internal const val SLOW_ANSWER_MS = 7_500L
 
 /** The wait before a slow answer is asked again, for the background search to land in the cache. */
 internal const val SLOW_RETRY_DELAY_MS = 3_000L
+
+/**
+ * How long the library pass may hold up the full search.
+ *
+ * The library answered in 12 to 54 ms on a real server, so this only cuts off a stalled call,
+ * which would otherwise start the full search as late as the repository's own 12 s timeout.
+ */
+internal const val LIBRARY_PASS_TIMEOUT_MS = 3_000L
 
 /**
  * How long the typing has to stop before a query goes to the server.
@@ -241,8 +252,13 @@ class SearchSessionController(
     /**
      * Asks the server for [query] and shows the answer. False when the text changed while it
      * waited: the answer is dropped and the caller asks for the new text.
+     *
+     * The library is asked first and its matches are shown while the full search runs. The
+     * full answer then replaces them; the server puts library items first in it, so they stay
+     * on top.
      */
     private suspend fun answer(query: String): Boolean = try {
+        showLibraryMatches(query)
         val asked = timeSource.markNow()
         val first = askFor(query)
         when {
@@ -264,6 +280,38 @@ class SearchSessionController(
     } catch (e: Exception) {
         fail(query, e)
         true
+    }
+
+    /**
+     * The library's matches for [query], shown while the full search is still out. The
+     * server's own library answers in tens of milliseconds, while the full search waits on
+     * the slowest streaming provider for seconds.
+     *
+     * An empty library answer changes nothing on screen: it would read as "nothing found"
+     * while the streaming providers have not answered yet. A failure is only logged, because
+     * the full search is the real answer and still runs.
+     */
+    private suspend fun showLibraryMatches(query: String) {
+        val library = try {
+            withTimeoutOrNull(LIBRARY_PASS_TIMEOUT_MS) {
+                musicRepository.search(query, limit = FIRST_PAGE_LIMIT, scope = SearchScope.LIBRARY)
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "library search failed: ${e.message}")
+            return
+        }
+        // An answer that lands after its search was cancelled for newer text neither shows
+        // nor goes on to ask the providers for the old text.
+        coroutineContext.ensureActive()
+        if (library == null) {
+            Log.w(TAG, "library search gave no answer within $LIBRARY_PASS_TIMEOUT_MS ms")
+            return
+        }
+        if (!library.isEmpty) {
+            _session.value = _session.value.copy(results = library, resultsQuery = query)
+        }
     }
 
     /** A slow empty answer is not yet "nothing found": that waits for the second ask. */

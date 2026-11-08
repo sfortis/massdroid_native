@@ -11,6 +11,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
@@ -20,6 +21,7 @@ import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
 import net.asksakis.massdroidv2.domain.model.MediaType
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 import net.asksakis.massdroidv2.domain.repository.SearchResult
+import net.asksakis.massdroidv2.domain.repository.SearchScope
 import org.junit.Assume.assumeTrue
 import org.junit.Test
 
@@ -70,13 +72,17 @@ class SearchParityTest {
     private fun resource(name: String): String =
         requireNotNull(resourceOrNull(name)) { "Missing capture /search/$name" }
 
-    private fun repository(answer: JsonElement?, capturedArgs: kotlin.collections.MutableList<JsonObject?>? = null):
-        MusicRepositoryImpl {
+    private fun repository(
+        answer: JsonElement?,
+        capturedArgs: kotlin.collections.MutableList<JsonObject?>? = null,
+        serverVersion: String = "2.10.9"
+    ): MusicRepositoryImpl {
         // Relaxed because the repository subscribes to the event flow when it is built;
         // nothing in the search path reads it.
         val ws = mockk<MaWebSocketClient>(relaxed = true)
         every { ws.externalServerUrl() } returns "https://mass.asksakis.net"
         every { ws.serverSchemaVersion() } returns 65
+        every { ws.serverVersion() } returns serverVersion
         every { ws.isOffLanImageHost(any()) } returns false
         val args = slot<JsonObject>()
         coEvery {
@@ -167,6 +173,39 @@ class SearchParityTest {
         assertThat(args["limit"]!!.jsonPrimitive.int).isEqualTo(25)
         assertThat(args["media_types"]!!.jsonArray.map { it.jsonPrimitive.content })
             .containsExactly("artist", "album", "track", "playlist", "radio", "audiobook", "podcast", "genre")
+        // Without either, the server searches every provider.
+        assertThat(args).doesNotContainKey("providers")
+        assertThat(args).doesNotContainKey("library_only")
+    }
+
+    @Test
+    fun `a library search names the library as its only provider from MA 2_10`() = runTest {
+        val sent = mutableListOf<JsonObject?>()
+        repository(JsonObject(emptyMap()), sent, serverVersion = "2.10.0").search("anything", scope = SearchScope.LIBRARY)
+
+        val args = sent.single()!!
+        assertThat(args["providers"]!!.jsonArray.map { it.jsonPrimitive.content }).containsExactly("library")
+        assertThat(args).doesNotContainKey("library_only")
+    }
+
+    @Test
+    fun `a library search before MA 2_10 asks for the library alone the old way`() = runTest {
+        val sent = mutableListOf<JsonObject?>()
+        repository(JsonObject(emptyMap()), sent, serverVersion = "2.9.0").search("anything", scope = SearchScope.LIBRARY)
+
+        val args = sent.single()!!
+        assertThat(args["library_only"]!!.jsonPrimitive.boolean).isTrue()
+        assertThat(args).doesNotContainKey("providers")
+    }
+
+    @Test
+    fun `the providers list is read from MA 2_10 on`() {
+        assertThat(MusicRepositoryImpl.searchesByProvider("2.10.0")).isTrue()
+        assertThat(MusicRepositoryImpl.searchesByProvider("2.11.0b4")).isTrue()
+        assertThat(MusicRepositoryImpl.searchesByProvider("3.0.0")).isTrue()
+        assertThat(MusicRepositoryImpl.searchesByProvider("2.9.7")).isFalse()
+        assertThat(MusicRepositoryImpl.searchesByProvider("0.0.0")).isFalse()
+        assertThat(MusicRepositoryImpl.searchesByProvider(null)).isFalse()
     }
 
     /**

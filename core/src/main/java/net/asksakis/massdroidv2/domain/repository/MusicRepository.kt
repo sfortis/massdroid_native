@@ -112,7 +112,12 @@ interface MusicRepository {
     /** How the connected server orders a playlist it plays sorted. */
     fun playlistSortRules(): PlaylistSortRules
 
-    suspend fun search(query: String, mediaTypes: List<MediaType>? = null, limit: Int = 25): SearchResult
+    suspend fun search(
+        query: String,
+        mediaTypes: List<MediaType>? = null,
+        limit: Int = 25,
+        scope: SearchScope = SearchScope.ALL
+    ): SearchResult
     suspend fun getQueueItems(queueId: String, limit: Int = 100, offset: Int = 0): List<QueueItem>
 
     suspend fun playMedia(
@@ -261,6 +266,15 @@ interface MusicRepository {
     suspend fun setCrossfadeEnabled(queueId: String, enabled: Boolean)
 
     suspend fun browse(path: String? = null): List<BrowseItem>
+}
+
+/** Where a search looks. */
+enum class SearchScope {
+    /** The library and every streaming provider. */
+    ALL,
+
+    /** Only the server's own library, not the streaming providers. */
+    LIBRARY
 }
 
 /**
