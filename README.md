@@ -84,6 +84,9 @@ MassDroid is a full-featured Music Assistant companion app built around music ex
   <img src="screenshots/search.png" width="240" />&nbsp;&nbsp;
   <img src="screenshots/signin.png" width="240" />
 </p>
+<p align="center">
+  <img src="screenshots/party-mode.gif" width="240" alt="The Party screen with the disco ball, the guest QR code and the party player" />
+</p>
 
 ### Android TV
 
@@ -135,9 +138,7 @@ See [Follow Me](docs/follow-me.md) for setup guidance, room detection tips, tool
 
 ## Party Mode
 
-<p align="center">
-  <img src="screenshots/party-mode.gif" width="320" alt="The Party screen with the disco ball, the guest QR code and the party player" />
-</p>
+See the Party screen in [Screenshots](#screenshots).
 
 Party mode lets your guests add songs to the queue from their own phones. To set it up:
 
