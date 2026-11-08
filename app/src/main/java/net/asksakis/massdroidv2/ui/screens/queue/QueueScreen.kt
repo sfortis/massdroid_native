@@ -4,6 +4,16 @@ import net.asksakis.massdroidv2.ui.components.MdIconButton
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.material3.SheetValue
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.unit.Velocity
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -277,7 +287,9 @@ fun QueueSheet(
                     chapters = chapters,
                     currentChapterIndex = currentChapterIndex,
                     isPlaying = isPlaying,
-                    onChapterClick = { viewModel.seekToChapter(it) }
+                    onChapterClick = {
+                        if (sheetState.targetValue != SheetValue.Hidden) viewModel.seekToChapter(it)
+                    }
                 )
             } else {
                 QueueInfiniteScrollHandler(
@@ -285,10 +297,12 @@ fun QueueSheet(
                     itemCount = effectiveItems.size,
                     onLoadMore = { viewModel.loadMore() }
                 )
+                val stopAtTop = remember(lazyListState) { StopAtTopOfSheet(lazyListState) }
                 LazyColumn(
                     state = lazyListState,
                     modifier = Modifier
                         .fillMaxSize()
+                        .then(stopAtTop.modifier)
                         .windowInsetsPadding(WindowInsets.navigationBars)
                 ) {
                     val currentIndex = effectiveItems.indexOfFirst { it.queueItemId == currentQueueItemId }
@@ -314,7 +328,10 @@ fun QueueSheet(
                                     title = item.track?.name ?: item.name,
                                     subtitle = item.track?.artistNames ?: "",
                                     imageUrl = item.track?.imageUrl ?: item.imageUrl,
-                                    onClick = { viewModel.playIndex(index) },
+                                    // A tap that lands while the sheet is closing must not start a track.
+                                    onClick = {
+                                        if (sheetState.targetValue != SheetValue.Hidden) viewModel.playIndex(index)
+                                    },
                                     titleColor = if (item.queueItemId == currentQueueItemId) {
                                         MaterialTheme.colorScheme.primary
                                     } else {
@@ -615,6 +632,40 @@ private fun PartyBadge(mark: PartyMark) {
 }
 
 /**
+ * Keeps scroll and fling momentum that reaches the top of a list inside the list, so that it
+ * does not carry on into the sheet around it and close the sheet.
+ *
+ * The bottom sheet takes whatever downward scroll and fling the list leaves over. A drag that
+ * starts with the list already at the top is meant for the sheet, and it still pulls the sheet
+ * down. A drag or a fling that started lower in the list and reaches the top on the way stops
+ * there: the listener was scrolling the list, and the sheet used to close under a finger that
+ * only meant to reach the first track. Material 1.3 has no switch for the sheet's own drag,
+ * so this sits on the list, between the list and the sheet.
+ */
+private class StopAtTopOfSheet(private val listState: LazyListState) : NestedScrollConnection {
+
+    /** Whether the list was at the top when the current gesture's first finger went down. */
+    private var startedAtTop = true
+
+    val modifier: Modifier = Modifier
+        .pointerInput(Unit) {
+            awaitEachGesture {
+                // The initial pass sees the touch before the rows do and consumes nothing,
+                // so taps, the reorder handle and scrolling behave as before.
+                awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                startedAtTop = !listState.canScrollBackward
+            }
+        }
+        .nestedScroll(this)
+
+    override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource): Offset =
+        if (startedAtTop || available.y <= 0f) Offset.Zero else Offset(0f, available.y)
+
+    override suspend fun onPostFling(consumed: Velocity, available: Velocity): Velocity =
+        if (startedAtTop || available.y <= 0f) Velocity.Zero else Velocity(0f, available.y)
+}
+
+/**
  * Chapter list for an audiobook (the queue's single item). Each row seeks to the
  * chapter start. The current chapter is highlighted with the primary color and the
  * shared EqualizerBars indicator (same pattern as the now-playing queue row); past
@@ -635,10 +686,12 @@ private fun ChapterList(
             hasScrolled = true
         }
     }
+    val stopAtTop = remember(lazyListState) { StopAtTopOfSheet(lazyListState) }
     LazyColumn(
         state = lazyListState,
         modifier = Modifier
             .fillMaxSize()
+            .then(stopAtTop.modifier)
             .windowInsetsPadding(WindowInsets.navigationBars)
     ) {
         // Key by list index, not chapter.position: positions are not guaranteed unique
