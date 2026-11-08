@@ -513,6 +513,7 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
         codecFailed = false
 
         startNativeOutput()
+        logOpenedDevice("open")
         registerDeviceCallback()
         refreshRoutedDevice()
 
@@ -1085,6 +1086,7 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
         try {
             Log.d(TAG, "Reopen committing ($reason)")
             startNativeOutput()        // fresh stream on the now-settled route; clears disconnected_
+            logOpenedDevice("reopen")
             // The fresh stream starts running. While idle-stopped it must stay stopped,
             // or stopOutputForIdle (which sees the flag already set) never stops it.
             if (outputPausedForIdle) nativeOutput.pauseStream()
@@ -1114,6 +1116,23 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
         else -> false
     }
 
+    private fun boundDevice(id: Int): AudioDeviceInfo? = if (id > 0) {
+        audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS).firstOrNull { it.id == id }
+    } else {
+        null
+    }
+
+    /**
+     * Log the device a freshly opened stream is bound to. [refreshRoutedDevice] logs only a
+     * change, and on a first open it runs before the engine counts as configured, so the
+     * Android Auto output was never named in a log (issue #68). Type and id only: the product
+     * name can be a personal device name.
+     */
+    private fun logOpenedDevice(how: String) {
+        val id = nativeOutput.deviceId()
+        Log.i(TAG, "Output stream $how: device type=${boundDevice(id)?.type ?: -1} id=$id")
+    }
+
     /**
      * Resolve the routed device from the native AAudio device id via
      * AudioManager (Oboe has no routing listener) and notify on change.
@@ -1121,11 +1140,7 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
     private fun refreshRoutedDevice() {
         if (!configured) return
         val id = nativeOutput.deviceId()
-        val info = if (id > 0) {
-            audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS).firstOrNull { it.id == id }
-        } else {
-            null
-        }
+        val info = boundDevice(id)
         val newType = info?.type ?: -1
         val newId = info?.id ?: -1
         val newName = info?.productName?.toString()

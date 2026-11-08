@@ -59,6 +59,7 @@ import net.asksakis.massdroidv2.domain.repository.LocalPlaybackGate
 import net.asksakis.massdroidv2.domain.repository.PlaybackIntentCause
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
+import net.asksakis.massdroidv2.playback.AudioFocusPolicy.OwedResume
 
 data class SendspinMetadata(
     val title: String,
@@ -343,7 +344,20 @@ class SendspinAudioController(
                 }
             }
         }
+        // A focus gain that read the speaker while the car was still connected is waiting for
+        // this, see [sinkReturnWindow]. Checked on every call, because the route may have
+        // reached the external sink in an earlier call that the gain's reading lagged behind.
+        if (newRoute.isExternal) sinkReturnWindow.onSinkReturned()
     }
+
+    /**
+     * Whether any Bluetooth, wired or USB output is connected, whatever the stream is bound to.
+     * Read from the device list only: a device is listed only while it is connected, and
+     * isBluetoothA2dpOn may stay set after the car has gone.
+     */
+    private fun externalSinkConnected(): Boolean =
+        audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+            .any { classifyDeviceType(it.type).isExternal }
 
     /** Apply the per-route acoustic correction and relock the engine (gen-guarded). */
     private fun relockForRoute(oldRoute: OutputRoute, newRoute: OutputRoute, gen: Long) {
@@ -398,6 +412,17 @@ class SendspinAudioController(
                 // No device callback reported the return, so currentRoute still
                 // reads SPEAKER; this runs the relock for the route we are on.
                 checkRouteChange()
+            } else if (
+                AudioFocusPolicy.onSinkLossConfirmed(owedResume) ==
+                AudioFocusPolicy.SinkLoss.KEEP_INTERRUPTION_RESUME
+            ) {
+                // An interruption already paused playback, so there is nothing to stop. Its
+                // resume stays owed, and the focus gain decides from the route (#68).
+                owedResume = OwedResume.INTERRUPTION_SINK_LOST
+                Log.i(TAG, "External sink still gone after ${ROUTE_LOSS_SETTLE_MS}ms during an interruption: the focus gain decides")
+                applyRouteTiming(OutputRoute.SPEAKER)
+                restoreAfterRouteLossHold()
+                volumeCoordinator.onRouteChanged()
             } else {
                 Log.i(TAG, "External sink still gone after ${ROUTE_LOSS_SETTLE_MS}ms: pausing")
                 // Read before pauseForRouteLoss drops the intent. A pause the listener made
@@ -465,6 +490,7 @@ class SendspinAudioController(
      * playing before the call never got its own focus back.
      */
     private fun cancelOwedResume() {
+        sinkReturnWindow.cancel()
         val owed = owedResume ?: return
         owedResume = null
         if (owed == OwedResume.DEFERRED_PLAY) {
@@ -550,27 +576,35 @@ class SendspinAudioController(
     @Volatile
     private var owedResume: OwedResume? = null
 
-    /**
-     * Why a start is owed to the next audio-focus gain.
-     *
-     * A boolean could not tell the two reasons apart, so the log described a
-     * play the listener had just asked for as a resume after an interruption.
-     * It matters beyond wording: the field check for phantom starts looks for a
-     * resume delivered while the intent is still false, and a delayed grant
-     * answered within a few tens of milliseconds lands in exactly that state
-     * legitimately. On 2026-09-17 at 23:05 that cost a false positive.
-     */
-    private enum class OwedResume {
-        /** An interruption paused us, and we promised to resume when it ends. */
-        INTERRUPTION,
+    // The short wait after a focus gain that read the phone speaker while an external sink
+    // was still connected. Open only while [owedResume] is INTERRUPTION_SINK_LOST; every
+    // path that clears the owed resume closes it.
+    private val sinkReturnWindow = SinkReturnWindow(
+        scope = CoroutineScope(scope.coroutineContext + Dispatchers.Main.immediate),
+        // The device list as well as the route: with the output released, the route falls
+        // back to isBluetoothA2dpOn, which may still say BT after the car has gone.
+        sinkIsBack = { externalSinkConnected() && resolveOutputRoute().isExternal },
+        onResume = {
+            val owed = owedResume
+            val id = sendspinPlayerId
+            if (owed != null && id != null) {
+                Log.i(TAG, "External sink back after the focus gain")
+                resumeOwedPlayback(owed, id)
+            }
+        },
+        onExpired = {
+            owedResume = null
+            Log.i(TAG, "External sink not back ${SinkReturnWindow.WINDOW_MS}ms after the focus gain: staying paused")
+        },
+    )
 
-        /**
-         * A start was requested and the focus grant came back delayed. Either
-         * the listener pressed play, or the server opened a stream for this
-         * player, which is a start someone asked for elsewhere rather than one
-         * we owe an interruption.
-         */
-        DEFERRED_PLAY,
+    /**
+     * A start is under way, so nothing is owed to a later focus gain, and a wait for the
+     * external sink closes with it.
+     */
+    private fun forgetOwedResume() {
+        sinkReturnWindow.cancel()
+        owedResume = null
     }
 
     // The play or pause sent from here that the server has not answered yet. While a pause
@@ -1182,7 +1216,7 @@ class SendspinAudioController(
                     // in place is kept: a play pressed while another app speaks
                     // stays quiet under it, and the duck ends with the focus gain or
                     // with the sound, see [duckUntilInterrupterEnds].
-                    owedResume = null
+                    forgetOwedResume()
                     pendingTransport.value = PendingTransportPolicy.afterLocalPlay(SystemClock.elapsedRealtime())
                     clearPauseOwedToServer("play")
                     if (!hasAudioFocus && !requestFocusToPlay()) return@collect
@@ -1645,7 +1679,7 @@ class SendspinAudioController(
         playerRepository.selectPlayer(id)
         _userIntent.value = true
         resumeTicket = null
-        owedResume = null
+        forgetOwedResume()
         if (!hasAudioFocus && !requestFocusToPlay()) return
         if (isReady) sendspinManager.resumeAudio()
         scope.launch {
@@ -1761,7 +1795,7 @@ class SendspinAudioController(
         if (wantPlay) {
             _userIntent.value = true
             resumeTicket = null
-            owedResume = null
+            forgetOwedResume()
             if (!hasAudioFocus && !requestFocusToPlay()) return
             if (isReady) sendspinManager.resumeAudio()
         } else {
@@ -1883,6 +1917,9 @@ class SendspinAudioController(
                     AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
                         hasAudioFocus = false
                         cancelHeldCallGain()
+                        // A wait for the external sink belongs to the gain that opened it.
+                        // The resume stays owed, and the next gain decides again.
+                        sinkReturnWindow.cancel()
                         // Asked BEFORE the pause below, which is what clears the
                         // intent, and above the call split so the freeze path is
                         // covered too: a loss while nothing plays must not owe a
@@ -1952,28 +1989,27 @@ class SendspinAudioController(
         val owed = owedResume
         if (owed != null) {
             val resumeId = sendspinPlayerId
-            val outcome = AudioFocusPolicy.onFocusGain(resumeOwed = true)
-            if (outcome == AudioFocusPolicy.FocusGain.IGNORE || resumeId == null) {
+            val route = resolveOutputRoute()
+            when (AudioFocusPolicy.onFocusGain(owed, route, externalSinkConnected())) {
+                AudioFocusPolicy.FocusGain.IGNORE -> {
+                    // Only a resume whose sink was lost meanwhile is refused here, and it
+                    // is never started on the phone speaker.
+                    owedResume = null
+                    Log.i(TAG, "Focus regained on $route with no external sink connected: staying paused")
+                    return
+                }
+                AudioFocusPolicy.FocusGain.AWAIT_SINK_RETURN -> {
+                    Log.i(TAG, "Focus regained while the output reads $route: waiting up to ${SinkReturnWindow.WINDOW_MS}ms for the external sink")
+                    sinkReturnWindow.open()
+                    return
+                }
+                AudioFocusPolicy.FocusGain.RESUME -> Unit
+            }
+            if (resumeId == null) {
                 Log.i(TAG, "Focus regained: nothing to resume")
                 return
             }
-            owedResume = null
-            reconnectMaAfterInterruption()
-            Log.i(
-                TAG,
-                when (owed) {
-                    OwedResume.INTERRUPTION ->
-                        "Focus regained: resuming the playback the interruption paused"
-                    OwedResume.DEFERRED_PLAY ->
-                        "Focus granted: starting the play that was waiting for it"
-                }
-            )
-            _userIntent.value = true
-            sendspinManager.resumeAudio()
-            scope.launch {
-                if (!isReady) ensureSendspinConnected()
-                sendLocalPlay(resumeId, "resume after the interruption")
-            }
+            resumeOwedPlayback(owed, resumeId)
             return
         }
         // If the transient loss FROZE the solo output (buffer
@@ -2012,6 +2048,29 @@ class SendspinAudioController(
                     playerRepository.play(id)
                 }
             }
+        }
+    }
+
+    /** Start the playback [owed] was holding, on the player [resumeId]. */
+    private fun resumeOwedPlayback(owed: OwedResume, resumeId: String) {
+        owedResume = null
+        reconnectMaAfterInterruption()
+        Log.i(
+            TAG,
+            when (owed) {
+                OwedResume.INTERRUPTION ->
+                    "Focus regained: resuming the playback the interruption paused"
+                OwedResume.INTERRUPTION_SINK_LOST ->
+                    "Focus regained on an external sink: resuming the playback the interruption paused"
+                OwedResume.DEFERRED_PLAY ->
+                    "Focus granted: starting the play that was waiting for it"
+            }
+        )
+        _userIntent.value = true
+        sendspinManager.resumeAudio()
+        scope.launch {
+            if (!isReady) ensureSendspinConnected()
+            sendLocalPlay(resumeId, "resume after the interruption")
         }
     }
 

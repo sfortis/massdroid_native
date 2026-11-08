@@ -2,6 +2,7 @@ package net.asksakis.massdroidv2.playback
 
 import com.google.common.truth.Truth.assertThat
 import net.asksakis.massdroidv2.domain.model.PlaybackState
+import net.asksakis.massdroidv2.playback.AudioFocusPolicy.OwedResume
 import org.junit.Test
 
 /**
@@ -244,7 +245,7 @@ class AudioFocusPolicyTest {
     /** The gain that ends an interruption starts what the interruption stopped. */
     @Test
     fun `a gain resumes the playback an interruption owed`() {
-        val outcome = AudioFocusPolicy.onFocusGain(resumeOwed = true)
+        val outcome = AudioFocusPolicy.onFocusGain(OwedResume.INTERRUPTION, OutputRoute.BT, externalSinkConnected = true)
         assertThat(outcome).isEqualTo(AudioFocusPolicy.FocusGain.RESUME)
     }
 
@@ -258,7 +259,8 @@ class AudioFocusPolicyTest {
      */
     @Test
     fun `a gain resumes even though the pause has already ended the stream`() {
-        val outcome = AudioFocusPolicy.onFocusGain(resumeOwed = true)
+        // The phone's own speaker is a route like any other for a plain interruption.
+        val outcome = AudioFocusPolicy.onFocusGain(OwedResume.INTERRUPTION, OutputRoute.SPEAKER, externalSinkConnected = false)
         assertThat(outcome).isEqualTo(AudioFocusPolicy.FocusGain.RESUME)
     }
 
@@ -295,8 +297,47 @@ class AudioFocusPolicyTest {
     /** A gain with nothing owed must not start playback of its own accord. */
     @Test
     fun `a gain with nothing owed starts nothing`() {
-        val outcome = AudioFocusPolicy.onFocusGain(resumeOwed = false)
+        val outcome = AudioFocusPolicy.onFocusGain(owed = null, route = OutputRoute.BT, externalSinkConnected = true)
         assertThat(outcome).isEqualTo(AudioFocusPolicy.FocusGain.IGNORE)
+    }
+
+    /**
+     * Issue #68 on a Pixel in Android Auto: a message read aloud takes the focus and
+     * keeps the output off the car for longer than the route-loss settle window. The
+     * deadline used to pause again and drop the resume, so the music stayed stopped.
+     */
+    @Test
+    fun `a hold deadline during an interruption keeps the resume for the gain`() {
+        assertThat(AudioFocusPolicy.onSinkLossConfirmed(OwedResume.INTERRUPTION))
+            .isEqualTo(AudioFocusPolicy.SinkLoss.KEEP_INTERRUPTION_RESUME)
+        assertThat(AudioFocusPolicy.onFocusGain(OwedResume.INTERRUPTION_SINK_LOST, OutputRoute.BT, externalSinkConnected = true))
+            .isEqualTo(AudioFocusPolicy.FocusGain.RESUME)
+    }
+
+    /** A sink lost with no interruption in progress pauses and drops what was owed, as it always did. */
+    @Test
+    fun `a hold deadline with no interruption pending pauses`() {
+        assertThat(AudioFocusPolicy.onSinkLossConfirmed(owed = null)).isEqualTo(AudioFocusPolicy.SinkLoss.PAUSE)
+        assertThat(AudioFocusPolicy.onSinkLossConfirmed(OwedResume.DEFERRED_PLAY))
+            .isEqualTo(AudioFocusPolicy.SinkLoss.PAUSE)
+    }
+
+    /**
+     * The race the first version of the fix lost: the output is still bound to the speaker
+     * when the focus comes back, a few hundred milliseconds before the reopen onto the car.
+     * With the car still connected, the gain waits instead of dropping the resume.
+     */
+    @Test
+    fun `a gain that reads the speaker while the car is connected waits for the sink`() {
+        assertThat(AudioFocusPolicy.onFocusGain(OwedResume.INTERRUPTION_SINK_LOST, OutputRoute.SPEAKER, externalSinkConnected = true))
+            .isEqualTo(AudioFocusPolicy.FocusGain.AWAIT_SINK_RETURN)
+    }
+
+    /** The phone left the car during the interruption: no music from the phone speaker. */
+    @Test
+    fun `a gain on the speaker with no external sink connected stays paused`() {
+        assertThat(AudioFocusPolicy.onFocusGain(OwedResume.INTERRUPTION_SINK_LOST, OutputRoute.SPEAKER, externalSinkConnected = false))
+            .isEqualTo(AudioFocusPolicy.FocusGain.IGNORE)
     }
 
     /**
