@@ -118,7 +118,6 @@ class MusicRepositoryImpl @Inject constructor(
 
         /** The provider instance id of the server's own library. */
         private const val LIBRARY_PROVIDER = "library"
-        private val SERVER_VERSION = Regex("""^(\d+)\.(\d+)\.""")
         private const val PROVIDERS_MIN_MINOR = 10
 
         /**
@@ -127,12 +126,8 @@ class MusicRepositoryImpl @Inject constructor(
          * does not read as X.Y.Z, and the 0.0.0 of a dev build, count as older, as they do for
          * the Sendspin transport.
          */
-        internal fun searchesByProvider(serverVersion: String?): Boolean {
-            val match = serverVersion?.let { SERVER_VERSION.find(it) } ?: return false
-            val major = match.groupValues[1].toIntOrNull() ?: return false
-            val minor = match.groupValues[2].toIntOrNull() ?: return false
-            return major > 2 || (major == 2 && minor >= PROVIDERS_MIN_MINOR)
-        }
+        internal fun searchesByProvider(serverVersion: String?): Boolean =
+            isServerVersionAtLeast(serverVersion, 2, PROVIDERS_MIN_MINOR)
     }
     private val librarySyncMutex = Mutex()
     private var lastLibrarySyncAtMs = 0L
