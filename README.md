@@ -53,6 +53,7 @@ MassDroid is a full-featured Music Assistant companion app built around music ex
 ## What's New ![NEW](https://img.shields.io/badge/-NEW-brightgreen)
 
 ### Added
+<!-- animation: party-mode.webp -->
 - Party mode: a Party screen in the player options shows the QR code guests scan to add songs, and the queue marks guest and boosted songs. (#85)
 - Add a track or an artist to a Music Assistant smart playlist with a long press, or add the playing track from the player options.
 
@@ -82,6 +83,21 @@ MassDroid is a full-featured Music Assistant companion app built around music ex
   <img src="screenshots/search.png" width="240" />&nbsp;&nbsp;
   <img src="screenshots/signin.png" width="240" />
 </p>
+
+### Party Mode
+
+<p align="center">
+  <img src="screenshots/party-mode.gif" width="320" alt="The Party screen with the disco ball, the guest QR code and the party player" />
+</p>
+
+Party mode lets your guests add songs to the queue from their own phones. To set it up:
+
+1. In Music Assistant, open Settings → Plugins → Add a plugin, add the Party plugin, and turn on Enable Guest Access via QR Code.
+2. If your guests are not on your Wi-Fi, for example passengers on mobile data in the car, turn on Remote Access in the Music Assistant settings. The QR code then opens through app.music-assistant.io and works from anywhere, as long as no External URL is set in Music Assistant (see the note below). Without Remote Access or a public External URL, guests must be on the same network as your Music Assistant server. Remote Access usually works without a Nabu Casa subscription, but Music Assistant notes that on some networks, such as some mobile carriers, a subscription with WebRTC Connections turned on helps.
+3. In MassDroid, open Now Playing, tap the three-dot Player options menu, and choose Party under More. Guests scan the QR code with their phone camera, and they need no app.
+4. Songs your guests add show a Guest badge in the queue, and boosted songs show Boosted.
+
+If an External URL is set in Music Assistant, the QR code always uses it, even with Remote Access turned on. When that address sits behind a login page or a client certificate, guests from outside cannot open it. Clear the External URL to let the QR code use Remote Access instead.
 
 ### Android TV
 

@@ -1,4 +1,5 @@
 ### Added
+<!-- animation: party-mode.webp -->
 - Party mode: a Party screen in the player options shows the QR code guests scan to add songs, and the queue marks guest and boosted songs. (#85)
 - Add a track or an artist to a Music Assistant smart playlist with a long press, or add the playing track from the player options.
 
