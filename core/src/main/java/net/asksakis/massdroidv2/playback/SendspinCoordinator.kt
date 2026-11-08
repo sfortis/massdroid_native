@@ -113,6 +113,7 @@ class SendspinCoordinator(
         SendspinServerKey(serverInfo.serverId, SendspinNoiseConnector.supportsNoise(serverInfo.serverVersion))
 
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    private var networkLossWatch: NetworkLossWatch? = null
     private var volumeReceiver: BroadcastReceiver? = null
     private var btAudioCallback: AudioDeviceCallback? = null
 
@@ -134,6 +135,7 @@ class SendspinCoordinator(
         observeConnectionState()
         observeStreamLifecycle()
         observeAudioFormatPreference()
+        observeConnectionPathLost()
         observeSendspinFormatChoice()
         observeShortcutActions()
         observePhoneVolume()
@@ -144,6 +146,7 @@ class SendspinCoordinator(
         unregisterBtAudioDeviceCallback()
         unregisterPhoneVolumeObserver()
         unregisterNetworkCallback()
+        networkLossWatch?.cancel()
         volumeCoordinator.stop()
         controller?.destroy()
         controller = null
@@ -296,6 +299,23 @@ class SendspinCoordinator(
         autoSelectSendspinForBt(reason)
     }
 
+    /**
+     * The network path to MA is gone, so the Sendspin socket on the same path is dead too,
+     * though it has noticed nothing. A refresh closes it without a goodbye and reconnects,
+     * which is the drop path a lost socket takes: the stream is held for the audio still
+     * buffered, a pause made meanwhile is owed to the server, and the rejoin splices. On a
+     * slow network that did not answer the probe in time it costs one rejoin.
+     */
+    private fun observeConnectionPathLost() {
+        scope.launch {
+            wsClient.connectionPathLost.collect {
+                if (!isActive) return@collect
+                Log.d(TAG, "Path to MA lost: restarting the Sendspin connection")
+                sendspinManager.refresh()
+            }
+        }
+    }
+
     private fun observeAudioFormatPreference() {
         val connectivityManager = context.getSystemService(ConnectivityManager::class.java)
         val wifiState = MutableStateFlow(isOnWifi(connectivityManager))
@@ -311,9 +331,21 @@ class SendspinCoordinator(
         // Wi-Fi to another, a car hotspot to the home Wi-Fi) is a handover too.
         var lastNetwork: Network? = null
         var lastWasVpn = false
+        val lossWatch = NetworkLossWatch(
+            scope = scope,
+            hasDefaultNetwork = { connectivityManager.activeNetwork != null },
+            onLossConfirmed = {
+                Log.d(TAG, "Network lost and nothing replaced it in ${NetworkLossWatch.GRACE_MS}ms")
+                wsClient.checkPathAfterNetworkLoss()
+            },
+        )
+        networkLossWatch = lossWatch
 
         val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) = lossWatch.cancel()
+
             override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
+                lossWatch.cancel()
                 // Treat wired Ethernet as a local high-bandwidth network too (Shield/TV).
                 val wifi = caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
                     caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)
@@ -350,6 +382,7 @@ class SendspinCoordinator(
                 val wifi = isOnWifi(connectivityManager)
                 Log.d(TAG, "Network lost, fallback: ${if (wifi) "WiFi" else "Mobile/None"}")
                 wifiState.value = wifi
+                lossWatch.onLost()
             }
         }
         networkCallback = callback

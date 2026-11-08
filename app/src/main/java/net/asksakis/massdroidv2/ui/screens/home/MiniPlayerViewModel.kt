@@ -11,12 +11,15 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import net.asksakis.massdroidv2.data.sendspin.SendspinManager
+import net.asksakis.massdroidv2.data.sendspin.SyncState
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
 import net.asksakis.massdroidv2.domain.model.PlaybackState
 import net.asksakis.massdroidv2.domain.model.skipAvailability
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
+import net.asksakis.massdroidv2.playback.OfflinePlayPausePolicy
 import kotlinx.coroutines.flow.first
 import javax.inject.Inject
 
@@ -29,6 +32,11 @@ data class MiniPlayerUiState(
     val artist: String = "",
     val imageUrl: String? = null,
     val isPlaying: Boolean = false,
+    /**
+     * True while MA is not connected and this phone is playing its own buffered audio:
+     * the play/pause button may pause it then, see [OfflinePlayPausePolicy].
+     */
+    val pausableOffline: Boolean = false,
     val playerName: String = "",
     /** False when next would do nothing, for example on a radio alone in the queue. */
     val canNext: Boolean = true
@@ -38,7 +46,8 @@ data class MiniPlayerUiState(
 class MiniPlayerViewModel @Inject constructor(
     private val playerRepository: PlayerRepository,
     private val wsClient: MaWebSocketClient,
-    private val settingsRepository: SettingsRepository
+    private val settingsRepository: SettingsRepository,
+    private val sendspinManager: SendspinManager
 ) : ViewModel() {
 
     /**
@@ -57,20 +66,37 @@ class MiniPlayerViewModel @Inject constructor(
     /** Queue exhausted (play/next rejected with "no more tracks"); UI shows a notice. */
     val queueEndedEvent: SharedFlow<Unit> = playerRepository.queueEndedEvent
 
+    private val localOutput = combine(
+        settingsRepository.sendspinClientId,
+        sendspinManager.streamActive,
+        sendspinManager.syncState
+    ) { localPlayerId, streamActive, syncState -> Triple(localPlayerId, streamActive, syncState == SyncState.IDLE) }
+
     val miniPlayerUiState: StateFlow<MiniPlayerUiState> = combine(
         wsClient.connectionState,
         playerRepository.selectedPlayer,
-        playerRepository.queueState
-    ) { connectionState, selectedPlayer, queueState ->
+        playerRepository.queueState,
+        localOutput
+    ) { connectionState, selectedPlayer, queueState, (localPlayerId, streamActive, outputIdle) ->
         val currentTrack = queueState?.currentItem?.track
+        val connected = connectionState is ConnectionState.Connected
+        val button = OfflinePlayPausePolicy.button(
+            maConnected = connected,
+            serverPlaying = selectedPlayer?.state == PlaybackState.PLAYING,
+            localPlayerId = localPlayerId,
+            selectedPlayerId = selectedPlayer?.playerId,
+            streamActive = streamActive,
+            outputIdle = outputIdle,
+        )
         MiniPlayerUiState(
-            connected = connectionState is ConnectionState.Connected,
+            connected = connected,
             hasPlayer = selectedPlayer != null,
             title = currentTrack?.name ?: selectedPlayer?.currentMedia?.title
             ?: selectedPlayer?.displayName.orEmpty(),
             artist = currentTrack?.artistNames ?: selectedPlayer?.currentMedia?.artist.orEmpty(),
             imageUrl = currentTrack?.imageUrl ?: selectedPlayer?.currentMedia?.imageUrl,
-            isPlaying = selectedPlayer?.state == PlaybackState.PLAYING,
+            isPlaying = button.shownPlaying,
+            pausableOffline = button.pausableOffline,
             playerName = selectedPlayer?.displayName.orEmpty(),
             canNext = queueState.skipAvailability().next
         )
@@ -84,9 +110,17 @@ class MiniPlayerViewModel @Inject constructor(
 
     fun playPause() {
         val player = playerRepository.selectedPlayer.value ?: return
+        // An offline pause is a pause whatever MA last reported, which the toggle would read.
+        val pausedOffline = miniPlayerUiState.value.pausableOffline
+        val willPlay = !pausedOffline && player.state != PlaybackState.PLAYING
+        Log.i(TAG, "Play/pause from the mini player: ${if (willPlay) "play" else "pause"}")
         viewModelScope.launch {
             try {
-                playerRepository.playPause(player.playerId)
+                if (pausedOffline) {
+                    playerRepository.pause(player.playerId)
+                } else {
+                    playerRepository.playPause(player.playerId)
+                }
             } catch (e: Exception) {
                 Log.w(TAG, "playPause failed: ${e.message}")
             }

@@ -172,7 +172,12 @@ data class ServerQueueItem(
     val duration: Double = 0.0,
     val streamdetails: StreamDetails? = null,
     @SerialName("media_item") val mediaItem: ServerMediaItem? = null,
-    val image: MediaItemImage? = null
+    val image: MediaItemImage? = null,
+    /**
+     * Free-form marks other parts of the server put on the item, such as the Party plugin's
+     * guest flags. Kept as any JSON, so a value of an unexpected shape cannot fail the whole queue.
+     */
+    @SerialName("extra_attributes") val extraAttributes: JsonElement? = null
 )
 
 @Serializable

@@ -11,10 +11,13 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import net.asksakis.massdroidv2.data.sendspin.SendspinManager
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
+import net.asksakis.massdroidv2.domain.repository.SettingsRepository
 import net.asksakis.massdroidv2.domain.widget.NowPlayingWidgetSnapshot
 
 /**
@@ -23,32 +26,57 @@ import net.asksakis.massdroidv2.domain.widget.NowPlayingWidgetSnapshot
  * Runs for the life of the process, whichever component started it: the snapshot is
  * derived from the selected player and the connection state, written to the store
  * and pushed to every placed widget. Nothing is done while no widget is placed.
+ *
+ * The phone's own player, whether its stream is still playing, and a pause of it MA
+ * has not confirmed are read as well, so play/pause follows the phone's output through a
+ * dropped connection.
  */
 @Singleton
 class NowPlayingWidgetPublisher @Inject constructor(
     @ApplicationContext private val context: Context,
     private val playerRepository: PlayerRepository,
     private val wsClient: MaWebSocketClient,
+    private val sendspinManager: SendspinManager,
+    private val settingsRepository: SettingsRepository,
     private val store: NowPlayingWidgetStore
 ) {
+    private data class Inputs(
+        val player: net.asksakis.massdroidv2.domain.model.Player?,
+        val connected: Boolean,
+        val localPlayerId: String?,
+        val localPausePending: Boolean,
+        val localStreamActive: Boolean,
+    )
+
     private var job: Job? = null
 
     fun start(scope: CoroutineScope) {
         if (job?.isActive == true) return
         job = scope.launch {
-            combine(playerRepository.selectedPlayer, wsClient.connectionState) { player, state ->
-                player to (state is ConnectionState.Connected)
+            combine(
+                playerRepository.selectedPlayer,
+                wsClient.connectionState,
+                settingsRepository.sendspinClientId,
+                sendspinManager.localPausePending,
+                sendspinManager.streamActive,
+            ) { player, state, localPlayerId, localPausePending, localStreamActive ->
+                Inputs(player, state is ConnectionState.Connected, localPlayerId, localPausePending, localStreamActive)
             }
                 .distinctUntilChanged()
-                .collect { (player, connected) -> publish(player, connected) }
+                .collect { publish(it) }
         }
     }
 
     /** A widget was just placed: give it the current state instead of waiting for a change. */
     suspend fun publishCurrent() {
         publish(
-            playerRepository.selectedPlayer.value,
-            wsClient.connectionState.value is ConnectionState.Connected,
+            Inputs(
+                player = playerRepository.selectedPlayer.value,
+                connected = wsClient.connectionState.value is ConnectionState.Connected,
+                localPlayerId = settingsRepository.sendspinClientId.first(),
+                localPausePending = sendspinManager.localPausePending.value,
+                localStreamActive = sendspinManager.streamActive.value,
+            ),
             force = true
         )
     }
@@ -60,13 +88,16 @@ class NowPlayingWidgetPublisher @Inject constructor(
      * 761 of 1108 updates redrew exactly the same card. [force] is for a newly placed
      * widget, which has to be drawn whatever the store holds.
      */
-    private suspend fun publish(
-        player: net.asksakis.massdroidv2.domain.model.Player?,
-        connected: Boolean,
-        force: Boolean = false
-    ) {
+    private suspend fun publish(inputs: Inputs, force: Boolean = false) {
         val previous = store.load()
-        val snapshot = NowPlayingWidgetSnapshot.next(previous, player, connected) ?: return
+        val snapshot = NowPlayingWidgetSnapshot.next(
+            previous,
+            inputs.player,
+            inputs.connected,
+            inputs.localPlayerId,
+            inputs.localPausePending,
+            inputs.localStreamActive,
+        ) ?: return
         if (!force && snapshot == previous) return
         val placed = try {
             GlanceAppWidgetManager(context).getGlanceIds(NowPlayingWidget::class.java).isNotEmpty()

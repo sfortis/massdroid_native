@@ -1,5 +1,7 @@
 package net.asksakis.massdroidv2.playback
 
+import net.asksakis.massdroidv2.domain.model.PlaybackState
+
 /**
  * The decisions behind starting the phone's own audio output, separated from the
  * Android calls that carry them out.
@@ -27,7 +29,52 @@ object AudioFocusPolicy {
         WAIT_FOR_GAIN,
 
         /** Refused: stay paused, and stop claiming the listener wants to play. */
-        STAY_SILENT
+        STAY_SILENT,
+
+        /**
+         * A pause made here has not reached the server yet, so this is the playback
+         * that pause stopped: stay paused, and leave focus and intent as they are.
+         */
+        HOLD_FOR_SERVER_PAUSE,
+
+        /**
+         * The phone rejoined while the MA connection is still down and the listener here
+         * has paused. Whatever the server streams was not asked for here, and only MA can
+         * say whether it is a pause the server missed or a play from elsewhere: stay
+         * paused until MA is back. The reconnect refreshes Sendspin, and the stream/start
+         * that follows is decided again.
+         */
+        HOLD_UNTIL_MA_RETURNS
+    }
+
+    /**
+     * Why a start is owed to the next audio focus gain.
+     *
+     * A boolean could not tell the reasons apart, so the log described a play the
+     * listener had just asked for as a resume after an interruption. It matters
+     * beyond wording: the field check for phantom starts looks for a resume
+     * delivered while the intent is still false, and a delayed grant answered within
+     * a few tens of milliseconds lands in exactly that state legitimately. On
+     * 2026-09-17 at 23:05 that cost a false positive.
+     */
+    enum class OwedResume {
+        /** An interruption paused us, and we promised to resume when it ends. */
+        INTERRUPTION,
+
+        /**
+         * An interruption paused us, and while it lasted the output stayed off the
+         * external sink for the whole route-loss settle window. The resume still
+         * stands, but only onto an external sink, see [onFocusGain].
+         */
+        INTERRUPTION_SINK_LOST,
+
+        /**
+         * A start was requested and the focus grant came back delayed. Either the
+         * listener pressed play, or the server opened a stream for this player,
+         * which is a start someone asked for elsewhere rather than one we owe an
+         * interruption.
+         */
+        DEFERRED_PLAY,
     }
 
     /** What should happen when audio focus comes back. */
@@ -36,7 +83,14 @@ object AudioFocusPolicy {
         RESUME,
 
         /** Nothing is owed, or it is owed somewhere this phone no longer plays. */
-        IGNORE
+        IGNORE,
+
+        /**
+         * The resume is owed to an external sink, the output still reads the phone
+         * speaker, and an external sink is connected: wait a short time for the
+         * output to move back to it, see [SinkReturnWindow].
+         */
+        AWAIT_SINK_RETURN
     }
 
     /**
@@ -45,11 +99,21 @@ object AudioFocusPolicy {
      * [requestFocus] is only called when focus is not already held, so an ordinary
      * track change, which is a stream end followed by a stream start, does not ask
      * the platform again.
+     *
+     * [pauseOwedToServer] comes first, ahead of the focus we may still hold. A pause
+     * made while the connection was down never reached the server, which keeps the
+     * queue playing and starts the stream again when the phone rejoins. Playing it
+     * would undo the pause: after a call the music would come back from a later
+     * place, and after another app took over it would play on top of that app.
      */
     fun onStreamStart(
         holdsFocus: Boolean,
+        pauseOwedToServer: Boolean = false,
+        listenerPausedWithMaDown: Boolean = false,
         requestFocus: () -> FocusRequestResult
     ): StreamStart {
+        if (pauseOwedToServer) return StreamStart.HOLD_FOR_SERVER_PAUSE
+        if (listenerPausedWithMaDown) return StreamStart.HOLD_UNTIL_MA_RETURNS
         if (holdsFocus) return StreamStart.PLAY
         return when (requestFocus()) {
             FocusRequestResult.GRANTED -> StreamStart.PLAY
@@ -135,15 +199,58 @@ object AudioFocusPolicy {
      * stream/end 0.8 s after our own pause, so the condition was already false at
      * every gain that followed one, and it swallowed deferred plays with it.
      *
-     * The flag is the answer. It is set only when this controller paused for
+     * The owed resume is the answer. It is set only when this controller paused for
      * focus or deferred a play, and every reason not to resume clears it where
      * that reason happens: a pause the listener asked for, a permanent loss, a
      * local play, teardown, and the listener choosing another player. Asking a
      * second question at the moment of the gain means asking about a world that
      * has already changed, which is what went wrong three times.
+     *
+     * The one exception is [OwedResume.INTERRUPTION_SINK_LOST]. The sink went away
+     * while the interruption lasted, so the [route] at the gain decides: an external
+     * route resumes, and the phone speaker never does, so music does not start in
+     * the car park from a phone that left the car. The speaker reading is not
+     * trusted on its own while an external sink is still connected
+     * ([externalSinkConnected]), because the output is still bound to the device it
+     * last played on until a reopen settles, a few hundred milliseconds after the
+     * car route returns. That case waits for the sink to come back.
      */
-    fun onFocusGain(resumeOwed: Boolean): FocusGain =
-        if (resumeOwed) FocusGain.RESUME else FocusGain.IGNORE
+    fun onFocusGain(owed: OwedResume?, route: OutputRoute, externalSinkConnected: Boolean): FocusGain =
+        when (owed) {
+            null -> FocusGain.IGNORE
+            OwedResume.INTERRUPTION, OwedResume.DEFERRED_PLAY -> FocusGain.RESUME
+            OwedResume.INTERRUPTION_SINK_LOST -> when {
+                route.isExternal -> FocusGain.RESUME
+                externalSinkConnected -> FocusGain.AWAIT_SINK_RETURN
+                else -> FocusGain.IGNORE
+            }
+        }
+
+    /** What a confirmed loss of the external sink does. */
+    enum class SinkLoss {
+        /** Pause, and drop every start owed: the listener lost the speaker they chose. */
+        PAUSE,
+
+        /** An interruption already paused playback: keep its resume, judged at the gain. */
+        KEEP_INTERRUPTION_RESUME
+    }
+
+    /**
+     * Decide what the route-loss settle window does when the external sink is still
+     * gone at its deadline.
+     *
+     * An interruption on Android Auto can move the output off the car for as long as
+     * it lasts, and a message read aloud outlasts the settle window (issue #68). The
+     * pause that followed used to drop the resume the interruption owed, so the focus
+     * gain found nothing to do and the music stayed stopped. Playback is already
+     * paused for the interruption, so the deadline has nothing to stop: it marks the
+     * resume, and the gain checks the route. Without an interruption, or with a
+     * deferred play, the loss pauses and drops what was owed, as it always did.
+     */
+    fun onSinkLossConfirmed(owed: OwedResume?): SinkLoss = when (owed) {
+        OwedResume.INTERRUPTION, OwedResume.INTERRUPTION_SINK_LOST -> SinkLoss.KEEP_INTERRUPTION_RESUME
+        OwedResume.DEFERRED_PLAY, null -> SinkLoss.PAUSE
+    }
 
     /**
      * Whether the listener choosing [newSelectedPlayerId] cancels a resume owed to
@@ -231,6 +338,29 @@ object AudioFocusPolicy {
 
     fun selectionCancelsOwedResume(newSelectedPlayerId: String?, localPlayerId: String?): Boolean =
         newSelectedPlayerId != null && localPlayerId != null && newSelectedPlayerId != localPlayerId
+
+    /**
+     * Whether a pause made here has to be sent again once the MA connection is back.
+     *
+     * The phone plays on from its buffer through a dropped connection, so a call, another
+     * app or the listener can pause it while neither socket reaches the server. The MA
+     * command then fails, or is written into a socket that is already dead and dropped
+     * with it, and the server keeps the queue playing. A pause made while the MA
+     * connection is down, or while the Sendspin stream is only held through a drop, is
+     * therefore owed until the server confirms it.
+     *
+     * [serverState] is what MA last reported for this player. A server that reports it
+     * as not playing has nothing left to pause. No report at all (null) counts as
+     * playing, because the player list is emptied while the MA connection is down,
+     * which is exactly when the pause is most likely to be lost.
+     */
+    fun pauseOwedToServer(
+        maConnected: Boolean,
+        streamHeldThroughDrop: Boolean,
+        serverState: PlaybackState?,
+    ): Boolean =
+        (serverState == null || serverState == PlaybackState.PLAYING) &&
+            (!maConnected || streamHeldThroughDrop)
 }
 
 /** The three answers the platform gives to a focus request. */

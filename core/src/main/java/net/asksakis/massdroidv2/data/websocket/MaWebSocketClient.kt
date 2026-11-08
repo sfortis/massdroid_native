@@ -147,6 +147,17 @@ class MaWebSocketClient(
      * password sign-in that failed while another server's token was saved.
      */
     val rejectedTokens: SharedFlow<RejectedToken> = _rejectedTokens.asSharedFlow()
+
+    private val _connectionPathLost = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+
+    /**
+     * The network path to the server is gone: a probe after a network change got no answer
+     * and the MA socket was dropped, or the default network was lost with MA already down.
+     * The Sendspin socket shares that path and sees nothing either way: behind an always-on
+     * VPN it stayed open and silent for the whole outage (26 s on the S25, 2026-11-05), so
+     * SendspinCoordinator restarts it on this event and the drop path starts at once.
+     */
+    val connectionPathLost: SharedFlow<Unit> = _connectionPathLost.asSharedFlow()
     private val _startupReady = MutableStateFlow(false)
     val startupReady: StateFlow<Boolean> = _startupReady.asStateFlow()
 
@@ -646,6 +657,27 @@ class MaWebSocketClient(
             if (webSocket !== socket) return@launch
             Log.w(TAG, "Handover: no answer within ${HANDOVER_PROBE_TIMEOUT_MS}ms (${error?.message}), dropping the connection")
             socket.cancel()
+            _connectionPathLost.tryEmit(Unit)
+        }
+    }
+
+    /**
+     * The default network was lost and none replaced it. A socket on it may stay open with
+     * nothing behind it until its ping times out, so the same question as after a handover is
+     * asked. With MA already down there is nothing to ask, and only the path event is sent.
+     * Runs on this client's IO scope whatever thread calls it: evicting the pool closes TLS
+     * sockets, which is network I/O and must not run on the main thread.
+     */
+    fun checkPathAfterNetworkLoss() {
+        scope.launch {
+            okHttpClient.connectionPool.evictAll()
+            if (_connectionState.value is ConnectionState.Connected) {
+                Log.d(TAG, "Network lost with no replacement: probing the connection")
+                probeAfterHandover()
+            } else {
+                Log.d(TAG, "Network lost with no replacement while MA is down")
+                _connectionPathLost.tryEmit(Unit)
+            }
         }
     }
 
@@ -1425,21 +1457,25 @@ class MaWebSocketClient(
             (cause is javax.net.ssl.SSLHandshakeException &&
                 cause.message?.contains("not verified", ignoreCase = true) == true)
     }
+}
 
-    private fun isPrivateHost(host: String): Boolean {
-        if (host == "localhost" || host.endsWith(".local") || host.endsWith(".lan") || host.endsWith(".ts.net")) return true
-        val parts = host.split(".")
-        if (parts.size != 4) return false
-        val nums = parts.mapNotNull { it.toIntOrNull() }
-        if (nums.size != 4) return false
-        return when {
-            nums[0] == 10 -> true
-            nums[0] == 172 && nums[1] in 16..31 -> true
-            nums[0] == 192 && nums[1] == 168 -> true
-            nums[0] == 127 -> true
-            nums[0] == 100 && nums[1] in 64..127 -> true // CGNAT / Tailscale
-            else -> false
-        }
+/**
+ * Whether [host] is on a private network: a private or loopback IPv4 address, the CGNAT range
+ * Tailscale uses, localhost, or a .local, .lan or .ts.net name.
+ */
+internal fun isPrivateHost(host: String): Boolean {
+    if (host == "localhost" || host.endsWith(".local") || host.endsWith(".lan") || host.endsWith(".ts.net")) return true
+    val parts = host.split(".")
+    if (parts.size != 4) return false
+    val nums = parts.mapNotNull { it.toIntOrNull() }
+    if (nums.size != 4) return false
+    return when {
+        nums[0] == 10 -> true
+        nums[0] == 172 && nums[1] in 16..31 -> true
+        nums[0] == 192 && nums[1] == 168 -> true
+        nums[0] == 127 -> true
+        nums[0] == 100 && nums[1] in 64..127 -> true // CGNAT / Tailscale
+        else -> false
     }
 }
 
@@ -1551,9 +1587,20 @@ class MaApiException(message: String, val code: Int) : Exception(message) {
      */
     val isProviderUnavailable: Boolean get() = code == PROVIDER_UNAVAILABLE_CODE
 
+    /**
+     * True when the server refused because it found nothing to play or no such item. A
+     * `play_media` whose start item is not in the container gets this answer before the
+     * server changes the queue items, but after a replace has already recorded the
+     * container as the queue's source.
+     */
+    val isMediaNotFound: Boolean get() = code == MEDIA_NOT_FOUND_CODE
+
     companion object {
         /** MA's ProviderUnavailableError error code. */
         const val PROVIDER_UNAVAILABLE_CODE = 1
+
+        /** MA's MediaNotFoundError error code. */
+        const val MEDIA_NOT_FOUND_CODE = 2
 
         /** MA's InsufficientPermissions error code. */
         const val INSUFFICIENT_PERMISSIONS_CODE = 22

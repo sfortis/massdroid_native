@@ -68,6 +68,7 @@ import kotlinx.coroutines.withContext
 import net.asksakis.massdroidv2.ui.screens.nowplaying.components.landscapeArtSurfaceWidth
 import net.asksakis.massdroidv2.ui.screens.nowplaying.components.KeepScreenOn
 import net.asksakis.massdroidv2.ui.screens.nowplaying.components.PlayerOptionsSheet
+import net.asksakis.massdroidv2.ui.screens.party.PartyOverlay
 import net.asksakis.massdroidv2.ui.screens.nowplaying.components.QualityActionRow
 import net.asksakis.massdroidv2.ui.screens.nowplaying.components.SeekBar
 import net.asksakis.massdroidv2.ui.screens.nowplaying.components.SendspinStatusSheet
@@ -86,6 +87,7 @@ import net.asksakis.massdroidv2.domain.model.AudioFormatInfo
 import net.asksakis.massdroidv2.domain.model.skipAvailability
 import net.asksakis.massdroidv2.domain.recommendation.MediaIdentity
 import net.asksakis.massdroidv2.ui.components.AddToPlaylistDialog
+import net.asksakis.massdroidv2.ui.components.AddToSmartPlaylistDialog
 import net.asksakis.massdroidv2.ui.components.SheetDefaults
 import net.asksakis.massdroidv2.domain.nfc.NfcTagAction
 import net.asksakis.massdroidv2.ui.nfc.NfcWriteChoice
@@ -113,6 +115,7 @@ fun NowPlayingScreen(
     viewModel: NowPlayingViewModel = hiltViewModel()
 ) {
     var showQueueSheet by rememberSaveable { mutableStateOf(false) }
+    var showParty by rememberSaveable { mutableStateOf(false) }
     val player by viewModel.selectedPlayer.collectAsStateWithLifecycle()
     val queueState by viewModel.queueState.collectAsStateWithLifecycle()
     // The position is read only where it is shown (the seek bar and the lyrics), so the
@@ -131,6 +134,12 @@ fun NowPlayingScreen(
     val isLoadingPlaylists by viewModel.isLoadingPlaylists.collectAsStateWithLifecycle()
     val addingToPlaylistId by viewModel.addingToPlaylistId.collectAsStateWithLifecycle()
     val playlistContainsTrack by viewModel.playlistContainsTrack.collectAsStateWithLifecycle()
+    val smartPlaylistsAvailable by viewModel.smartPlaylistsAvailable.collectAsStateWithLifecycle()
+    val partyAvailable by viewModel.partyAvailable.collectAsStateWithLifecycle()
+    val smartPlaylistSeed by viewModel.smartPlaylistSeed.collectAsStateWithLifecycle()
+    val smartPlaylists by viewModel.smartPlaylists.collectAsStateWithLifecycle()
+    val isLoadingSmartPlaylists by viewModel.isLoadingSmartPlaylists.collectAsStateWithLifecycle()
+    val smartPlaylistPendingId by viewModel.smartPlaylistPendingId.collectAsStateWithLifecycle()
 
     val currentTrack = queueState?.currentItem?.track
     val currentArtistUri = MediaIdentity.canonicalArtistKey(
@@ -195,7 +204,8 @@ fun NowPlayingScreen(
     val duration = currentTrack?.duration ?: queueState?.currentItem?.duration
         ?: player?.currentMedia?.duration ?: cachedTrackDisplay?.duration ?: 0.0
     val audioFormat = queueState?.currentItem?.audioFormat
-    val isPlaying = player?.state == PlaybackState.PLAYING
+    val playPauseButton by viewModel.playPauseButton.collectAsStateWithLifecycle()
+    val isPlaying = playPauseButton.shownPlaying
     val sleepTimerState by viewModel.sleepTimerBridge.state.collectAsStateWithLifecycle()
     val sleepTimerRemainingMs = viewModel.sleepTimerBridge.remainingMs()
     val sleepTimerRemainingMin = (sleepTimerRemainingMs / 60_000).toInt()
@@ -466,6 +476,19 @@ fun NowPlayingScreen(
         )
     }
 
+    if (smartPlaylistSeed != null) {
+        AddToSmartPlaylistDialog(
+            playlists = smartPlaylists,
+            isLoading = isLoadingSmartPlaylists,
+            pendingPlaylistId = smartPlaylistPendingId,
+            suggestedName = "",
+            onDismiss = viewModel::closeSmartPlaylistPicker,
+            onRetry = viewModel::reloadSmartPlaylists,
+            onPlaylistClick = viewModel::addSeedToSmartPlaylist,
+            onCreatePlaylist = viewModel::createSmartPlaylist
+        )
+    }
+
     if (showPlayerMenu) {
         val otherPlayers = allPlayers.filter { it.available && it.playerId != player?.playerId }
         PlayerOptionsSheet(
@@ -489,6 +512,14 @@ fun NowPlayingScreen(
             onStartSongRadio = currentTrack?.uri?.let { uri ->
                 { viewModel.startSongRadio(uri) }
             },
+            onAddToSmartPlaylist = if (smartPlaylistsAvailable && currentTrack?.isSmartPlaylistSeed() == true) {
+                {
+                    showPlayerMenu = false
+                    viewModel.openSmartPlaylistPicker()
+                }
+            } else {
+                null
+            },
             // The album, not the track: a tag is worth a sitting's worth of music, and a
             // single track would be a queue of one. A track whose album the server did not
             // name leaves nothing to write, so the option is not offered at all.
@@ -503,6 +534,8 @@ fun NowPlayingScreen(
                         showNfcWrite = true
                     }
                 },
+            // The join QR never goes on a car display, where this screen shows while parked.
+            onOpenParty = { showParty = true }.takeIf { partyAvailable && !net.asksakis.massdroidv2.BuildConfig.IS_AUTOMOTIVE },
             showAboutText = showAboutText,
             onShowAboutTextChange = viewModel::setShowAboutText,
             onClick = {
@@ -654,6 +687,11 @@ fun NowPlayingScreen(
             onDismiss = { showSleepTimerDialog = false }
         )
     }
+
+    // Party opens over this screen rather than as a destination of its own, so closing it
+    // reveals the player exactly as it was, in the expanding sheet and on the full-screen
+    // route alike.
+    PartyOverlay(visible = showParty, onClose = { showParty = false })
 
     if (showQueueSheet) {
         net.asksakis.massdroidv2.ui.screens.queue.QueueSheet(

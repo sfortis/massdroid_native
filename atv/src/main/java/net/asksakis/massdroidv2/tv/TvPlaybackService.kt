@@ -11,6 +11,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.view.KeyEvent
 import android.support.v4.media.MediaMetadataCompat
 import android.support.v4.media.session.MediaSessionCompat
 import android.support.v4.media.session.PlaybackStateCompat
@@ -69,14 +70,39 @@ class TvPlaybackService : Service() {
      */
     private var streamLive = false
 
+    private var loggedState: Int? = null
+
     private val mediaCallback = object : MediaSessionCompat.Callback() {
-        override fun onPlay() { coordinator.controller?.handlePlay() }
-        override fun onPause() { coordinator.controller?.handlePause() }
-        override fun onSkipToNext() { coordinator.controller?.handleNext() }
-        override fun onSkipToPrevious() { coordinator.controller?.handlePrev() }
-        override fun onSeekTo(pos: Long) { coordinator.controller?.handleSeek(pos) }
-        override fun onStop() { coordinator.controller?.handlePause() }
+        override fun onPlay() { logCommand("play"); coordinator.controller?.handlePlay() }
+        override fun onPause() { logCommand("pause"); coordinator.controller?.handlePause() }
+        override fun onSkipToNext() { logCommand("next"); coordinator.controller?.handleNext() }
+        override fun onSkipToPrevious() { logCommand("previous"); coordinator.controller?.handlePrev() }
+        override fun onSeekTo(pos: Long) { logCommand("seek to ${pos}ms"); coordinator.controller?.handleSeek(pos) }
+        override fun onStop() { logCommand("stop"); coordinator.controller?.handlePause() }
+
+        // Logged here because this still runs inside the framework's dispatch. A single
+        // play/pause key reaches onPlay or onPause later, from the double-tap timeout.
+        override fun onMediaButtonEvent(mediaButtonEvent: Intent): Boolean {
+            @Suppress("DEPRECATION")
+            val key = mediaButtonEvent.getParcelableExtra<KeyEvent>(Intent.EXTRA_KEY_EVENT)
+            if (key?.action == KeyEvent.ACTION_DOWN && key.repeatCount == 0) {
+                Log.i(TAG, "Media button ${KeyEvent.keyCodeToString(key.keyCode)} from ${commandSource()}")
+            }
+            return super.onMediaButtonEvent(mediaButtonEvent)
+        }
     }
+
+    private fun logCommand(command: String) {
+        Log.i(TAG, "Session $command from ${commandSource()}")
+    }
+
+    /**
+     * The caller of the session request being handled. On API 28 and later the framework throws
+     * when it is read outside its own callback dispatch, which is where the compat library calls
+     * onPlay and onPause for a single play/pause key.
+     */
+    private fun commandSource(): String =
+        runCatching { mediaSession.currentControllerInfo.packageName }.getOrNull() ?: "a media button"
 
     override fun onCreate() {
         super.onCreate()
@@ -174,10 +200,23 @@ class TvPlaybackService : Service() {
             )
             .build()
         mediaSession.setPlaybackState(pb)
+        logStateChange(state)
         // Paused with a real track is still a session worth showing (the remote card can
         // resume it); paused with nothing loaded is not.
         mediaSession.isActive = playing || (streamLive && hasTrack())
         updateNotification()
+    }
+
+    /** One line per change of what the session shows, so a field log says what the remote card saw. */
+    private fun logStateChange(state: Int) {
+        if (state == loggedState) return
+        loggedState = state
+        val name = when (state) {
+            PlaybackStateCompat.STATE_PLAYING -> "PLAYING"
+            PlaybackStateCompat.STATE_PAUSED -> "PAUSED"
+            else -> "STOPPED"
+        }
+        Log.i(TAG, "Session state $name")
     }
 
     private fun hasTrack(): Boolean = lastMetadata?.title?.isNotBlank() == true
@@ -210,6 +249,7 @@ class TvPlaybackService : Service() {
                 .setState(PlaybackStateCompat.STATE_STOPPED, PlaybackStateCompat.PLAYBACK_POSITION_UNKNOWN, 0f)
                 .build()
         )
+        logStateChange(PlaybackStateCompat.STATE_STOPPED)
         mediaSession.isActive = false
         updateNotification()
     }

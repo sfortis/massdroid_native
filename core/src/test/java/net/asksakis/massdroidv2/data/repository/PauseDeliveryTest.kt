@@ -1,18 +1,25 @@
 package net.asksakis.massdroidv2.data.repository
 
+import com.google.common.truth.Truth.assertThat
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
+import kotlinx.coroutines.async
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import net.asksakis.massdroidv2.data.image.ImageUrlResolver
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
+import net.asksakis.massdroidv2.data.websocket.MaApiException
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
 import net.asksakis.massdroidv2.data.websocket.SessionEventBus
+import net.asksakis.massdroidv2.domain.repository.CommandNotSentException
+import net.asksakis.massdroidv2.domain.repository.LocalPlaybackGate
 import net.asksakis.massdroidv2.domain.repository.PlayHistoryRepository
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
 import net.asksakis.massdroidv2.domain.repository.SmartListeningRepository
@@ -185,5 +192,80 @@ class PauseDeliveryTest {
         coVerify(exactly = 2) {
             wsClient.sendCommand("players/cmd/pause", any<JsonObject>(), false, any())
         }
+    }
+
+    /** A gate that owns every pause and allows every play, as the controller does while a pause is owed. */
+    private val owningGate = object : LocalPlaybackGate {
+        override fun allowsPlay(playerId: String) = true
+        override fun ownsPause(playerId: String) = true
+    }
+
+    private fun connectionLost() = MaApiException("WebSocket not connected", MaApiException.CONNECTION_LOST_CODE)
+
+    // The retry tests run in virtual time: the repository's reconnect wait (up to 2 s,
+    // then 250 ms) runs in the calling coroutine, and the connection state stays
+    // Disconnected here, so runTest skips it instead of waiting it out.
+    @Test
+    fun `the listener's pause is not retried while the controller owes it`() = runTest {
+        coEvery { wsClient.sendCommand(any(), any<JsonObject>(), any(), any()) } throws connectionLost()
+        val repository = repository()
+        repository.registerLocalPlaybackGate(owningGate)
+
+        repository.pause("player-1")
+
+        coVerify(exactly = 1) { wsClient.sendCommand("players/cmd/pause", any<JsonObject>(), false, any()) }
+    }
+
+    /** Codecheck M1: the reconnect's own pause is the delivery, and a flapping socket must not lose it. */
+    @Test
+    fun `the controller's own pause is retried while it is owed`() = runTest {
+        var calls = 0
+        coEvery { wsClient.sendCommand(any(), any<JsonObject>(), any(), any()) } answers {
+            if (calls++ == 0) throw connectionLost() else null
+        }
+        val repository = repository()
+        repository.registerLocalPlaybackGate(owningGate)
+
+        repository.pauseConfirmed("player-1")
+
+        coVerify(exactly = 2) { wsClient.sendCommand("players/cmd/pause", any<JsonObject>(), true, any()) }
+    }
+
+    /**
+     * A pause whose retry a newer play made pointless was not sent, and the caller waiting
+     * for MA's answer must not read that as one: the owed pause has to stay.
+     */
+    @Test
+    fun `a confirmed pause whose retry was superseded throws instead of returning`() = runTest {
+        var calls = 0
+        coEvery { wsClient.sendCommand(any(), any<JsonObject>(), any(), any()) } answers {
+            if (calls++ == 0) throw connectionLost() else null
+        }
+        val repository = repository()
+        repository.registerLocalPlaybackGate(owningGate)
+
+        val pause = async { runCatching { repository.pauseConfirmed("player-1") } }
+        delay(500)
+        repository.play("player-1")
+
+        assertThat(pause.await().exceptionOrNull()).isInstanceOf(CommandNotSentException::class.java)
+        coVerify(exactly = 1) { wsClient.sendCommand("players/cmd/pause", any<JsonObject>(), true, any()) }
+    }
+
+    /** A play that failed transiently must not start playback after a newer pause. */
+    @Test
+    fun `a play superseded by a pause before its retry is not sent again`() = runTest {
+        var calls = 0
+        coEvery { wsClient.sendCommand(any(), any<JsonObject>(), any(), any()) } answers {
+            if (calls++ == 0) throw connectionLost() else null
+        }
+        val repository = repository()
+
+        val play = async { repository.play("player-1") }
+        delay(500)
+        repository.pause("player-1")
+        play.await()
+
+        coVerify(exactly = 1) { wsClient.sendCommand("players/cmd/play", any<JsonObject>(), false, any()) }
     }
 }

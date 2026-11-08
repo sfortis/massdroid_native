@@ -1,0 +1,2 @@
+Android TV keeps playing through a short network drop, and play/pause keeps working while the server is unreachable.
+A song by a blocked artist right after an album or a playlist starts is removed before it plays.

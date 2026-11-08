@@ -160,19 +160,23 @@ class RemoteControlPlayer(
     private val onSeek: (Long) -> Unit,
     private val onVolumeUp: () -> Unit = {},
     private val onVolumeDown: () -> Unit = {},
-    private val onVolumeSet: (Int) -> Unit = {}
+    private val onVolumeSet: (Int) -> Unit = {},
+    /** The package of the controller whose command is being handled, for the log. */
+    private val commandSource: () -> String? = { null },
 ) : SimpleBasePlayer(looper) {
 
     private var playback: AutoPlaybackSnapshot = AutoPlaybackSnapshot.Empty
     private var queue: AutoQueueSnapshot = AutoQueueSnapshot.Empty
     private var positionMs: Long = 0L
     private var playlist: ImmutableList<MediaItemData> = ImmutableList.of()
+    private var loggedState: Pair<Int, Boolean>? = null
 
     fun updatePlayback(snapshot: AutoPlaybackSnapshot, positionMs: Long) {
         this.positionMs = positionMs.coerceAtLeast(0L)
         if (snapshot == playback) return
         val rebuildPlaylist = snapshot.playlistContentDiffersFrom(playback)
         playback = snapshot
+        logStateChange()
         if (rebuildPlaylist) playlist = buildPlaylist()
         AaMetrics.onUpdateState()
         AaMetrics.onInvalidate()
@@ -270,11 +274,7 @@ class RemoteControlPlayer(
         // This lets seek transitions, track changes, Sendspin re-syncs, and
         // brief network blips all show as a momentary "loading" instead of
         // letting the AA bar march forward against silence.
-        val effectiveState = when {
-            playback.title.isEmpty() -> STATE_IDLE
-            playback.isPlaying && !playback.audioFlowing -> STATE_BUFFERING
-            else -> STATE_READY
-        }
+        val effectiveState = effectiveState()
         // Title the queue/timeline. Media3 maps the player's playlist metadata title to the
         // legacy MediaSessionCompat queue title, which heads the "now playing queue" list and,
         // on some head units (e.g. car MediaController UIs), is what makes the queue button
@@ -307,6 +307,29 @@ class RemoteControlPlayer(
             .setDeviceVolume(playback.volumeLevel / VOLUME_SCALE)
             .setIsDeviceMuted(playback.isMuted)
             .build()
+    }
+
+    private fun effectiveState(): Int = when {
+        playback.title.isEmpty() -> STATE_IDLE
+        playback.isPlaying && !playback.audioFlowing -> STATE_BUFFERING
+        else -> STATE_READY
+    }
+
+    /** One line per change of what the session shows, so a field log says what the car and the notification saw. */
+    private fun logStateChange() {
+        val state = effectiveState() to playback.isPlaying
+        if (state == loggedState) return
+        loggedState = state
+        val name = when (state.first) {
+            STATE_IDLE -> "IDLE"
+            STATE_BUFFERING -> "BUFFERING"
+            else -> "READY"
+        }
+        Log.i(TAG, "Session state $name, playWhenReady=${state.second}")
+    }
+
+    private fun logCommand(command: String) {
+        Log.i(TAG, "Session $command from ${commandSource() ?: "an unknown controller"}")
     }
 
     private fun buildPlaylist(): ImmutableList<MediaItemData> {
@@ -445,6 +468,7 @@ class RemoteControlPlayer(
     }
 
     override fun handleSetPlayWhenReady(playWhenReady: Boolean): ListenableFuture<*> {
+        logCommand(if (playWhenReady) "play" else "pause")
         if (playWhenReady) onPlay() else onPause()
         return Futures.immediateVoidFuture()
     }
@@ -454,6 +478,14 @@ class RemoteControlPlayer(
         positionMs: Long,
         seekCommand: Int
     ): ListenableFuture<*> {
+        logCommand(
+            when (seekCommand) {
+                COMMAND_SEEK_TO_NEXT_MEDIA_ITEM -> "next"
+                COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM -> "previous"
+                COMMAND_SEEK_TO_MEDIA_ITEM -> "jump to item $mediaItemIndex"
+                else -> "seek to ${positionMs}ms"
+            }
+        )
         when (seekCommand) {
             COMMAND_SEEK_TO_NEXT_MEDIA_ITEM -> onNext()
             COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM -> onPrevious()
@@ -477,19 +509,19 @@ class RemoteControlPlayer(
     private fun currentDeviceVolumeNotch(): Int = deviceVolume
 
     override fun handleIncreaseDeviceVolume(flags: Int): ListenableFuture<*> {
-        Log.d("RemoteControlPlayer", "handleIncreaseDeviceVolume flags=$flags")
+        Log.d(TAG, "handleIncreaseDeviceVolume flags=$flags")
         onVolumeUp()
         return Futures.immediateVoidFuture()
     }
 
     override fun handleDecreaseDeviceVolume(flags: Int): ListenableFuture<*> {
-        Log.d("RemoteControlPlayer", "handleDecreaseDeviceVolume flags=$flags")
+        Log.d(TAG, "handleDecreaseDeviceVolume flags=$flags")
         onVolumeDown()
         return Futures.immediateVoidFuture()
     }
 
     override fun handleSetDeviceVolume(volume: Int, flags: Int): ListenableFuture<*> {
-        Log.d("RemoteControlPlayer", "handleSetDeviceVolume volume=$volume flags=$flags")
+        Log.d(TAG, "handleSetDeviceVolume volume=$volume flags=$flags")
         // The grid is coarser than the MA scale, so the value we advertise is
         // rounded down. A controller that echoes the number it was shown (rather
         // than asking for a relative change) would otherwise walk the real
@@ -502,6 +534,7 @@ class RemoteControlPlayer(
     }
 
     companion object {
+        private const val TAG = "RemoteControlPlayer"
         private const val C_TIME_UNSET = Long.MIN_VALUE + 1
         internal const val MAX_VOLUME = 100
         /**

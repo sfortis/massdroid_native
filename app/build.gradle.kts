@@ -79,8 +79,8 @@ android {
         applicationId = "net.asksakis.massdroidv2"
         minSdk = 26
         targetSdk = 36
-        versionCode = 47
-        versionName = "2.41.0"
+        versionCode = 48
+        versionName = "2.42.0"
 
         // Only the ABIs :core builds its native code for. Without this filter, AndroidX libraries
         // add a lib/x86 folder without our native libraries, so the app would install on an x86
@@ -300,6 +300,9 @@ dependencies {
 
     // Palette for dynamic colors
     implementation("androidx.palette:palette-ktx:1.0.0")
+
+    // QR encoding for the Party join link; the encoder only, no camera and no Android parts
+    implementation("com.google.zxing:core:3.5.4")
 
     // Media3
     implementation("androidx.media3:media3-session:1.7.1")

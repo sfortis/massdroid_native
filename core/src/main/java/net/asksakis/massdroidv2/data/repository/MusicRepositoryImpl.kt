@@ -10,6 +10,7 @@ import kotlinx.coroutines.flow.mapNotNull
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.*
+import net.asksakis.massdroidv2.data.party.PartyAttributes
 import net.asksakis.massdroidv2.data.websocket.*
 import net.asksakis.massdroidv2.domain.model.*
 import net.asksakis.massdroidv2.domain.model.RecommendationFolder
@@ -50,6 +51,7 @@ class MusicRepositoryImpl @Inject constructor(
         private const val OPTION_PLAY = "play"
         private const val OPTION_REPLACE = "replace"
         private const val KEY_ENQUEUE_OPTION_PLAYLIST = "default_enqueue_option_playlist"
+        private const val KEY_ENQUEUE_OPTION_TRACK = "default_enqueue_option_track"
 
         /**
          * Whether a play_media with this option starts playback. No option means the
@@ -858,6 +860,62 @@ class MusicRepositoryImpl @Inject constructor(
         playMedia(queueId, feedUri, option = "add", awaitResponse = true)
     }
 
+    override suspend fun playContainerFrom(
+        queueId: String,
+        containerUri: String,
+        trackUri: String,
+        option: String,
+        sortKey: PlaylistSortKey?
+    ) {
+        Log.d(TAG, "playContainerFrom: $containerUri from $trackUri ($option, $sortKey)")
+        // The same guard as playMedia: a sort the server would silently ignore is not sent.
+        val serverSort = sortKey?.takeIf { supportsServerSideSort(it) && it.serverKey != null }
+        try {
+            // No blocked-artist plan: the start item is the track the listener picked, and the
+            // blocked tracks after it are removed by the queue cleanup as in any container.
+            sendPlayMedia(queueId, option, awaitResponse = true) {
+                wsClient.sendCommand(
+                    MaCommands.PlayerQueues.PLAY_MEDIA,
+                    playMediaArgs(
+                        queueId = queueId,
+                        uris = listOf(containerUri),
+                        option = option,
+                        radioMode = false,
+                        sortKey = serverSort,
+                        startItem = trackUri
+                    ),
+                    awaitResponse = true
+                )
+            }
+        } catch (e: MaApiException) {
+            // The server leaves out tracks it will not play from the container (unavailable
+            // ones, or ones outside the library when albums play library tracks only), and a
+            // start item among them leaves it nothing to play.
+            if (!e.isMediaNotFound) throw e
+            Log.w(TAG, "$trackUri does not start $containerUri; playing it alone")
+            playMedia(queueId, trackUri, option = option, awaitResponse = true)
+        }
+    }
+
+    override suspend fun playTappedTrack(
+        queueId: String,
+        trackUri: String,
+        containerUri: String?,
+        sortKey: PlaylistSortKey?
+    ) {
+        val trackDefault = containerUri?.let {
+            QueueConfigParser.coreValue(serverQueueDefaults(), KEY_ENQUEUE_OPTION_TRACK)
+        }
+        // Only a default that starts the track now carries the container with it.
+        val option = trackDefault?.takeIf { it == OPTION_PLAY || it == OPTION_REPLACE }
+        if (containerUri != null && option != null) {
+            playContainerFrom(queueId, containerUri, trackUri, option, sortKey)
+        } else {
+            Log.d(TAG, "playTappedTrack: $trackUri alone (track default $trackDefault)")
+            playMedia(queueId, trackUri)
+        }
+    }
+
     private fun QueueChoice.withGlobal(core: JsonObject?): QueueChoice =
         copy(globalValue = QueueConfigParser.coreValue(core, key))
 
@@ -1390,7 +1448,8 @@ class MusicRepositoryImpl @Inject constructor(
         duration = duration,
         track = mediaItem?.toTrack(),
         imageUrl = mediaItem?.let { imageResolver.resolveItem(it) }
-            ?: image?.let { imageResolver.resolve(it) }
+            ?: image?.let { imageResolver.resolve(it) },
+        partyMark = PartyAttributes.partyMark(extraAttributes)
     )
 
     private fun sanitizeYear(year: Int?): Int? = year?.takeIf { it > 0 }

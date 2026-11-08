@@ -1,6 +1,8 @@
 package net.asksakis.massdroidv2.playback
 
 import com.google.common.truth.Truth.assertThat
+import net.asksakis.massdroidv2.domain.model.PlaybackState
+import net.asksakis.massdroidv2.playback.AudioFocusPolicy.OwedResume
 import org.junit.Test
 
 /**
@@ -243,7 +245,7 @@ class AudioFocusPolicyTest {
     /** The gain that ends an interruption starts what the interruption stopped. */
     @Test
     fun `a gain resumes the playback an interruption owed`() {
-        val outcome = AudioFocusPolicy.onFocusGain(resumeOwed = true)
+        val outcome = AudioFocusPolicy.onFocusGain(OwedResume.INTERRUPTION, OutputRoute.BT, externalSinkConnected = true)
         assertThat(outcome).isEqualTo(AudioFocusPolicy.FocusGain.RESUME)
     }
 
@@ -257,7 +259,8 @@ class AudioFocusPolicyTest {
      */
     @Test
     fun `a gain resumes even though the pause has already ended the stream`() {
-        val outcome = AudioFocusPolicy.onFocusGain(resumeOwed = true)
+        // The phone's own speaker is a route like any other for a plain interruption.
+        val outcome = AudioFocusPolicy.onFocusGain(OwedResume.INTERRUPTION, OutputRoute.SPEAKER, externalSinkConnected = false)
         assertThat(outcome).isEqualTo(AudioFocusPolicy.FocusGain.RESUME)
     }
 
@@ -294,8 +297,47 @@ class AudioFocusPolicyTest {
     /** A gain with nothing owed must not start playback of its own accord. */
     @Test
     fun `a gain with nothing owed starts nothing`() {
-        val outcome = AudioFocusPolicy.onFocusGain(resumeOwed = false)
+        val outcome = AudioFocusPolicy.onFocusGain(owed = null, route = OutputRoute.BT, externalSinkConnected = true)
         assertThat(outcome).isEqualTo(AudioFocusPolicy.FocusGain.IGNORE)
+    }
+
+    /**
+     * Issue #68 on a Pixel in Android Auto: a message read aloud takes the focus and
+     * keeps the output off the car for longer than the route-loss settle window. The
+     * deadline used to pause again and drop the resume, so the music stayed stopped.
+     */
+    @Test
+    fun `a hold deadline during an interruption keeps the resume for the gain`() {
+        assertThat(AudioFocusPolicy.onSinkLossConfirmed(OwedResume.INTERRUPTION))
+            .isEqualTo(AudioFocusPolicy.SinkLoss.KEEP_INTERRUPTION_RESUME)
+        assertThat(AudioFocusPolicy.onFocusGain(OwedResume.INTERRUPTION_SINK_LOST, OutputRoute.BT, externalSinkConnected = true))
+            .isEqualTo(AudioFocusPolicy.FocusGain.RESUME)
+    }
+
+    /** A sink lost with no interruption in progress pauses and drops what was owed, as it always did. */
+    @Test
+    fun `a hold deadline with no interruption pending pauses`() {
+        assertThat(AudioFocusPolicy.onSinkLossConfirmed(owed = null)).isEqualTo(AudioFocusPolicy.SinkLoss.PAUSE)
+        assertThat(AudioFocusPolicy.onSinkLossConfirmed(OwedResume.DEFERRED_PLAY))
+            .isEqualTo(AudioFocusPolicy.SinkLoss.PAUSE)
+    }
+
+    /**
+     * The race the first version of the fix lost: the output is still bound to the speaker
+     * when the focus comes back, a few hundred milliseconds before the reopen onto the car.
+     * With the car still connected, the gain waits instead of dropping the resume.
+     */
+    @Test
+    fun `a gain that reads the speaker while the car is connected waits for the sink`() {
+        assertThat(AudioFocusPolicy.onFocusGain(OwedResume.INTERRUPTION_SINK_LOST, OutputRoute.SPEAKER, externalSinkConnected = true))
+            .isEqualTo(AudioFocusPolicy.FocusGain.AWAIT_SINK_RETURN)
+    }
+
+    /** The phone left the car during the interruption: no music from the phone speaker. */
+    @Test
+    fun `a gain on the speaker with no external sink connected stays paused`() {
+        assertThat(AudioFocusPolicy.onFocusGain(OwedResume.INTERRUPTION_SINK_LOST, OutputRoute.SPEAKER, externalSinkConnected = false))
+            .isEqualTo(AudioFocusPolicy.FocusGain.IGNORE)
     }
 
     /**
@@ -361,5 +403,114 @@ class AudioFocusPolicyTest {
     fun `a grouped loss before the call mode is set freezes and checks`() {
         val hold = AudioFocusPolicy.interruptionHold(grouped = true, callModeSet = false)
         assertThat(hold).isEqualTo(AudioFocusPolicy.InterruptionHold.FREEZE_AND_CHECK_FOR_CALL)
+    }
+
+    /**
+     * The server never heard a pause made during a dropped connection and starts the
+     * stream again when the phone rejoins. Focus that is still held, as after a pause
+     * from a watch, must not let that stream play.
+     */
+    @Test
+    fun `a stream that restarts before the server heard the pause stays paused`() {
+        val outcome = AudioFocusPolicy.onStreamStart(holdsFocus = true, pauseOwedToServer = true) { never() }
+        assertThat(outcome).isEqualTo(AudioFocusPolicy.StreamStart.HOLD_FOR_SERVER_PAUSE)
+    }
+
+    /** Without focus the owed pause also wins, so a call is not asked to give focus back. */
+    @Test
+    fun `a stream held for an owed pause does not ask for focus`() {
+        val outcome = AudioFocusPolicy.onStreamStart(holdsFocus = false, pauseOwedToServer = true) { never() }
+        assertThat(outcome).isEqualTo(AudioFocusPolicy.StreamStart.HOLD_FOR_SERVER_PAUSE)
+    }
+
+    @Test
+    fun `a pause made while MA is down is owed`() {
+        val owed = AudioFocusPolicy.pauseOwedToServer(
+            maConnected = false,
+            streamHeldThroughDrop = false,
+            serverState = PlaybackState.PLAYING,
+        )
+        assertThat(owed).isTrue()
+    }
+
+    /**
+     * The player list is emptied while MA is down, so there is no report at all
+     * exactly when the pause is most likely lost.
+     */
+    @Test
+    fun `a pause with no server report is owed while MA is down`() {
+        val owed = AudioFocusPolicy.pauseOwedToServer(
+            maConnected = false,
+            streamHeldThroughDrop = false,
+            serverState = null,
+        )
+        assertThat(owed).isTrue()
+    }
+
+    /**
+     * A socket that died without a close still reads as connected, and a command
+     * written into it is dropped without an error. The held stream is the sign.
+     */
+    @Test
+    fun `a pause made while the stream is held through a drop is owed even with MA connected`() {
+        val owed = AudioFocusPolicy.pauseOwedToServer(
+            maConnected = true,
+            streamHeldThroughDrop = true,
+            serverState = PlaybackState.PLAYING,
+        )
+        assertThat(owed).isTrue()
+    }
+
+    @Test
+    fun `a pause the server can hear at once is not owed`() {
+        val owed = AudioFocusPolicy.pauseOwedToServer(
+            maConnected = true,
+            streamHeldThroughDrop = false,
+            serverState = PlaybackState.PLAYING,
+        )
+        assertThat(owed).isFalse()
+    }
+
+    /** A server that already reports the player stopped has nothing left to pause. */
+    @Test
+    fun `a pause for a player the server reports stopped is not owed`() {
+        val owed = AudioFocusPolicy.pauseOwedToServer(
+            maConnected = false,
+            streamHeldThroughDrop = true,
+            serverState = PlaybackState.PAUSED,
+        )
+        assertThat(owed).isFalse()
+    }
+
+    /**
+     * The same field test: Sendspin rejoined 0.95 s before MA, and the next track, which
+     * the server had moved on to during the drop, played on the speaker until MA was back.
+     */
+    @Test
+    fun `a rejoin while MA is down and the listener has paused stays silent`() {
+        val outcome = AudioFocusPolicy.onStreamStart(holdsFocus = true, listenerPausedWithMaDown = true) { never() }
+        assertThat(outcome).isEqualTo(AudioFocusPolicy.StreamStart.HOLD_UNTIL_MA_RETURNS)
+    }
+
+    /**
+     * Run 2 of the S25 field test: the phone played its buffer through the drop, the
+     * listener still wanted playback, and the rejoin spliced onto it. MA being down must
+     * not hold that stream.
+     */
+    @Test
+    fun `a rejoin while MA is down and the listener wants playback plays`() {
+        val outcome = AudioFocusPolicy.onStreamStart(holdsFocus = true, listenerPausedWithMaDown = false) { never() }
+        assertThat(outcome).isEqualTo(AudioFocusPolicy.StreamStart.PLAY)
+    }
+
+    /** The owed pause still wins, so the hold that resends it is the one taken. */
+    @Test
+    fun `an owed pause wins over the hold until MA returns`() {
+        val outcome = AudioFocusPolicy.onStreamStart(
+            holdsFocus = true,
+            pauseOwedToServer = true,
+            listenerPausedWithMaDown = true,
+        ) { never() }
+        assertThat(outcome).isEqualTo(AudioFocusPolicy.StreamStart.HOLD_FOR_SERVER_PAUSE)
     }
 }

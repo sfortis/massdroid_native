@@ -46,6 +46,52 @@ class NowPlayingWidgetSnapshotTest {
         assertThat(next).isEqualTo(last.copy(connected = false, isPlaying = false))
     }
 
+    /** The S25 widget showed paused while the phone played its buffer through a drop. */
+    @Test
+    fun `the phone's own player keeps playing through a dropped connection`() {
+        val last = NowPlayingWidgetSnapshot.from(player, connected = true, localPlayerId = "pi")
+        val next = NowPlayingWidgetSnapshot.next(
+            last, player, connected = false, localPlayerId = "pi", localStreamActive = true
+        )
+        assertThat(next).isEqualTo(last.copy(connected = false, isPlaying = true))
+    }
+
+    /** The selected player still says PLAYING, but the buffered audio has played out. */
+    @Test
+    fun `the phone's own player shows stopped once its buffer has played out`() {
+        val last = NowPlayingWidgetSnapshot.from(player, connected = true, localPlayerId = "pi")
+        val next = NowPlayingWidgetSnapshot.next(
+            last, player, connected = false, localPlayerId = "pi", localStreamActive = false
+        )
+        assertThat(next?.isPlaying).isFalse()
+    }
+
+    @Test
+    fun `a pause of the phone during a drop shows paused`() {
+        val last = NowPlayingWidgetSnapshot.from(player, connected = true, localPlayerId = "pi")
+        val next = NowPlayingWidgetSnapshot.next(
+            last, player, connected = false, localPlayerId = "pi", localPausePending = true, localStreamActive = true
+        )
+        assertThat(next?.isPlaying).isFalse()
+    }
+
+    @Test
+    fun `another player shows stopped while disconnected as before`() {
+        val last = NowPlayingWidgetSnapshot.from(player, connected = true, localPlayerId = "s25")
+        val next = NowPlayingWidgetSnapshot.next(
+            last, player, connected = false, localPlayerId = "s25", localStreamActive = true
+        )
+        assertThat(next?.isPlaying).isFalse()
+    }
+
+    @Test
+    fun `a pause MA has not heard shows paused on a live connection too`() {
+        val next = NowPlayingWidgetSnapshot.next(
+            NowPlayingWidgetSnapshot.Empty, player, connected = true, localPlayerId = "pi", localPausePending = true
+        )
+        assertThat(next?.isPlaying).isFalse()
+    }
+
     @Test
     fun `connected with the selection still being restored publishes nothing`() {
         val last = NowPlayingWidgetSnapshot.from(player, connected = true)

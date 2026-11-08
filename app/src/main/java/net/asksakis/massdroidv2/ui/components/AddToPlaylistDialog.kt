@@ -61,11 +61,91 @@ fun AddToPlaylistDialog(
     suggestedName: String = "",
     onPlaylistsVisible: (List<String>) -> Unit = {}
 ) {
+    PlaylistPickerFrame(
+        title = "Add to Playlist",
+        newItemLabel = "New Playlist",
+        isLoading = isLoading,
+        isEmpty = playlists.isEmpty(),
+        onDismiss = onDismiss,
+        onRetry = onRetry,
+        onCreate = onCreatePlaylist,
+        suggestedName = suggestedName
+    ) {
+        val listState = rememberLazyListState()
+        LaunchedEffect(listState, playlists) {
+            snapshotFlow {
+                listState.layoutInfo.visibleItemsInfo
+                    .mapNotNull { it.key as? String }
+            }
+                .distinctUntilChanged()
+                .collect { onPlaylistsVisible(it) }
+        }
+        LazyColumn(
+            state = listState,
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(max = 320.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            items(playlists, key = { it.uri }) { playlist ->
+                val isAdding = addingToPlaylistId == playlist.itemId
+                val alreadyAdded = playlist.uri in containsTrack
+                PlaylistPickerRow(
+                    name = playlist.name,
+                    busy = isAdding,
+                    onClick = { if (alreadyAdded) onRemoveFromPlaylist(playlist) else onPlaylistClick(playlist) },
+                    leading = {
+                        if (!playlist.imageUrl.isNullOrBlank()) {
+                            AsyncImage(
+                                model = playlist.imageUrl,
+                                contentDescription = null,
+                                modifier = Modifier
+                                    .size(42.dp)
+                                    .clip(MaterialTheme.shapes.small),
+                                contentScale = ContentScale.Crop
+                            )
+                        } else {
+                            InitialsBox(name = playlist.name, size = 42.dp)
+                        }
+                    },
+                    trailing = {
+                        if (alreadyAdded) {
+                            Icon(
+                                Icons.Default.Check,
+                                contentDescription = "Already added",
+                                modifier = Modifier.size(18.dp),
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    }
+                )
+            }
+        }
+    }
+}
+
+/**
+ * The frame every playlist picker shares: a title, a "new" row that opens a name field, a
+ * spinner while loading, an empty state with Reload, the caller's [list], and Close.
+ */
+@Composable
+internal fun PlaylistPickerFrame(
+    title: String,
+    newItemLabel: String,
+    isLoading: Boolean,
+    isEmpty: Boolean,
+    onDismiss: () -> Unit,
+    onRetry: () -> Unit,
+    onCreate: (String) -> Unit,
+    suggestedName: String = "",
+    emptyText: String = "No playlists available.",
+    list: @Composable () -> Unit
+) {
     var newPlaylistName by remember { mutableStateOf(suggestedName) }
     var showCreateField by remember { mutableStateOf(false) }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Add to Playlist") },
+        title = { Text(title) },
         text = {
             Column {
                 when {
@@ -96,7 +176,7 @@ fun AddToPlaylistDialog(
                                     keyboardActions = KeyboardActions(
                                         onDone = {
                                             if (newPlaylistName.isNotBlank()) {
-                                                onCreatePlaylist(newPlaylistName.trim())
+                                                onCreate(newPlaylistName.trim())
                                             }
                                         }
                                     ),
@@ -106,7 +186,7 @@ fun AddToPlaylistDialog(
                                 MdIconButton(
                                     onClick = {
                                         if (newPlaylistName.isNotBlank()) {
-                                            onCreatePlaylist(newPlaylistName.trim())
+                                            onCreate(newPlaylistName.trim())
                                         }
                                     },
                                     enabled = newPlaylistName.isNotBlank()
@@ -134,86 +214,17 @@ fun AddToPlaylistDialog(
                                     )
                                     Spacer(modifier = Modifier.width(12.dp))
                                     Text(
-                                        "New Playlist",
+                                        newItemLabel,
                                         color = MaterialTheme.colorScheme.onPrimaryContainer
                                     )
                                 }
                             }
                         }
-                        if (playlists.isEmpty() && !showCreateField) {
-                            Text("No playlists available.")
+                        if (isEmpty && !showCreateField) {
+                            Text(emptyText)
                             MdTextButton(onClick = onRetry) { Text("Reload") }
                         } else {
-                            val listState = rememberLazyListState()
-                            LaunchedEffect(listState, playlists) {
-                                snapshotFlow {
-                                    listState.layoutInfo.visibleItemsInfo
-                                        .mapNotNull { it.key as? String }
-                                }
-                                    .distinctUntilChanged()
-                                    .collect { onPlaylistsVisible(it) }
-                            }
-                            LazyColumn(
-                                state = listState,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .heightIn(max = 320.dp),
-                                verticalArrangement = Arrangement.spacedBy(4.dp)
-                            ) {
-                                items(playlists, key = { it.uri }) { playlist ->
-                                    val isAdding = addingToPlaylistId == playlist.itemId
-                                    val alreadyAdded = playlist.uri in containsTrack
-                                    Surface(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .clip(MaterialTheme.shapes.medium)
-                                            .clickable(enabled = !isAdding) {
-                                                if (alreadyAdded) onRemoveFromPlaylist(playlist) else onPlaylistClick(playlist)
-                                            },
-                                        color = MaterialTheme.colorScheme.surfaceContainerHigh
-                                    ) {
-                                        Row(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .padding(horizontal = 16.dp, vertical = 14.dp),
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            if (!playlist.imageUrl.isNullOrBlank()) {
-                                                AsyncImage(
-                                                    model = playlist.imageUrl,
-                                                    contentDescription = null,
-                                                    modifier = Modifier
-                                                        .size(42.dp)
-                                                        .clip(MaterialTheme.shapes.small),
-                                                    contentScale = ContentScale.Crop
-                                                )
-                                            } else {
-                                                InitialsBox(name = playlist.name, size = 42.dp)
-                                            }
-                                            Spacer(modifier = Modifier.width(12.dp))
-                                            Text(
-                                                text = playlist.name,
-                                                modifier = Modifier.weight(1f),
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis
-                                            )
-                                            if (isAdding) {
-                                                CircularProgressIndicator(
-                                                    modifier = Modifier.size(18.dp),
-                                                    strokeWidth = 2.dp
-                                                )
-                                            } else if (alreadyAdded) {
-                                                Icon(
-                                                    Icons.Default.Check,
-                                                    contentDescription = "Already added",
-                                                    modifier = Modifier.size(18.dp),
-                                                    tint = MaterialTheme.colorScheme.primary
-                                                )
-                                            }
-                                        }
-                                    }
-                                }
-                            }
+                            list()
                         }
                     }
                 }
@@ -226,4 +237,56 @@ fun AddToPlaylistDialog(
             }
         }
     )
+}
+
+/** One row of a playlist picker; a spinner replaces [trailing] while [busy]. */
+@Composable
+internal fun PlaylistPickerRow(
+    name: String,
+    busy: Boolean,
+    onClick: () -> Unit,
+    leading: @Composable () -> Unit,
+    subtitle: String? = null,
+    trailing: @Composable () -> Unit = {}
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(MaterialTheme.shapes.medium)
+            .clickable(enabled = !busy, onClick = onClick),
+        color = MaterialTheme.colorScheme.surfaceContainerHigh
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            leading()
+            Spacer(modifier = Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = name,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                if (subtitle != null) {
+                    Text(
+                        text = subtitle,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1
+                    )
+                }
+            }
+            if (busy) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(18.dp),
+                    strokeWidth = 2.dp
+                )
+            } else {
+                trailing()
+            }
+        }
+    }
 }

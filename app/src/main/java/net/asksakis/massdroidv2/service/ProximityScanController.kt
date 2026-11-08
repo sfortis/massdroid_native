@@ -8,6 +8,7 @@ import net.asksakis.massdroidv2.data.proximity.ProximityConfig
 import net.asksakis.massdroidv2.data.proximity.ProximityScanner
 import net.asksakis.massdroidv2.data.proximity.ScanAnchors
 import net.asksakis.massdroidv2.data.proximity.ScanStartResult
+import net.asksakis.massdroidv2.data.proximity.ScannerRecoveryPolicy
 
 class ProximityScanController(
     private val proximityScanner: ProximityScanner,
@@ -29,9 +30,6 @@ class ProximityScanController(
         /** Retry spacing after a start the platform refused, doubling up to the cap. */
         private const val START_BACKOFF_MIN_MS = 5_000L
         private const val START_BACKOFF_MAX_MS = 60_000L
-
-        /** Zero-device reads before the scan is presumed dead and restarted. */
-        private const val RECOVERY_ZERO_READS = 5
 
         /**
          * Spacing of dead-scan recoveries, doubling up to the cap while reads stay empty. Away
@@ -115,19 +113,22 @@ class ProximityScanController(
     }
 
     /**
-     * Restart a persistent scan that reports running but has delivered nothing for
-     * [RECOVERY_ZERO_READS] reads. Android's silent refusal ("scanning too frequently")
-     * looks exactly like this from the inside, and so does a stack that stopped delivering.
-     * Runs from [ensureScans], so the screen-off paths recover too; they used to depend on
-     * the screen-on loop for it.
+     * Restart a persistent scan that reports running but has gone silent; see
+     * [ScannerRecoveryPolicy]. Runs from [ensureScans], so the screen-off paths recover too;
+     * they used to depend on the screen-on loop for it.
      */
     private fun recoverScannerIfNeeded(highAccuracy: Boolean, config: ProximityConfig) {
         val streak = proximityScanner.zeroDeviceStreak
-        if (streak == 0) {
-            recoveryBackoffMs = MIN_SCAN_RESTART_INTERVAL_MS
-            return
+        // The buffer only matters once reads have come back empty; most calls skip the copy.
+        val buffered = if (streak == 0) 0 else proximityScanner.bufferedAddresses().size
+        when (ScannerRecoveryPolicy.health(streak, buffered)) {
+            ScannerRecoveryPolicy.Health.DELIVERING -> {
+                recoveryBackoffMs = MIN_SCAN_RESTART_INTERVAL_MS
+                return
+            }
+            ScannerRecoveryPolicy.Health.QUIET -> return
+            ScannerRecoveryPolicy.Health.SILENT -> Unit
         }
-        if (streak < RECOVERY_ZERO_READS) return
         val now = System.currentTimeMillis()
         if (now - lastScanRestartMs < MIN_SCAN_RESTART_INTERVAL_MS) return
         if (now - lastRecoveryMs < recoveryBackoffMs) return

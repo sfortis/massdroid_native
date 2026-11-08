@@ -7,12 +7,17 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import com.caverock.androidsvg.SVG
 import kotlinx.serialization.json.Json
+import net.asksakis.massdroidv2.data.websocket.EventType
 import net.asksakis.massdroidv2.data.websocket.MaCommands
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
 import net.asksakis.massdroidv2.data.websocket.ProviderInstance
 import net.asksakis.massdroidv2.data.websocket.ProviderManifest
 import net.asksakis.massdroidv2.data.websocket.sendCommand
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.util.concurrent.ConcurrentHashMap
@@ -37,6 +42,14 @@ class ProviderManifestCache @Inject constructor() {
     val musicProviders: List<MusicProvider> get() = _musicProviders.value
     val musicProvidersFlow: StateFlow<List<MusicProvider>> = _musicProviders.asStateFlow()
 
+    /**
+     * The domains of every provider instance the server has loaded, plugins included. A
+     * plugin's API commands exist only while it is loaded, so this is how a feature that
+     * needs one (smart_playlist) knows whether to show itself, without sending a probe.
+     */
+    private val _loadedDomains = MutableStateFlow<Set<String>>(emptySet())
+    val loadedDomains: StateFlow<Set<String>> = _loadedDomains.asStateFlow()
+
     suspend fun fetchManifests(wsClient: MaWebSocketClient, json: Json) {
         try {
             val result = wsClient.sendCommand(MaCommands.Providers.MANIFESTS) ?: return
@@ -57,12 +70,35 @@ class ProviderManifestCache @Inject constructor() {
         } catch (e: Exception) {
             Log.w(TAG, "Failed to fetch provider manifests: ${e.message}")
         }
+        refreshInstances(wsClient, json)
+    }
+
+    /**
+     * Reads the provider list again whenever the server loads or unloads a provider, until
+     * cancelled, so [loadedDomains] follows a plugin turned on or off without a reconnect.
+     *
+     * The list is fetched again rather than read from the event: MA 2.10.9 sends the event
+     * with every provider, without the music provider filter of a non-admin user, which the
+     * `providers` command applies. A server start sends a burst of these events, so a fetch
+     * runs [PROVIDER_CHANGE_SETTLE_MS] after the last of them.
+     */
+    suspend fun followProviderChanges(wsClient: MaWebSocketClient, json: Json) {
+        wsClient.events
+            .filter { it.event == EventType.PROVIDERS_UPDATED }
+            .collectLatest {
+                delay(PROVIDER_CHANGE_SETTLE_MS)
+                refreshInstances(wsClient, json)
+            }
+    }
+
+    private suspend fun refreshInstances(wsClient: MaWebSocketClient, json: Json) {
         try {
             val result = wsClient.sendCommand(MaCommands.Providers.LIST) ?: return
             val instances = json.decodeFromJsonElement(
                 kotlinx.serialization.builtins.ListSerializer(ProviderInstance.serializer()),
                 result
             )
+            _loadedDomains.value = instances.mapTo(HashSet()) { it.domain }
             val refreshedMusicProviders = instances
                 .filter { it.type == "music" && it.domain != "builtin" }
                 .map { MusicProvider(it.instanceId, it.domain, it.name, it.supportedFeatures.toSet()) }
@@ -78,6 +114,8 @@ class ProviderManifestCache @Inject constructor() {
 
             _musicProviders.value = refreshedMusicProviders
             Log.d(TAG, "Music providers: ${musicProviders.map { it.name }}")
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.w(TAG, "Failed to fetch provider instances: ${e.message}")
         }
@@ -139,5 +177,6 @@ class ProviderManifestCache @Inject constructor() {
     companion object {
         private const val TAG = "ProviderCache"
         private const val ICON_SIZE = 48
+        private const val PROVIDER_CHANGE_SETTLE_MS = 1_000L
     }
 }

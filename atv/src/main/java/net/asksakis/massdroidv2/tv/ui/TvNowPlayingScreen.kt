@@ -85,7 +85,6 @@ import androidx.tv.material3.IconButtonDefaults
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Surface
 import androidx.tv.material3.Text
-import net.asksakis.massdroidv2.domain.model.PlaybackState
 import net.asksakis.massdroidv2.domain.model.RepeatMode
 import net.asksakis.massdroidv2.domain.model.skipAvailability
 
@@ -106,7 +105,8 @@ fun TvNowPlayingScreen(
     var showOptions by remember { mutableStateOf(false) }
     val media = player?.currentMedia
     val duration = media?.duration ?: 0.0
-    val playing = player?.state == PlaybackState.PLAYING
+    val playPauseButton by viewModel.playPauseButton.collectAsStateWithLifecycle()
+    val playing = playPauseButton.shownPlaying
     val shuffleOn = queue?.shuffleEnabled == true
     val repeatMode = queue?.repeatMode ?: RepeatMode.OFF
 

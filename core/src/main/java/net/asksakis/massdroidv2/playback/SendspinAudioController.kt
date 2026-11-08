@@ -55,9 +55,11 @@ import net.asksakis.massdroidv2.data.websocket.AuthenticatedSession
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
 import net.asksakis.massdroidv2.domain.model.PlaybackState
+import net.asksakis.massdroidv2.domain.repository.LocalPlaybackGate
 import net.asksakis.massdroidv2.domain.repository.PlaybackIntentCause
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
+import net.asksakis.massdroidv2.playback.AudioFocusPolicy.OwedResume
 
 data class SendspinMetadata(
     val title: String,
@@ -198,7 +200,7 @@ class SendspinAudioController(
         override fun onReceive(ctx: Context, intent: Intent) {
             if (intent.action == AudioManager.ACTION_AUDIO_BECOMING_NOISY) {
                 if (sendspinPlayerId == null) return
-                Log.d(TAG, "Audio becoming noisy -> clean pause")
+                Log.i(TAG, "Audio becoming noisy")
                 volumeCoordinator.onOutputRouteChanging()
                 // Poke the unified car-route evaluation. If this is a real disconnect the
                 // coordinator's settle timer will confirm (Oboe no longer routed to the car) and
@@ -307,7 +309,7 @@ class SendspinAudioController(
             // (Android serves a different per-route STREAM_MUSIC level each flap).
             volumeCoordinator.onOutputRouteChanging()
             val gen = ++routeChangeGeneration
-            Log.d(TAG, "Audio route changed: $oldRoute -> $newRoute (gen=$gen)")
+            Log.i(TAG, "Audio route changed: $oldRoute -> $newRoute (gen=$gen)")
             when {
                 // Lost an external sink to the phone speaker: silence now, pause only
                 // if it stays lost (see [holdForRouteLoss]).
@@ -342,7 +344,20 @@ class SendspinAudioController(
                 }
             }
         }
+        // A focus gain that read the speaker while the car was still connected is waiting for
+        // this, see [sinkReturnWindow]. Checked on every call, because the route may have
+        // reached the external sink in an earlier call that the gain's reading lagged behind.
+        if (newRoute.isExternal) sinkReturnWindow.onSinkReturned()
     }
+
+    /**
+     * Whether any Bluetooth, wired or USB output is connected, whatever the stream is bound to.
+     * Read from the device list only: a device is listed only while it is connected, and
+     * isBluetoothA2dpOn may stay set after the car has gone.
+     */
+    private fun externalSinkConnected(): Boolean =
+        audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+            .any { classifyDeviceType(it.type).isExternal }
 
     /** Apply the per-route acoustic correction and relock the engine (gen-guarded). */
     private fun relockForRoute(oldRoute: OutputRoute, newRoute: OutputRoute, gen: Long) {
@@ -397,6 +412,17 @@ class SendspinAudioController(
                 // No device callback reported the return, so currentRoute still
                 // reads SPEAKER; this runs the relock for the route we are on.
                 checkRouteChange()
+            } else if (
+                AudioFocusPolicy.onSinkLossConfirmed(owedResume) ==
+                AudioFocusPolicy.SinkLoss.KEEP_INTERRUPTION_RESUME
+            ) {
+                // An interruption already paused playback, so there is nothing to stop. Its
+                // resume stays owed, and the focus gain decides from the route (#68).
+                owedResume = OwedResume.INTERRUPTION_SINK_LOST
+                Log.i(TAG, "External sink still gone after ${ROUTE_LOSS_SETTLE_MS}ms during an interruption: the focus gain decides")
+                applyRouteTiming(OutputRoute.SPEAKER)
+                restoreAfterRouteLossHold()
+                volumeCoordinator.onRouteChanged()
             } else {
                 Log.i(TAG, "External sink still gone after ${ROUTE_LOSS_SETTLE_MS}ms: pausing")
                 // Read before pauseForRouteLoss drops the intent. A pause the listener made
@@ -464,6 +490,7 @@ class SendspinAudioController(
      * playing before the call never got its own focus back.
      */
     private fun cancelOwedResume() {
+        sinkReturnWindow.cancel()
         val owed = owedResume ?: return
         owedResume = null
         if (owed == OwedResume.DEFERRED_PLAY) {
@@ -480,7 +507,7 @@ class SendspinAudioController(
         // right after, leaving a clean paused stream.
         sendspinManager.setMuted(true)
         freezeOutput("route")
-        Log.d(TAG, "External sink lost -> clean pause (resume ticket: ${identityForm(lostSink)})")
+        Log.i(TAG, "External sink lost -> clean pause (resume ticket: ${identityForm(lostSink)})")
         abandonPlaybackIntent()
         resumeTicket = lostSink
         sendspinManager.pauseAudio()
@@ -549,36 +576,60 @@ class SendspinAudioController(
     @Volatile
     private var owedResume: OwedResume? = null
 
-    /**
-     * Why a start is owed to the next audio-focus gain.
-     *
-     * A boolean could not tell the two reasons apart, so the log described a
-     * play the listener had just asked for as a resume after an interruption.
-     * It matters beyond wording: the field check for phantom starts looks for a
-     * resume delivered while the intent is still false, and a delayed grant
-     * answered within a few tens of milliseconds lands in exactly that state
-     * legitimately. On 2026-09-17 at 23:05 that cost a false positive.
-     */
-    private enum class OwedResume {
-        /** An interruption paused us, and we promised to resume when it ends. */
-        INTERRUPTION,
+    // The short wait after a focus gain that read the phone speaker while an external sink
+    // was still connected. Open only while [owedResume] is INTERRUPTION_SINK_LOST; every
+    // path that clears the owed resume closes it.
+    private val sinkReturnWindow = SinkReturnWindow(
+        scope = CoroutineScope(scope.coroutineContext + Dispatchers.Main.immediate),
+        // The device list as well as the route: with the output released, the route falls
+        // back to isBluetoothA2dpOn, which may still say BT after the car has gone.
+        sinkIsBack = { externalSinkConnected() && resolveOutputRoute().isExternal },
+        onResume = {
+            val owed = owedResume
+            val id = sendspinPlayerId
+            if (owed != null && id != null) {
+                Log.i(TAG, "External sink back after the focus gain")
+                resumeOwedPlayback(owed, id)
+            }
+        },
+        onExpired = {
+            owedResume = null
+            Log.i(TAG, "External sink not back ${SinkReturnWindow.WINDOW_MS}ms after the focus gain: staying paused")
+        },
+    )
 
-        /**
-         * A start was requested and the focus grant came back delayed. Either
-         * the listener pressed play, or the server opened a stream for this
-         * player, which is a start someone asked for elsewhere rather than one
-         * we owe an interruption.
-         */
-        DEFERRED_PLAY,
+    /**
+     * A start is under way, so nothing is owed to a later focus gain, and a wait for the
+     * external sink closes with it.
+     */
+    private fun forgetOwedResume() {
+        sinkReturnWindow.cancel()
+        owedResume = null
     }
 
-    // True from the moment a pause is issued locally until the server confirms the
-    // player is no longer playing. While it is set, a server report of PLAYING is
-    // older than that pause and must not be read as someone pressing play
-    // elsewhere. Local commands write the intent before the server answers, so
-    // this needs only latency, not reordering. See [adoptServerPlayback].
+    // The play or pause sent from here that the server has not answered yet. While a pause
+    // is pending, a server report of PLAYING is older than that pause and must not be read
+    // as someone pressing play elsewhere. Local commands write it before the server
+    // answers, so this needs only latency, not reordering. See [PendingTransportPolicy].
+    private val pendingTransport = MutableStateFlow<PendingTransport>(PendingTransport.None)
+
+    // This phone's player while a pause made here may not have reached the server, or
+    // null. Marked when a pause is made during a dropped connection, sent again when MA
+    // reconnects, and cleared by a local play or by the server reporting the player as no
+    // longer playing. See [AudioFocusPolicy.pauseOwedToServer].
     @Volatile
-    private var pauseAwaitingConfirmation = false
+    private var pauseOwedToServer: String? = null
+
+    // Moves on every clear of [pauseOwedToServer] and on stop(), so a pause command that
+    // fails after a play has cleared the debt does not mark it again.
+    @Volatile
+    private var pauseOwedGeneration = 0L
+
+    // The MA connection was up and is down now. Sendspin can rejoin before MA does, and a
+    // stream it brings while the listener here has paused is held until MA is back; see
+    // AudioFocusPolicy.StreamStart.HOLD_UNTIL_MA_RETURNS.
+    @Volatile
+    private var maDownAfterDrop = false
 
     // Locks
     private var wakeLock: PowerManager.WakeLock? = null
@@ -730,13 +781,22 @@ class SendspinAudioController(
         // Audio focus has to be settled before a play command reaches the server:
         // once the server opens a stream the output starts feeding it, and the
         // playback-intent collector runs too late to take it back.
-        playerRepository.registerLocalPlaybackGate { playerId ->
-            playerId != sendspinPlayerId || hasAudioFocus || requestFocusToPlay()
-        }
+        playerRepository.registerLocalPlaybackGate(object : LocalPlaybackGate {
+            override fun allowsPlay(playerId: String): Boolean =
+                playerId != sendspinPlayerId || hasAudioFocus || requestFocusToPlay()
+
+            // The MA reconnect sends an owed pause, so the repository's own retry of it
+            // would reach MA a second time.
+            override fun ownsPause(playerId: String): Boolean = pauseOwedToServer == playerId
+        })
         // And keep it a constraint afterwards: the server can open a stream we
         // never asked for (play_media, a queue that rolls on), and every new
         // stream would otherwise un-pause the output on its own.
-        sendspinManager.setOutputAllowed { hasAudioFocus }
+        // Read synchronously when the engine configures a stream, so a stream that has to stay
+        // silent never plays before settleFocusForStreamStart decides.
+        sendspinManager.setOutputAllowed {
+            hasAudioFocus && pauseOwedToServer == null && !listenerPausedWithMaDown()
+        }
         // Note: volumeCoordinator is started once by SendspinCoordinator with
         // its longer-lived scope; this controller's per-start lifecycle would
         // re-arm it across restarts and lose the syncEnabled observer.
@@ -1045,6 +1105,17 @@ class SendspinAudioController(
                 }
         }
 
+        // What the media session and the widget show: a pause sent from here and not yet
+        // confirmed already silenced the output, so this phone's player shows paused while
+        // the server still reports PLAYING. A collector rather than a write next to each
+        // update, so the carried value always ends at the latest state.
+        collectorJobs += scope.launch {
+            pendingTransport
+                .map { PendingTransportPolicy.pauseNotYetHeard(it) }
+                .distinctUntilChanged()
+                .collect(sendspinManager::setLocalPausePending)
+        }
+
         // Collector: settle audio focus on every protocol stream/start.
         //
         // This used to hang off the transport reaching STREAMING, which is the
@@ -1145,8 +1216,9 @@ class SendspinAudioController(
                     // in place is kept: a play pressed while another app speaks
                     // stays quiet under it, and the duck ends with the focus gain or
                     // with the sound, see [duckUntilInterrupterEnds].
-                    owedResume = null
-                    pauseAwaitingConfirmation = false
+                    forgetOwedResume()
+                    pendingTransport.value = PendingTransportPolicy.afterLocalPlay(SystemClock.elapsedRealtime())
+                    clearPauseOwedToServer("play")
                     if (!hasAudioFocus && !requestFocusToPlay()) return@collect
                     if (isReady) {
                         sendspinManager.resumeAudio()
@@ -1157,7 +1229,16 @@ class SendspinAudioController(
                     // A pause has been sent and the server has not answered yet, so
                     // any PLAYING report still in flight describes the play BEFORE
                     // this pause and must not be adopted as remote playback.
-                    pauseAwaitingConfirmation = true
+                    val serverState = reportedServerState(selectedId)
+                    val now = SystemClock.elapsedRealtime()
+                    pendingTransport.update { PendingTransportPolicy.afterLocalPause(it, serverState, now) }
+                    // A pause sent again decides nothing new: a resume owed to an
+                    // interruption stays owed. The output is held down as before, in
+                    // case the server streamed to it before the repeat arrived.
+                    if (intent.cause == PlaybackIntentCause.REPEAT) {
+                        if (isReady && !_userIntent.value) sendspinManager.pauseAudio()
+                        return@collect
+                    }
                     // Every pause funnels through here, including the one this
                     // controller issues when another app takes focus, so the two
                     // can only be told apart by the cause the command carried. A
@@ -1169,45 +1250,74 @@ class SendspinAudioController(
                         cancelOwedResume()
                         listenerPauseGeneration++
                     }
-                    if (!isReady) return@collect
+                    if (!isReady) {
+                        // During a dropped connection the transport is down while the
+                        // buffer still plays, so a pause from anywhere, the app's own
+                        // buttons included, has to stop it here and be owed to the
+                        // server, which cannot hear it.
+                        if (!isStreamHeldThroughDrop()) {
+                            // Nothing plays here, but the server may still be playing this
+                            // player, and with MA down it cannot hear the pause either. Owed,
+                            // the reconnect sends it again, and the pending pause above ends
+                            // with the server's answer instead of showing paused over a
+                            // stream MA starts later; the same as handlePause.
+                            sendspinPlayerId?.let { markPauseIfServerMayMissIt(it) }
+                            return@collect
+                        }
+                        Log.i(TAG, "Pause with the stream up and the transport not ready (${intent.cause}): pausing the buffered audio")
+                        _userIntent.value = false
+                        sendspinManager.pauseAudio()
+                        sendspinPlayerId?.let { markPauseIfServerMayMissIt(it) }
+                        return@collect
+                    }
                     _userIntent.value = false
                     sendspinManager.pauseAudio()
+                    // The phone can pause its own playback with MA down (the app's play/pause
+                    // button lets that pause through), and then MA has to hear it later.
+                    sendspinPlayerId?.let { markPauseIfServerMayMissIt(it) }
                 }
             }
         }
 
         // Derived flow: `_currentIsPlaying` = user intent AND sendspin is the
-        // selected player AND the transport is actually flowing audio (not
-        // syncing/error/idle) AND the server-reported playback speed is > 0.
-        // Replaces the 17 imperative writes the previous design scattered
-        // across collectors and handlers. Writes only `_currentIsPlaying`
-        // and fires `notifyStateChanged()` on each emission so MediaSession
-        // tracks the same canonical state as our internal consumers.
+        // selected player AND audio is actually flowing (the transport streams,
+        // or a stream is held through a dropped connection while its buffer
+        // plays; not syncing/error/idle) AND the server-reported playback speed
+        // is > 0. See [LocalPlayingPolicy]. Replaces the 17 imperative writes the
+        // previous design scattered across collectors and handlers. Writes only
+        // `_currentIsPlaying` and fires `notifyStateChanged()` on each emission so
+        // MediaSession tracks the same canonical state as our internal consumers.
         //
-        // Two chained 3-ary combines because the 5-ary overload's lambda
-        // inference trips on the heterogeneous nullable flow types here.
+        // Two chained combines because the 5-ary overload's lambda inference
+        // trips on the heterogeneous nullable flow types here.
         collectorJobs += scope.launch {
             val transportFlow = combine(
                 sendspinManager.connectionState,
                 sendspinManager.syncState,
                 sendspinManager.serverMetadata,
             ) { transport, sync, metadata ->
-                val streaming = transport == SendspinState.STREAMING
                 val syncOk = sync != SyncState.SYNC_ERROR_REBUFFERING &&
                     sync != SyncState.IDLE
                 // Treat unknown/missing speed as "not paused": the server
                 // omits the field on first frames and on some transports.
                 val speedOk = (metadata?.progress?.playbackSpeed ?: 1) > 0
-                streaming && syncOk && speedOk
+                Triple(transport == SendspinState.STREAMING, syncOk, speedOk)
             }
             combine(
                 _userIntent,
                 playerRepository.selectedPlayer,
                 transportFlow,
-            ) { intent, selected, transportPlaying ->
-                val sendspinSelected = sendspinPlayerId != null &&
-                    selected?.playerId == sendspinPlayerId
-                intent && sendspinSelected && transportPlaying
+                sendspinManager.streamActive,
+            ) { intent, selected, (streaming, syncOk, speedOk), streamActive ->
+                LocalPlayingPolicy.playing(
+                    intent = intent,
+                    localPlayerId = sendspinPlayerId,
+                    selectedPlayerId = selected?.playerId,
+                    transportStreaming = streaming,
+                    streamActive = streamActive,
+                    outputSynced = syncOk,
+                    serverSpeedPositive = speedOk,
+                )
             }
                 .distinctUntilChanged()
                 .collect { playing ->
@@ -1308,19 +1418,27 @@ class SendspinAudioController(
                 .map { list -> list.firstOrNull { it.playerId == sendspinPlayerId }?.state }
                 .distinctUntilChanged()
                 .collect { state ->
+                    // No player at all is not a report, because the list is emptied while
+                    // the MA connection is down. Read as a confirmation, it cleared the
+                    // wait for a pause that had not reached the server, so the pause was
+                    // not owed when the connection was found dead.
+                    if (state == null) return@collect
+                    // The report ends a pending pause when it is anything but PLAYING (the
+                    // server caught up with it, so a later PLAYING can be adopted) and a
+                    // pending play when it is PLAYING; see PendingTransportPolicy.
+                    val pending = pendingTransport.updateAndGet { PendingTransportPolicy.afterServerReport(it, state) }
                     if (state != PlaybackState.PLAYING) {
-                        // Anything other than PLAYING is the server having caught
-                        // up with the pause we sent, so a PLAYING report after this
-                        // one is genuinely later and can be adopted.
-                        pauseAwaitingConfirmation = false
+                        // The same report settles a pause owed after a drop.
+                        clearPauseOwedToServer("server reports $state")
                         return@collect
                     }
+                    val pausePending = pending == PendingTransport.Pause
                     val adopt = AudioFocusPolicy.adoptRemotePlaying(
                         localIntent = _userIntent.value,
-                        pauseAwaitingConfirmation = pauseAwaitingConfirmation
+                        pauseAwaitingConfirmation = pausePending
                     )
                     if (!adopt) {
-                        if (pauseAwaitingConfirmation) {
+                        if (pausePending) {
                             Log.i(TAG, "Ignoring a PLAYING report older than the pause just sent")
                         }
                         return@collect
@@ -1350,8 +1468,12 @@ class SendspinAudioController(
         // client's own backoff scheduler.
         collectorJobs += scope.launch {
             var connectedBefore = false
+            var connectedNow = false
             wsClient.connectionState.collect { state ->
                 val isConnected = state is ConnectionState.Connected
+                if (connectedNow && !isConnected) oweUnconfirmedPause()
+                connectedNow = isConnected
+                maDownAfterDrop = connectedBefore && !isConnected
                 if (isConnected && connectedBefore) {
                     val currentSsState = sendspinManager.connectionState.value
                     val sendspinIsSelected =
@@ -1362,11 +1484,16 @@ class SendspinAudioController(
                     val serverState = serverPlaybackRecord
                         .updateAndGet { AutoResumePolicy.consumedByReconnect(it, readAt) }
                         .state
-                    val wantToResume = AutoResumePolicy.reconnectResumes(intent, sendspinIsSelected, serverState)
+                    // A pause made during the drop wins over the resume: the
+                    // listener or an interruption stopped the music while the
+                    // server could not hear it.
+                    val pauseOwed = pauseOwedToServer != null
+                    val wantToResume = !pauseOwed &&
+                        AutoResumePolicy.reconnectResumes(intent, sendspinIsSelected, serverState)
                     Log.d(
                         TAG,
                         "MA reconnected, sendspin is $currentSsState, refreshing " +
-                            "(wantToResume=$wantToResume, userIntent=$intent, " +
+                            "(wantToResume=$wantToResume, userIntent=$intent, pauseOwed=$pauseOwed, " +
                             "sendspinIsSelected=$sendspinIsSelected, serverState=$serverState)"
                     )
                     // Supersede an in-flight run. Moving `refresh()` off the
@@ -1425,21 +1552,36 @@ class SendspinAudioController(
         sendspinIsSelected: Boolean,
     ) {
         val id = sendspinPlayerId
+        // A pause made during the drop is sent whatever the route: the listener or an
+        // interruption chose it, and the server never heard it. It is re-read here
+        // because a play in the gap before this coroutine runs clears it.
+        val pauseOwed = id != null && pauseOwedToServer == id
         // Paused, and the output would land on the phone speaker. `_userIntent` is
         // re-read on top of the `intent` the reconnect logged because the user can
         // press play in the gap before this coroutine runs, and a pause sent after
         // that would stop the playback they just asked for. The route is resolved
         // last, being the only expensive check.
-        if (id != null && !intent && !_userIntent.value && sendspinIsSelected &&
-            !resolveOutputRoute().isExternal
+        if (id != null && (pauseOwed || !intent && !_userIntent.value && sendspinIsSelected &&
+                !resolveOutputRoute().isExternal)
         ) {
-            Log.d(TAG, "Reconnected paused on the phone speaker -> re-asserting pause before refresh")
+            Log.d(
+                TAG,
+                if (pauseOwed) {
+                    "Reconnected with a pause the server has not heard -> sending it before refresh"
+                } else {
+                    "Reconnected paused on the phone speaker -> re-asserting pause before refresh"
+                }
+            )
             try {
                 val answered = withTimeoutOrNull(PAUSE_REASSERT_TIMEOUT_MS) {
-                    playerRepository.pauseConfirmed(id)
+                    // Both branches repeat a pause made earlier. Sent as the listener's,
+                    // it cancelled the resume owed to a call that was still going on.
+                    playerRepository.pauseConfirmed(id, PlaybackIntentCause.REPEAT)
                 }
                 if (answered == null) {
                     Log.w(TAG, "Pause re-assert not answered within ${PAUSE_REASSERT_TIMEOUT_MS}ms")
+                } else if (pauseOwed) {
+                    clearPauseOwedToServer("server answered the pause")
                 }
             } catch (e: CancellationException) {
                 throw e
@@ -1458,6 +1600,11 @@ class SendspinAudioController(
             return
         }
         val resumeId = sendspinPlayerId ?: return
+        // The wait above can be long enough for a pause to be made in the meantime.
+        if (pauseOwedToServer != null || !_userIntent.value) {
+            Log.d(TAG, "Auto-resume dropped: paused while Sendspin came back")
+            return
+        }
         Log.d(TAG, "Auto-resuming play after MA reconnect")
         try {
             playerRepository.play(resumeId)
@@ -1504,6 +1651,11 @@ class SendspinAudioController(
         // Collectors are cancelled above so the derived flow no longer runs;
         // reset both flows explicitly so a subsequent start() begins clean.
         abandonPlaybackIntent()
+        pauseOwedToServer = null
+        pauseOwedGeneration++
+        maDownAfterDrop = false
+        pendingTransport.value = PendingTransport.None
+        sendspinManager.setLocalPausePending(false)
         serverPlaybackRecord.value = ServerPlaybackRecord()
         _currentIsPlaying.value = false
         clearAllFreezes()
@@ -1527,7 +1679,7 @@ class SendspinAudioController(
         playerRepository.selectPlayer(id)
         _userIntent.value = true
         resumeTicket = null
-        owedResume = null
+        forgetOwedResume()
         if (!hasAudioFocus && !requestFocusToPlay()) return
         if (isReady) sendspinManager.resumeAudio()
         scope.launch {
@@ -1535,7 +1687,7 @@ class SendspinAudioController(
                 abandonPlaybackIntent()
                 return@launch
             }
-            playerRepository.play(id)
+            sendLocalPlay(id, "play")
         }
     }
 
@@ -1631,7 +1783,7 @@ class SendspinAudioController(
         Log.i(TAG, "Pause from an external control (session, car or watch)")
         abandonPlaybackIntent()
         sendspinManager.pauseAudio()
-        scope.launch { playerRepository.pause(id) }
+        pauseOnServer(id, PlaybackIntentCause.LISTENER)
     }
 
     fun handlePlayPause() {
@@ -1643,19 +1795,27 @@ class SendspinAudioController(
         if (wantPlay) {
             _userIntent.value = true
             resumeTicket = null
-            owedResume = null
+            forgetOwedResume()
             if (!hasAudioFocus && !requestFocusToPlay()) return
             if (isReady) sendspinManager.resumeAudio()
         } else {
             abandonPlaybackIntent()
             sendspinManager.pauseAudio()
+            // An explicit pause rather than the server's play_pause toggle: the icon
+            // showed playing, so pause is what the click meant, and a toggle sent to
+            // a server whose state differs from the icon would start playback.
+            pauseOnServer(id, PlaybackIntentCause.LISTENER)
+            return
         }
         scope.launch {
-            if (wantPlay && !isReady && !ensureSendspinConnected()) {
+            if (!isReady && !ensureSendspinConnected()) {
                 abandonPlaybackIntent()
                 return@launch
             }
-            playerRepository.playPause(id)
+            // An explicit play, as handlePlay sends: the icon showed paused. The toggle
+            // reads the server's state, which a pause made during a dropped connection
+            // left at PLAYING, so it turned this play into a second pause.
+            sendLocalPlay(id, "play from an external control")
         }
     }
 
@@ -1744,11 +1904,10 @@ class SendspinAudioController(
                         // resume against the user's wish, and the start owed by
                         // a transient loss no longer applies either.
                         abandonPlaybackIntent()
-                        if (isStreaming) {
-                            val id = sendspinPlayerId
-                            if (id != null) {
-                                scope.launch { playerRepository.pause(id) }
-                            }
+                        // A stream held through a dropped connection still plays, and
+                        // the server has to hear this pause as well.
+                        if (isStreaming || isStreamHeldThroughDrop()) {
+                            sendspinPlayerId?.let { pauseOnServer(it, PlaybackIntentCause.LISTENER) }
                         }
                         sendspinManager.pauseAudio()
                         // After the pause, which empties the ring, so a solo output
@@ -1758,6 +1917,9 @@ class SendspinAudioController(
                     AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
                         hasAudioFocus = false
                         cancelHeldCallGain()
+                        // A wait for the external sink belongs to the gain that opened it.
+                        // The resume stays owed, and the next gain decides again.
+                        sinkReturnWindow.cancel()
                         // Asked BEFORE the pause below, which is what clears the
                         // intent, and above the call split so the freeze path is
                         // covered too: a loss while nothing plays must not owe a
@@ -1771,32 +1933,33 @@ class SendspinAudioController(
                             clearDuck()
                             return@setOnAudioFocusChangeListener
                         }
-                        if (isStreaming) {
-                            val callModeSet = isInActiveCall()
-                            when (AudioFocusPolicy.interruptionHold(isGroupedForCallFreeze(), callModeSet)) {
-                                AudioFocusPolicy.InterruptionHold.PAUSE -> {
-                                    // Another app asked us to STOP, not to turn down:
-                                    // this code arrives from AUDIOFOCUS_GAIN_TRANSIENT,
-                                    // while a notification or an alarm that only wants
-                                    // to be heard over us asks for the MAY_DUCK variant
-                                    // and lands in the branch below. Honour the
-                                    // difference: pause here, duck there.
-                                    Log.i(TAG, "Audio focus lost transiently (solo, call=$callModeSet): pausing")
-                                    pauseForTransientFocusLoss()
-                                }
-                                AudioFocusPolicy.InterruptionHold.FREEZE -> {
-                                    Log.i(TAG, "Audio focus lost transiently (grouped, active call): freezing")
-                                    // The freeze supersedes any duck; see the
-                                    // AUDIOFOCUS_LOSS branch for why this is tidiness.
-                                    clearDuck()
-                                    freezeOutput("focus")
-                                }
-                                AudioFocusPolicy.InterruptionHold.FREEZE_AND_CHECK_FOR_CALL -> {
-                                    Log.i(TAG, "Audio focus lost transiently (grouped): frozen, call check in ${CALL_MODE_SETTLE_MS}ms")
-                                    clearDuck()
-                                    freezeOutput("focus")
-                                    startCallModeCheck()
-                                }
+                        // No transport check: the stream check above is the gate.
+                        // During a dropped connection the transport is down while
+                        // the buffer still plays, and a call has to stop that too.
+                        val callModeSet = isInActiveCall()
+                        when (AudioFocusPolicy.interruptionHold(isGroupedForCallFreeze(), callModeSet)) {
+                            AudioFocusPolicy.InterruptionHold.PAUSE -> {
+                                // Another app asked us to STOP, not to turn down:
+                                // this code arrives from AUDIOFOCUS_GAIN_TRANSIENT,
+                                // while a notification or an alarm that only wants
+                                // to be heard over us asks for the MAY_DUCK variant
+                                // and lands in the branch below. Honour the
+                                // difference: pause here, duck there.
+                                Log.i(TAG, "Audio focus lost transiently (solo, call=$callModeSet): pausing")
+                                pauseForTransientFocusLoss()
+                            }
+                            AudioFocusPolicy.InterruptionHold.FREEZE -> {
+                                Log.i(TAG, "Audio focus lost transiently (grouped, active call): freezing")
+                                // The freeze supersedes any duck; see the
+                                // AUDIOFOCUS_LOSS branch for why this is tidiness.
+                                clearDuck()
+                                freezeOutput("focus")
+                            }
+                            AudioFocusPolicy.InterruptionHold.FREEZE_AND_CHECK_FOR_CALL -> {
+                                Log.i(TAG, "Audio focus lost transiently (grouped): frozen, call check in ${CALL_MODE_SETTLE_MS}ms")
+                                clearDuck()
+                                freezeOutput("focus")
+                                startCallModeCheck()
                             }
                         }
                     }
@@ -1826,28 +1989,27 @@ class SendspinAudioController(
         val owed = owedResume
         if (owed != null) {
             val resumeId = sendspinPlayerId
-            val outcome = AudioFocusPolicy.onFocusGain(resumeOwed = true)
-            if (outcome == AudioFocusPolicy.FocusGain.IGNORE || resumeId == null) {
+            val route = resolveOutputRoute()
+            when (AudioFocusPolicy.onFocusGain(owed, route, externalSinkConnected())) {
+                AudioFocusPolicy.FocusGain.IGNORE -> {
+                    // Only a resume whose sink was lost meanwhile is refused here, and it
+                    // is never started on the phone speaker.
+                    owedResume = null
+                    Log.i(TAG, "Focus regained on $route with no external sink connected: staying paused")
+                    return
+                }
+                AudioFocusPolicy.FocusGain.AWAIT_SINK_RETURN -> {
+                    Log.i(TAG, "Focus regained while the output reads $route: waiting up to ${SinkReturnWindow.WINDOW_MS}ms for the external sink")
+                    sinkReturnWindow.open()
+                    return
+                }
+                AudioFocusPolicy.FocusGain.RESUME -> Unit
+            }
+            if (resumeId == null) {
                 Log.i(TAG, "Focus regained: nothing to resume")
                 return
             }
-            owedResume = null
-            reconnectMaAfterInterruption()
-            Log.i(
-                TAG,
-                when (owed) {
-                    OwedResume.INTERRUPTION ->
-                        "Focus regained: resuming the playback the interruption paused"
-                    OwedResume.DEFERRED_PLAY ->
-                        "Focus granted: starting the play that was waiting for it"
-                }
-            )
-            _userIntent.value = true
-            sendspinManager.resumeAudio()
-            scope.launch {
-                if (!isReady) ensureSendspinConnected()
-                playerRepository.play(resumeId)
-            }
+            resumeOwedPlayback(owed, resumeId)
             return
         }
         // If the transient loss FROZE the solo output (buffer
@@ -1886,6 +2048,29 @@ class SendspinAudioController(
                     playerRepository.play(id)
                 }
             }
+        }
+    }
+
+    /** Start the playback [owed] was holding, on the player [resumeId]. */
+    private fun resumeOwedPlayback(owed: OwedResume, resumeId: String) {
+        owedResume = null
+        reconnectMaAfterInterruption()
+        Log.i(
+            TAG,
+            when (owed) {
+                OwedResume.INTERRUPTION ->
+                    "Focus regained: resuming the playback the interruption paused"
+                OwedResume.INTERRUPTION_SINK_LOST ->
+                    "Focus regained on an external sink: resuming the playback the interruption paused"
+                OwedResume.DEFERRED_PLAY ->
+                    "Focus granted: starting the play that was waiting for it"
+            }
+        )
+        _userIntent.value = true
+        sendspinManager.resumeAudio()
+        scope.launch {
+            if (!isReady) ensureSendspinConnected()
+            sendLocalPlay(resumeId, "resume after the interruption")
         }
     }
 
@@ -1988,7 +2173,12 @@ class SendspinAudioController(
      * keep it paused, or the same stream plays over whatever owns the output.
      */
     private fun settleFocusForStreamStart() {
-        when (AudioFocusPolicy.onStreamStart(hasAudioFocus) { requestAudioFocus() }) {
+        val outcome = AudioFocusPolicy.onStreamStart(
+            holdsFocus = hasAudioFocus,
+            pauseOwedToServer = pauseOwedToServer != null,
+            listenerPausedWithMaDown = listenerPausedWithMaDown(),
+        ) { requestAudioFocus() }
+        when (outcome) {
             AudioFocusPolicy.StreamStart.PLAY ->
                 sendspinManager.resumeAudio()
             AudioFocusPolicy.StreamStart.WAIT_FOR_GAIN -> {
@@ -1999,6 +2189,16 @@ class SendspinAudioController(
             AudioFocusPolicy.StreamStart.STAY_SILENT -> {
                 Log.w(TAG, "Stream started without audio focus: keeping the output paused")
                 abandonPlaybackIntent()
+                sendspinManager.pauseAudio()
+            }
+            AudioFocusPolicy.StreamStart.HOLD_UNTIL_MA_RETURNS -> {
+                Log.i(TAG, "Stream started while MA is down and the listener has paused: keeping the output paused until MA is back")
+                sendspinManager.pauseAudio()
+            }
+            AudioFocusPolicy.StreamStart.HOLD_FOR_SERVER_PAUSE -> {
+                Log.i(TAG, "Stream restarted before the server heard the pause made during the drop: keeping the output paused")
+                // Only silence: the MA reconnect is the one sender of an owed pause. A
+                // second send from here reached MA together with the reconnect's.
                 sendspinManager.pauseAudio()
             }
         }
@@ -2024,6 +2224,102 @@ class SendspinAudioController(
         duckWatchJob = null
         sendspinManager.restoreVolume()
     }
+
+    /**
+     * Send the play a local control asked for, once the wait for the transport is over.
+     *
+     * A pause owed to the server is settled only here, when the play really goes out:
+     * cleared at the press, a play that timed out waiting for a dropped connection left
+     * the server playing with no pause owed, and the rejoin then streamed into a phone
+     * that showed paused. MA hears the owed pause on the reconnect and this play after it.
+     * A pause pressed during the wait has cleared the intent, and then nothing is sent.
+     */
+    private suspend fun sendLocalPlay(id: String, reason: String) {
+        if (!_userIntent.value) {
+            Log.i(TAG, "Play dropped: paused while it waited for the connection ($reason)")
+            return
+        }
+        clearPauseOwedToServer(reason)
+        playerRepository.play(id)
+    }
+
+    /**
+     * Send a pause for this phone's player, and keep it owed when it may not reach the
+     * server, see [AudioFocusPolicy.pauseOwedToServer]. The command is still sent at
+     * once, because the MA connection is often alive when only the Sendspin socket
+     * dropped.
+     */
+    private fun pauseOnServer(id: String, cause: PlaybackIntentCause) {
+        markPauseIfServerMayMissIt(id)
+        val generation = pauseOwedGeneration
+        scope.launch {
+            try {
+                playerRepository.pause(id, cause)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "Pause not sent: ${e.message}")
+                // A play or a stop in the meantime has settled the debt; marking it again
+                // would make the next reconnect pause that play.
+                val state = reportedServerState(id)
+                if (pauseOwedGeneration == generation && (state == null || state == PlaybackState.PLAYING)) {
+                    markPauseOwedToServer(id)
+                }
+            }
+        }
+    }
+
+    /** The listener here has paused, and the MA connection that was up is down. */
+    private fun listenerPausedWithMaDown(): Boolean = maDownAfterDrop && !_userIntent.value
+
+    /**
+     * The MA connection was lost: a pause MA has not confirmed may have been written into
+     * the dead socket, so it is owed; see [PendingTransportPolicy.pauseOwedAtConnectionLoss].
+     */
+    private fun oweUnconfirmedPause() {
+        val id = sendspinPlayerId ?: return
+        val owed = PendingTransportPolicy.pauseOwedAtConnectionLoss(
+            pending = pendingTransport.value,
+            lastServerState = serverPlaybackRecord.value.state,
+        )
+        if (!owed) return
+        Log.i(TAG, "MA connection lost before it confirmed the pause")
+        markPauseOwedToServer(id)
+    }
+
+    private fun markPauseIfServerMayMissIt(id: String) {
+        val owed = AudioFocusPolicy.pauseOwedToServer(
+            maConnected = wsClient.connectionState.value is ConnectionState.Connected,
+            streamHeldThroughDrop = isStreamHeldThroughDrop(),
+            serverState = reportedServerState(id),
+        )
+        if (owed) markPauseOwedToServer(id)
+    }
+
+    private fun markPauseOwedToServer(id: String) {
+        if (pauseOwedToServer == id) return
+        pauseOwedToServer = id
+        // An owed pause is a pause awaiting MA's confirmation. The intent collector sets this
+        // only while this phone is the selected player, and a PLAYING report from the player
+        // list reloaded on the reconnect, older than this pause, was then adopted as intent.
+        pendingTransport.value = PendingTransport.Pause
+        Log.i(TAG, "Pause owed to the server until MA confirms it")
+    }
+
+    private fun clearPauseOwedToServer(reason: String) {
+        pauseOwedGeneration++
+        if (pauseOwedToServer == null) return
+        pauseOwedToServer = null
+        Log.i(TAG, "Pause no longer owed to the server: $reason")
+    }
+
+    /** What MA last reported for [id], or null while the player list is empty. */
+    private fun reportedServerState(id: String): PlaybackState? =
+        playerRepository.players.value.firstOrNull { it.playerId == id }?.state
+
+    /** The connection dropped mid-stream and the buffered audio still plays. */
+    private fun isStreamHeldThroughDrop(): Boolean =
+        sendspinManager.streamActive.value && transportState != SendspinState.STREAMING
 
     /**
      * Pause because another app took audio focus with the "stop" variant, and
@@ -2056,9 +2352,14 @@ class SendspinAudioController(
         clearDuck()
         if (owedResume != null) return
         owedResume = OwedResume.INTERRUPTION
+        // The intent collector clears this only while the transport is up, and during a
+        // dropped connection it is not. A stale intent would let the next MA reconnect
+        // auto-resume over the app that took focus; the owed resume carries the playback
+        // across, and the gain sets the intent again.
+        _userIntent.value = false
         sendspinManager.pauseAudio()
         val id = sendspinPlayerId ?: return
-        scope.launch { playerRepository.pause(id, PlaybackIntentCause.AUDIO_FOCUS) }
+        pauseOnServer(id, PlaybackIntentCause.AUDIO_FOCUS)
     }
 
     /**

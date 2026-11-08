@@ -21,6 +21,7 @@ import net.asksakis.massdroidv2.data.proximity.ProximityTransferMode
 import net.asksakis.massdroidv2.data.proximity.effectiveTransferMode
 import net.asksakis.massdroidv2.data.proximity.RoomDetector
 import net.asksakis.massdroidv2.data.proximity.RoomDetector.WifiMatchContext
+import net.asksakis.massdroidv2.data.proximity.ScanSuspendPolicy
 import net.asksakis.massdroidv2.domain.model.PlaybackState
 import net.asksakis.massdroidv2.domain.repository.MusicRepository
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
@@ -492,6 +493,7 @@ class ProximityController(
                     // this branch does not apply and the screen-on branch below keeps the
                     // away-mode recovery poll running.
                     screenOn && stillAndSettled && cooledDown -> {
+                        if (readUnseenBeforeSuspend()) continue
                         suspendScanning()
                         withTimeoutOrNull(IDLE_SCAN_INTERVAL_MS) {
                             motionGate.isMoving.first { it }
@@ -549,6 +551,7 @@ class ProximityController(
                     // Transient cooldown states keep the short poll so normal cadence resumes fast.
                     else -> {
                         if (!screenOn && !isMoving && !settling) {
+                            if (readUnseenBeforeSuspend()) continue
                             suspendScanning()
                             withTimeoutOrNull(IDLE_SCAN_INTERVAL_MS) {
                                 motionGate.isMoving.first { it }
@@ -823,6 +826,34 @@ class ProximityController(
         proximityQuickRetryJob = null
         scanController.stopPersistentScan(clearBuffers = false)
         Log.d(TAG, "Scanning suspended: phone still and room settled")
+    }
+
+    /**
+     * Read once more when the buffer holds devices no read has returned, and wait for the
+     * quick retry that read may schedule, so the two of them decide the room before both
+     * scans stop. True when it read; the caller then evaluates the loop again.
+     *
+     * An unseen device has usually just arrived, and a read on a buffer that is not warm
+     * has its commit withheld, so the read waits for warmth first. The cap is one poll step
+     * past [BUFFER_STABLE_MS], or a device that arrived just before the check would turn
+     * warm on the very tick the wait gives up. Anchors still appearing after that keep the
+     * read cold, and the retry is the last chance. A scan that is not running never turns
+     * warm, so it is read at once.
+     */
+    private suspend fun readUnseenBeforeSuspend(): Boolean {
+        val unseen = ScanSuspendPolicy.readBeforeSuspend(
+            proximityScanner.bufferedAddresses(),
+            proximityScanner.lastReadAddresses
+        )
+        if (!unseen) return false
+        withTimeoutOrNull(BUFFER_STABLE_MS + BUFFER_QUIET_MS) {
+            while (proximityScanner.bufferWarmth().scanRunning && !bufferWarm()) {
+                kotlinx.coroutines.delay(BUFFER_QUIET_MS)
+            }
+        }
+        burstScan("pre-suspend")
+        proximityQuickRetryJob?.join()
+        return true
     }
 
     /** Undo [suspendScanning]. Idempotent, so every active branch may call it freely. */

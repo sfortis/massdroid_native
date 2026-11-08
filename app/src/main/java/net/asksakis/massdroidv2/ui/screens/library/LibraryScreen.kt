@@ -58,6 +58,7 @@ import net.asksakis.massdroidv2.domain.recommendation.blocksArtist
 import net.asksakis.massdroidv2.ui.components.ActionSheetItem
 import net.asksakis.massdroidv2.ui.components.formatAlbumTypeYear
 import net.asksakis.massdroidv2.ui.components.AddToPlaylistDialog
+import net.asksakis.massdroidv2.ui.components.AddToSmartPlaylistDialog
 import net.asksakis.massdroidv2.ui.components.MediaActionSheet
 import net.asksakis.massdroidv2.ui.components.MediaActionSheetExtraAction
 import net.asksakis.massdroidv2.domain.nfc.NfcTagAction
@@ -135,6 +136,12 @@ fun LibraryScreen(
 
     val settingsLoaded by viewModel.settingsLoaded.collectAsStateWithLifecycle()
     val blockedArtistUris by viewModel.blockedArtistUris.collectAsStateWithLifecycle()
+    val smartPlaylistsAvailable by viewModel.smartPlaylistsAvailable.collectAsStateWithLifecycle()
+    // Every message here answers something the listener did on this screen.
+    val snackbarHostState = remember { SnackbarHostState() }
+    LaunchedEffect(Unit) {
+        viewModel.error.collect { snackbarHostState.showSnackbar(it) }
+    }
     val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
     val isBrowseTab = selectedTab == TAB_BROWSE
     val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
@@ -555,6 +562,12 @@ fun LibraryScreen(
                     CircularProgressIndicator()
                 }
             }
+            SnackbarHost(
+                snackbarHostState,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = LocalMiniPlayerPadding.current)
+            )
             }
         }
     }
@@ -564,6 +577,25 @@ fun LibraryScreen(
         val isRadio = target.mediaType == MediaType.RADIO
             val isPlaylist = target.mediaType == MediaType.PLAYLIST
         val players by viewModel.players.collectAsStateWithLifecycle()
+        // Library tracks and artists only; a seed must be an item the server can resolve.
+        val seedKind = when {
+            !smartPlaylistsAvailable -> null
+            sheetTab == TAB_TRACKS && target.mediaType == MediaType.TRACK -> SmartPlaylistSeedKind.TRACK
+            sheetTab == TAB_ARTISTS && target.mediaType == MediaType.ARTIST -> SmartPlaylistSeedKind.ARTIST
+            else -> null
+        }
+        val smartPlaylistActions = seedKind?.let { kind ->
+            listOf(
+                MediaActionSheetExtraAction(
+                    title = "Add to Smart Playlist",
+                    icon = { Icon(Icons.Default.AutoAwesome, contentDescription = null) },
+                    onClick = {
+                        viewModel.openSmartPlaylistPicker(SmartPlaylistSeed(kind, target.uri, target.title))
+                        actionSheetUri = null
+                    }
+                )
+            )
+        }.orEmpty()
         // Only whole containers are worth a tag. A single track played from one would be a
         // queue of one, and a radio or an artist is not what a tap is meant to start.
         val nfcActions = if (hasNfc && (target.mediaType == MediaType.ALBUM || isPlaylist)) {
@@ -686,7 +718,7 @@ fun LibraryScreen(
                     )
                 }
                 else -> emptyList()
-            } + nfcActions,
+            } + smartPlaylistActions + nfcActions,
             onPlayNow = { viewModel.playUri(target.uri) },
             onPlayOnPlayer = { player -> viewModel.playOnPlayer(target.uri, player.playerId) },
             onPlayNext = { viewModel.enqueueNext(target.uri) },
@@ -734,6 +766,23 @@ fun LibraryScreen(
             onRemoveFromPlaylist = { playlist -> viewModel.removeTrackFromPlaylist(playlist, trackUri) },
             containsTrack = playlistContainsTrack,
             onPlaylistsVisible = viewModel::onPlaylistsVisible
+        )
+    }
+
+    val smartPlaylistSeed by viewModel.smartPlaylistSeed.collectAsStateWithLifecycle()
+    if (smartPlaylistSeed != null) {
+        val smartPlaylists by viewModel.smartPlaylists.collectAsStateWithLifecycle()
+        val isLoadingSmartPlaylists by viewModel.isLoadingSmartPlaylists.collectAsStateWithLifecycle()
+        val smartPlaylistPendingId by viewModel.smartPlaylistPendingId.collectAsStateWithLifecycle()
+        AddToSmartPlaylistDialog(
+            playlists = smartPlaylists,
+            isLoading = isLoadingSmartPlaylists,
+            pendingPlaylistId = smartPlaylistPendingId,
+            suggestedName = "",
+            onDismiss = viewModel::closeSmartPlaylistPicker,
+            onRetry = viewModel::reloadSmartPlaylists,
+            onPlaylistClick = viewModel::addSeedToSmartPlaylist,
+            onCreatePlaylist = viewModel::createSmartPlaylist
         )
     }
 

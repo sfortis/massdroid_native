@@ -32,15 +32,21 @@ import net.asksakis.massdroidv2.domain.feedback.TrackDisliker
 import net.asksakis.massdroidv2.data.sendspin.SendspinState
 import net.asksakis.massdroidv2.playback.SleepTimerBridge
 import net.asksakis.massdroidv2.data.sendspin.SyncState
+import net.asksakis.massdroidv2.data.websocket.ConnectionState
 import net.asksakis.massdroidv2.domain.model.Chapter
 import net.asksakis.massdroidv2.domain.model.MediaType
 import net.asksakis.massdroidv2.domain.model.QueueSource
 import net.asksakis.massdroidv2.domain.model.Playlist
+import net.asksakis.massdroidv2.domain.model.SmartPlaylistSeed
+import net.asksakis.massdroidv2.domain.model.SmartPlaylistSeedKind
+import net.asksakis.massdroidv2.domain.model.SmartPlaylistSummary
 import net.asksakis.massdroidv2.domain.playlist.PlaylistMembershipController
+import net.asksakis.massdroidv2.domain.playlist.SmartPlaylistSeedController
 import net.asksakis.massdroidv2.domain.player.QueueTransfer
 import net.asksakis.massdroidv2.domain.player.QueueTransferOutcome
 import net.asksakis.massdroidv2.domain.player.userMessage
 import net.asksakis.massdroidv2.domain.model.PlaybackState
+import net.asksakis.massdroidv2.playback.OfflinePlayPausePolicy
 import net.asksakis.massdroidv2.domain.model.PlayerConfig
 import net.asksakis.massdroidv2.domain.model.QueueItem
 import net.asksakis.massdroidv2.domain.model.SendspinAudioFormat
@@ -51,10 +57,13 @@ import net.asksakis.massdroidv2.domain.repository.MusicRepository
 import net.asksakis.massdroidv2.domain.repository.PlayerDiscontinuityCommand
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 import net.asksakis.massdroidv2.domain.repository.SmartListeningRepository
+import net.asksakis.massdroidv2.domain.repository.PartyRepository
+import net.asksakis.massdroidv2.domain.repository.SmartPlaylistRepository
 import javax.inject.Inject
 import net.asksakis.massdroidv2.data.proximity.withRoomPlayer
 import net.asksakis.massdroidv2.data.repository.DynamicQueueSource
 import net.asksakis.massdroidv2.ui.components.autoplayRefillText
+import net.asksakis.massdroidv2.ui.components.message
 
 private const val TAG = "NowPlayingVM"
 private const val SENDSPIN_UI_DBG = "SendspinUiDbg"
@@ -178,11 +187,20 @@ sealed interface LyricsEntry {
     data class Ready(val content: LyricsProvider.LyricsContent) : LyricsEntry
 }
 
+/**
+ * Whether this queue item can be a smart playlist seed: a music track, not an audiobook, an
+ * episode or a stream. A media type the app does not know also parses to TRACK, so the uri
+ * has to name a track as well.
+ */
+internal fun Track.isSmartPlaylistSeed(): Boolean = mediaType == MediaType.TRACK && "://track/" in uri
+
 @HiltViewModel
 class NowPlayingViewModel @Inject constructor(
     private val playerRepository: PlayerRepository,
     private val musicRepository: MusicRepository,
     private val smartListeningRepository: SmartListeningRepository,
+    smartPlaylistRepository: SmartPlaylistRepository,
+    partyRepository: PartyRepository,
     private val trackDisliker: TrackDisliker,
     aboutTextResolver: AboutTextResolver,
     private val settingsRepository: net.asksakis.massdroidv2.domain.repository.SettingsRepository,
@@ -224,6 +242,32 @@ class NowPlayingViewModel @Inject constructor(
     val queueCrossfadeStates: StateFlow<Map<String, Boolean>> = queueTogglesCache.crossfadeStates
     val elapsedTime = playerRepository.elapsedTime
     val sendspinClientId = settingsRepository.sendspinClientId
+
+    /**
+     * The play/pause button. With MA down and this phone selected it follows the phone's
+     * own output, and a pause of that output may go through; see [OfflinePlayPausePolicy].
+     */
+    val playPauseButton: StateFlow<OfflinePlayPausePolicy.Button> = combine(
+        wsClient.connectionState,
+        selectedPlayer,
+        sendspinClientId,
+        sendspinManager.streamActive,
+        sendspinManager.syncState,
+    ) { connection, player, localPlayerId, streamActive, syncState ->
+        OfflinePlayPausePolicy.button(
+            maConnected = connection is ConnectionState.Connected,
+            serverPlaying = player?.state == PlaybackState.PLAYING,
+            localPlayerId = localPlayerId,
+            selectedPlayerId = player?.playerId,
+            streamActive = streamActive,
+            outputIdle = syncState == SyncState.IDLE,
+        )
+    }.distinctUntilChanged().stateIn(
+        viewModelScope,
+        // Eagerly, because playPause() reads the value for the direction of the tap.
+        SharingStarted.Eagerly,
+        OfflinePlayPausePolicy.Button(shownPlaying = false, pausableOffline = false)
+    )
     val sendspinAudioFormat = settingsRepository.sendspinAudioFormat
     val sendspinSyncHistory = sendspinManager.syncHistory
 
@@ -251,6 +295,22 @@ class NowPlayingViewModel @Inject constructor(
     val isLoadingPlaylists: StateFlow<Boolean> = playlistMembership.isLoading
     val addingToPlaylistId: StateFlow<String?> = playlistMembership.pendingPlaylistId
     val playlistContainsTrack: StateFlow<Set<String>> = playlistMembership.containsTrack
+
+    private val smartPlaylistSeeds = SmartPlaylistSeedController(smartPlaylistRepository, viewModelScope)
+
+    /** True while the server's Smart Playlists plugin is loaded; the action shows only then. */
+    val smartPlaylistsAvailable: StateFlow<Boolean> = smartPlaylistSeeds.available
+        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    /** True while the server's Party plugin is loaded; the Party entry shows only then. */
+    val partyAvailable: StateFlow<Boolean> = partyRepository.available
+        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    /** The track the smart playlist picker is open for, or null when it is closed. */
+    val smartPlaylistSeed: StateFlow<SmartPlaylistSeed?> = smartPlaylistSeeds.seed
+    val smartPlaylists: StateFlow<List<SmartPlaylistSummary>> = smartPlaylistSeeds.playlists
+    val isLoadingSmartPlaylists: StateFlow<Boolean> = smartPlaylistSeeds.isLoading
+    val smartPlaylistPendingId: StateFlow<String?> = smartPlaylistSeeds.pendingPlaylistId
 
     private val _lyricsEntries = MutableStateFlow<Map<String, LyricsEntry>>(emptyMap())
     private val _lyricsTimingOffsetMs = MutableStateFlow(0)
@@ -494,6 +554,9 @@ class NowPlayingViewModel @Inject constructor(
             playlistMembership.errors.collect { _error.tryEmit(it) }
         }
         viewModelScope.launch {
+            smartPlaylistSeeds.events.collect { _error.tryEmit(it.message()) }
+        }
+        viewModelScope.launch {
             smartListeningRepository.blockedArtistUris.collect { _blockedArtistUris.value = it }
         }
         // Clear the optimistic chapter target once the live position reaches it.
@@ -670,16 +733,22 @@ class NowPlayingViewModel @Inject constructor(
 
     fun playPause() {
         val player = selectedPlayer.value ?: return
+        // Read at the tap, so the direction is what the button showed. With MA down this
+        // pause stops the phone's own output here and is sent to MA on the reconnect, so
+        // the failed command is not a failure to report.
+        val button = playPauseButton.value
+        val pausedOffline = button.pausableOffline
+        Log.i(TAG, "Play/pause from Now Playing: ${if (button.shownPlaying) "pause" else "play"}")
         viewModelScope.launch {
             try {
-                if (player.state == PlaybackState.PLAYING) {
+                if (button.shownPlaying) {
                     playerRepository.pause(player.playerId)
                 } else {
                     playerRepository.play(player.playerId)
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "playPause failed: ${e.message}")
-                _error.tryEmit(e.failureMessage("Couldn't change playback"))
+                if (!pausedOffline) _error.tryEmit(e.failureMessage("Couldn't change playback"))
             }
         }
     }
@@ -1204,6 +1273,20 @@ class NowPlayingViewModel @Inject constructor(
     fun onPlaylistsVisible(playlistUris: List<String>) {
         playlistMembership.onPlaylistsVisible(playlistUris)
     }
+
+    /** Open the smart playlist picker for the track playing now; anything but a music track is ignored. */
+    fun openSmartPlaylistPicker() {
+        val track = queueState.value?.currentItem?.track?.takeIf { it.isSmartPlaylistSeed() } ?: return
+        smartPlaylistSeeds.open(SmartPlaylistSeed(SmartPlaylistSeedKind.TRACK, track.uri, track.name))
+    }
+
+    fun closeSmartPlaylistPicker() = smartPlaylistSeeds.close()
+
+    fun reloadSmartPlaylists() = smartPlaylistSeeds.reload()
+
+    fun addSeedToSmartPlaylist(playlist: SmartPlaylistSummary) = smartPlaylistSeeds.add(playlist)
+
+    fun createSmartPlaylist(name: String) = smartPlaylistSeeds.create(name)
 
     fun preloadLyrics() {
         when (currentLyricsEntry.value) {

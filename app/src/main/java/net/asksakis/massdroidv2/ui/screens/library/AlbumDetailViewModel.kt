@@ -1,6 +1,7 @@
 package net.asksakis.massdroidv2.ui.screens.library
 
 import net.asksakis.massdroidv2.ui.failureMessage
+import net.asksakis.massdroidv2.ui.isUnanswered
 import android.util.Log
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
@@ -232,7 +233,31 @@ class AlbumDetailViewModel @Inject constructor(
         }
     }
 
-    fun playTrack(track: Track) = playUri(track.uri)
+    /**
+     * Play a tapped track. The album plays from the track on when the server's default for a
+     * track starts it now, and the track goes alone otherwise
+     * ([MusicRepository.playTappedTrack]).
+     */
+    fun playTrack(track: Track) {
+        val queueId = playerRepository.requireSelectedPlayerId() ?: return
+        // A second tap while the first is in flight would send a second play.
+        if (_sending.value) return
+        val albumUri = _album.value?.uri?.takeIf { it.isNotBlank() }
+        viewModelScope.launch {
+            _sending.value = true
+            try {
+                playerRepository.setQueueFilterMode(queueId, PlayerRepository.QueueFilterMode.NORMAL)
+                musicRepository.playTappedTrack(queueId, track.uri, albumUri)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "playTrack failed: ${e.message}")
+                if (!e.isUnanswered()) _error.tryEmit(e.failureMessage("Couldn't start playback"))
+            } finally {
+                _sending.value = false
+            }
+        }
+    }
 
     fun toggleAlbumFavorite() {
         val a = _album.value ?: return

@@ -293,7 +293,15 @@ fun ExpandingPlayerSheet(
                             playerName = miniPlayerUiState.playerName,
                             imageUrl = miniPlayerUiState.imageUrl,
                             isPlaying = miniPlayerUiState.isPlaying,
-                            onPlayPause = { guard { miniPlayerViewModel.playPause() } },
+                            // A pause of the phone's own playback works without MA, which
+                            // hears it on the reconnect; every other tap needs the connection.
+                            onPlayPause = {
+                                if (miniPlayerUiState.pausableOffline) {
+                                    miniPlayerViewModel.playPause()
+                                } else {
+                                    guard { miniPlayerViewModel.playPause() }
+                                }
+                            },
                             onNext = { guard { miniPlayerViewModel.next() } },
                             canNext = miniPlayerUiState.canNext,
                             onQueue = { showQueueSheet = true },

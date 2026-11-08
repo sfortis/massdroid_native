@@ -17,6 +17,7 @@ import java.util.ArrayDeque
 import java.util.concurrent.PriorityBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.abs
 
 enum class SyncState {
@@ -267,6 +268,20 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
     private var codecRebuildWindowStartMs = 0L
     private var codecRebuildsInWindow = 0
     @Volatile private var lastEnqueuedTimestampUs = 0L
+
+    /**
+     * A rejoin that kept the buffer and has not reached its end yet: the last buffered frame,
+     * the earliest point the new stream may start from, whether its first frame came, and how
+     * many frames it repeated. Set on the message thread; a flush from any thread clears it, so
+     * the message thread advances it only by compare-and-set and a flush is never undone.
+     */
+    private data class RejoinSplice(
+        val tailUs: Long,
+        val windowStartUs: Long,
+        val seenFirst: Boolean = false,
+        val dropped: Int = 0,
+    )
+    private val rejoinSplice = AtomicReference<RejoinSplice?>(null)
     @Volatile private var estimatedFrameDurationUs = 20_000L
 
     /**
@@ -405,6 +420,7 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
         bitDepth: Int,
         codecHeader: String?,
         startType: ProtocolStartType,
+        rejoinVerified: Boolean,
     ) {
         // With a change pending, the stream is already in the newest announced format.
         val latestChange = formatChanges.lastOrNull()
@@ -419,6 +435,7 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
         awaitingFreshStream = false
         awaitingFreshStreamSinceMs = 0L
         startupWaitStartedMs = 0L
+        rejoinSplice.set(null)
         // A stream/start means the server is actively streaming again. Resume
         // can arrive as stream/start (not setPaused(false)), so we must clear
         // the paused flag here or onAudioChunk keeps dropping every frame and
@@ -432,6 +449,19 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
         resetSyncMetrics()
 
         if (sameFormat) {
+            val keeps = RejoinSplicePolicy.keepsBuffer(
+                rejoinVerified = rejoinVerified,
+                continuation = startType == ProtocolStartType.CONTINUATION,
+                sameFormat = true,
+                solo = !isSync,
+                outputAllowed = !paused,
+                // At least the start cushion, which a kept buffer skips.
+                holdsAudio = lastEnqueuedTimestampUs > 0L && bufferDurationMs() + ringBufferedMs() >= startBufferMs,
+            )
+            if (keeps) {
+                beginRejoinSplice()
+                return
+            }
             Log.d(TAG, "configure ${startType.name} reuse codec=$codecName ${sampleRate}Hz/${bitDepth}bit")
             // Restart the output/producer if they were stopped for idle power save.
             ensureOutputRunning()
@@ -483,6 +513,7 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
         codecFailed = false
 
         startNativeOutput()
+        logOpenedDevice("open")
         registerDeviceCallback()
         refreshRoutedDevice()
 
@@ -502,6 +533,72 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
     }
 
     override fun currentConfigureGeneration(): Long = configureGeneration
+
+    /**
+     * Keeps the encoded queue and the native ring across a verified rejoin, so the audio that
+     * carried the phone through the drop plays on. The new stream's frames that the buffer
+     * already holds are dropped as they arrive, and the first one after its end continues it;
+     * see [spliceAccepts]. Runs on the message thread, like the frames.
+     */
+    private fun beginRejoinSplice() {
+        val tailUs = lastEnqueuedTimestampUs
+        val ringMs = ringBufferedMs()
+        val headUs = frameQueue.peek()?.serverTimestampUs ?: tailUs
+        rejoinSplice.set(
+            RejoinSplice(
+                tailUs = tailUs,
+                windowStartUs = headUs - ringMs * 1000L - RejoinSplicePolicy.WINDOW_SLACK_US,
+            )
+        )
+        Log.d(TAG, "configure CONTINUATION rejoin: keeping buf=${bufferDurationMs()}ms ring=${ringMs}ms, splicing after ${tailUs / 1000}ms")
+        // The audio plays on, so the state the drop left behind no longer applies. A terminal
+        // transport error moved it to rebuffering or holdover, and only a start sets it back.
+        if (playbackStarted) transitionSyncState(SyncState.SYNCHRONIZED)
+        ensureOutputRunning()
+        ensurePlaybackThread()
+    }
+
+    /**
+     * Whether a frame of a rejoined stream is enqueued. A frame the buffer holds is dropped; the
+     * first frame past its end ends the splice; a first frame outside the buffered window flushes
+     * the way a stream/start did before and is then enqueued as the new stream's first. If a
+     * flush on another thread ended the splice meanwhile, the frame is handled as any other.
+     */
+    private fun spliceAccepts(splice: RejoinSplice, frameUs: Long): Boolean {
+        val placement = RejoinSplicePolicy.place(
+            frameUs = frameUs,
+            tailUs = splice.tailUs,
+            windowStartUs = splice.windowStartUs,
+            frameDurationUs = estimatedFrameDurationUs,
+            seenFirst = splice.seenFirst,
+        )
+        return when (placement) {
+            RejoinSplicePolicy.Placement.DUPLICATE ->
+                !rejoinSplice.compareAndSet(splice, splice.copy(seenFirst = true, dropped = splice.dropped + 1))
+            RejoinSplicePolicy.Placement.CONTINUES -> {
+                if (!rejoinSplice.compareAndSet(splice, null)) return true
+                Log.d(
+                    TAG,
+                    "Rejoin splice: continuing ${(frameUs - splice.tailUs) / 1000}ms after the buffered end, " +
+                        "dropped ${splice.dropped} frames the buffer held, buf=${bufferDurationMs()}ms ring=${ringBufferedMs()}ms"
+                )
+                true
+            }
+            RejoinSplicePolicy.Placement.OUTSIDE -> {
+                if (!rejoinSplice.compareAndSet(splice, null)) return true
+                Log.w(
+                    TAG,
+                    "Rejoin splice abandoned: the new stream starts ${(frameUs - splice.tailUs) / 1000}ms " +
+                        "off the buffered end, flushing"
+                )
+                flushQueuesAndDecoder()
+                playbackStarted = false
+                beginStartupMute()
+                transitionSyncState(SyncState.SYNC_ERROR_REBUFFERING)
+                true
+            }
+        }
+    }
 
     /**
      * Bounded backstop for the fresh-stream gate. The gate clears normally on
@@ -535,6 +632,7 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
         // is a no-op once already running.
         if (outputPausedForIdle) mainHandler.post { ensureOutputRunning() }
         if (outputFrozen && isSync) dropFramesPastDueWhileFrozen()
+        rejoinSplice.get()?.let { if (!spliceAccepts(it, chunk.timestampUs)) return }
         // Overflow backstop: if we are genuinely over the memory ceiling, drop
         // THIS incoming (newest) frame. Never poll() the head — that is about
         // to be decoded/played. With MAX_ENCODED_BUFFER_BYTES well above the
@@ -727,6 +825,8 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
     }
 
     override fun bufferedBytes(): Long = frameQueueBytes.get()
+
+    override fun playableMs(): Long = bufferDurationMs() + ringBufferedMs()
 
     /** Decoded PCM cushion currently in the native ring (ms); the real underrun margin. */
     fun ringBufferedMs(): Long =
@@ -986,6 +1086,7 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
         try {
             Log.d(TAG, "Reopen committing ($reason)")
             startNativeOutput()        // fresh stream on the now-settled route; clears disconnected_
+            logOpenedDevice("reopen")
             // The fresh stream starts running. While idle-stopped it must stay stopped,
             // or stopOutputForIdle (which sees the flag already set) never stops it.
             if (outputPausedForIdle) nativeOutput.pauseStream()
@@ -1015,6 +1116,23 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
         else -> false
     }
 
+    private fun boundDevice(id: Int): AudioDeviceInfo? = if (id > 0) {
+        audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS).firstOrNull { it.id == id }
+    } else {
+        null
+    }
+
+    /**
+     * Log the device a freshly opened stream is bound to. [refreshRoutedDevice] logs only a
+     * change, and on a first open it runs before the engine counts as configured, so the
+     * Android Auto output was never named in a log (issue #68). Type and id only: the product
+     * name can be a personal device name.
+     */
+    private fun logOpenedDevice(how: String) {
+        val id = nativeOutput.deviceId()
+        Log.i(TAG, "Output stream $how: device type=${boundDevice(id)?.type ?: -1} id=$id")
+    }
+
     /**
      * Resolve the routed device from the native AAudio device id via
      * AudioManager (Oboe has no routing listener) and notify on change.
@@ -1022,11 +1140,7 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
     private fun refreshRoutedDevice() {
         if (!configured) return
         val id = nativeOutput.deviceId()
-        val info = if (id > 0) {
-            audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS).firstOrNull { it.id == id }
-        } else {
-            null
-        }
+        val info = boundDevice(id)
         val newType = info?.type ?: -1
         val newId = info?.id ?: -1
         val newName = info?.productName?.toString()
@@ -1034,7 +1148,8 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
         routedDeviceType = newType
         routedDeviceId = newId
         routedProductName = newName
-        Log.d(TAG, "Routed device: type=$newType ($newName) id=$id")
+        // Type and id only: the product name can be a personal device name.
+        Log.i(TAG, "Routed device: type=$newType id=$id")
         onRoutingChanged?.invoke()
     }
 
@@ -1566,6 +1681,7 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
         // frozen output still resets its ring and holds the refill silent.
         frameQueue.clear()
         frameQueueBytes.set(0)
+        rejoinSplice.set(null)
         lastEnqueuedTimestampUs = 0L
         estimatedFrameDurationUs = 20_000L
         // Nothing older is left to carry. A change not carried out yet still sets the

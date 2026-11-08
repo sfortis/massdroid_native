@@ -160,18 +160,25 @@ class AndroidAutoBrowseController(
                 controllerInfo: MediaSession.ControllerInfo,
                 intent: Intent
             ): Boolean {
+                val keyEvent: KeyEvent? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    intent.getParcelableExtra(Intent.EXTRA_KEY_EVENT, KeyEvent::class.java)
+                } else {
+                    @Suppress("DEPRECATION")
+                    intent.getParcelableExtra(Intent.EXTRA_KEY_EVENT)
+                }
+                // Logged before any branch, so a key that arrives and is dropped (Sendspin not
+                // active) can be told apart from one that never reached the app.
+                if (keyEvent?.action != KeyEvent.ACTION_UP && (keyEvent?.repeatCount ?: 0) == 0) {
+                    val key = keyEvent?.let { KeyEvent.keyCodeToString(it.keyCode) } ?: "with no key"
+                    Log.i(TAG, "Media button $key from ${controllerInfo.packageName}")
+                }
                 if (session.isMediaNotificationController(controllerInfo)) return false
 
                 val ctrl = sendspinController() ?: return true
                 if (!isSendspinActive()) return true
                 ctrl.sendspinPlayerId ?: return true
 
-                val keyEvent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                    intent.getParcelableExtra(Intent.EXTRA_KEY_EVENT, KeyEvent::class.java)
-                } else {
-                    @Suppress("DEPRECATION")
-                    intent.getParcelableExtra(Intent.EXTRA_KEY_EVENT)
-                } ?: return false
+                keyEvent ?: return false
                 if (keyEvent.action != KeyEvent.ACTION_DOWN) return true
 
                 when (keyEvent.keyCode) {
@@ -182,7 +189,7 @@ class AndroidAutoBrowseController(
                     KeyEvent.KEYCODE_MEDIA_PREVIOUS -> ctrl.handlePrev()
                     else -> return false
                 }
-                Log.d(TAG, "BT media button routed to sendspin: ${keyEvent.keyCode}")
+                Log.i(TAG, "Media button ${KeyEvent.keyCodeToString(keyEvent.keyCode)} routed to Sendspin")
                 return true
             }
 
@@ -365,6 +372,16 @@ class AndroidAutoBrowseController(
                     Log.e(TAG, "playTrackThenFeed failed for $trackUri in $feedUri", e)
                 }
             }
+            mediaId.startsWith(CONTAINER_TRACK_PREFIX) -> {
+                val (containerUri, trackUri) = mediaId.removePrefix(CONTAINER_TRACK_PREFIX).split("|", limit = 2)
+                    .takeIf { it.size == 2 } ?: return
+                try {
+                    playerRepository.setQueueFilterMode(queueId, PlayerRepository.QueueFilterMode.NORMAL)
+                    musicRepository.playContainerFrom(queueId, containerUri, trackUri)
+                } catch (e: Exception) {
+                    Log.e(TAG, "playContainerFrom failed for $trackUri in $containerUri", e)
+                }
+            }
             else -> {
                 val uri = item.requestMetadata.mediaUri?.toString()
                     // A full uri; a structured "type|provider|id" whose id is a file path also
@@ -406,7 +423,8 @@ class AndroidAutoBrowseController(
     }
 
     private fun resolveMediaIdToUri(mediaId: String): String? {
-        val parts = mediaId.split("|")
+        // The id comes last and keeps any "|" of its own, such as one in a file path.
+        val parts = mediaId.split("|", limit = 3)
         if (parts.size != 3) return null
         val (type, provider, itemId) = parts
         val uriType = if (type == DYNAMIC_PLAYLIST_TYPE) "playlist" else type
@@ -770,15 +788,21 @@ class AndroidAutoBrowseController(
         .build()
 
     private suspend fun loadSubItems(parentId: String, page: Int, pageSize: Int): List<MediaItem> {
-        val parts = parentId.split("|")
+        val parts = parentId.split("|", limit = 3)
         if (parts.size != 3) return emptyList()
         val (type, provider, itemId) = parts
         val items = when (type) {
             // Discography (provider catalogue), not getArtistAlbums: a library artist's
             // artist_albums(library) is ~empty on MA 2.9+, so the car would show no albums.
             "artist" -> musicRepository.getArtistDiscography(itemId, provider).map { it.toBrowsableMediaItem() }
-            "album" -> musicRepository.getAlbumTracks(itemId, provider).map { it.toPlayableMediaItem() }
-            "playlist" -> musicRepository.getPlaylistTracks(itemId, provider).map { it.toPlayableMediaItem() }
+            "album" -> {
+                val albumUri = "$provider://album/$itemId"
+                musicRepository.getAlbumTracks(itemId, provider).map { it.toContainerTrackMediaItem(albumUri) }
+            }
+            "playlist" -> {
+                val playlistUri = "$provider://playlist/$itemId"
+                musicRepository.getPlaylistTracks(itemId, provider).map { it.toContainerTrackMediaItem(playlistUri) }
+            }
             // A dynamic playlist lists a sample of its feed. A tapped track starts and the
             // feed carries on after it, so the row carries the playlist as well: the host
             // drops the request metadata, and the mediaId is all that comes back.
@@ -796,6 +820,14 @@ class AndroidAutoBrowseController(
         // it a host that pages got the full list again on every page.
         return items.drop(page * pageSize).take(pageSize)
     }
+
+    // A tapped track of an album or a regular playlist starts the container there, and the rest
+    // follows. The row carries the container as well, because the host drops the request
+    // metadata and the mediaId is all that comes back.
+    private fun Track.toContainerTrackMediaItem(containerUri: String): MediaItem =
+        toPlayableMediaItem().buildUpon()
+            .setMediaId("$CONTAINER_TRACK_PREFIX$containerUri|$uri")
+            .build()
 
     private fun Artist.toBrowsableMediaItem(groupTitle: String? = null): MediaItem = MediaItem.Builder()
         .setMediaId("artist|$provider|$itemId")
@@ -872,6 +904,9 @@ class AndroidAutoBrowseController(
 
         /** mediaId prefix of a track row in a dynamic playlist: `dyntrack|<feed uri>|<track uri>`. */
         private const val DYNAMIC_TRACK_PREFIX = "dyntrack|"
+
+        /** mediaId prefix of a track row in an album or a regular playlist: `ctrack|<container uri>|<track uri>`. */
+        private const val CONTAINER_TRACK_PREFIX = "ctrack|"
 
         /**
          * What an unknown caller may do: play, pause, skip and seek, and read what is

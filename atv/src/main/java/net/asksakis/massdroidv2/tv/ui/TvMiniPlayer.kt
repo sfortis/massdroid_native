@@ -128,6 +128,7 @@ fun TvMiniPlayer(
     val buttonFocus = remember { List(TRANSPORT_BUTTON_COUNT) { FocusRequester() } }
     val volumeShown by viewModel.volumeShown.collectAsStateWithLifecycle()
     val canNext by viewModel.canNext.collectAsStateWithLifecycle()
+    val playPauseButton by viewModel.playPauseButton.collectAsStateWithLifecycle()
     val barLastIndex = if (volumeShown) TRANSPORT_BUTTON_COUNT else TRANSPORT_BUTTON_COUNT - VOLUME_BUTTON_COUNT
     var focusedIndex by remember { mutableIntStateOf(0) }
     fun barTarget(index: Int): FocusRequester = if (index == 0) mediaFocus else buttonFocus[index - 1]
@@ -253,6 +254,7 @@ fun TvMiniPlayer(
         }
         MiniPlayerBar(
             player = selected,
+            playing = playPauseButton.shownPlaying,
             mediaFocus = mediaFocus,
             canFocus = armed,
             buttonFocus = buttonFocus,
@@ -289,6 +291,7 @@ fun TvMiniPlayer(
 @Composable
 private fun MiniPlayerBar(
     player: Player?,
+    playing: Boolean,
     mediaFocus: FocusRequester,
     canFocus: Boolean,
     buttonFocus: List<FocusRequester>,
@@ -339,7 +342,7 @@ private fun MiniPlayerBar(
                 Spacer(Modifier.width(14.dp))
                 Column {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        if (player?.state == PlaybackState.PLAYING) {
+                        if (playing) {
                             Icon(
                                 Icons.Filled.GraphicEq,
                                 contentDescription = "Playing",
@@ -377,8 +380,8 @@ private fun MiniPlayerBar(
         }
         IconButton(onClick = onPlayPause, modifier = buttonModifier(1).pointerClick(onClick = onPlayPause)) {
             Icon(
-                if (player?.state == PlaybackState.PLAYING) Icons.Filled.Pause else Icons.Filled.PlayArrow,
-                contentDescription = if (player?.state == PlaybackState.PLAYING) "Pause" else "Play"
+                if (playing) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                contentDescription = if (playing) "Pause" else "Play"
             )
         }
         Spacer(Modifier.width(6.dp))

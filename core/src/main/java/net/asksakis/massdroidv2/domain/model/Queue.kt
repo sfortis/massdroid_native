@@ -46,7 +46,9 @@ data class QueueItem(
     val duration: Double = 0.0,
     val track: Track? = null,
     val imageUrl: String? = null,
-    val audioFormat: AudioFormatInfo? = null
+    val audioFormat: AudioFormatInfo? = null,
+    /** Set when a Party guest added the item; null for everything else. */
+    val partyMark: PartyMark? = null
 )
 
 data class AudioFormatInfo(

@@ -1,6 +1,8 @@
 package net.asksakis.massdroidv2.ui.shared
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.drawable.BitmapDrawable
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
@@ -15,6 +17,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
@@ -28,12 +31,18 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.core.graphics.ColorUtils
 import coil.compose.AsyncImagePainter
 import coil.compose.rememberAsyncImagePainter
+import coil.imageLoader
 import coil.request.CachePolicy
 import coil.request.ImageRequest
+import coil.request.SuccessResult
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
@@ -204,6 +213,74 @@ fun AlbumArtBackdrop(imageUrl: String?, isDark: Boolean, surfaceColor: Color) {
         Box(modifier = Modifier.fillMaxSize().grain(backdropGrainAlpha(isDark)))
     }
 }
+
+/** Two colours taken from an album cover, see [rememberBackdropTints]. */
+data class BackdropTints(val first: Color, val second: Color)
+
+/**
+ * Two colours from the cover [AlbumArtBackdrop] shows for [imageUrl]: the average of its top
+ * left quarter and the average of its bottom right quarter. Null without artwork, and until
+ * the artwork has decoded.
+ *
+ * It asks for the backdrop's own small blurred copy under the same cache key, so it reads the
+ * bitmap already in memory instead of decoding the cover again. The lightness of each colour
+ * is kept within a middle range, so a very dark or very pale cover still gives a colour that
+ * shows against the screen.
+ */
+@Composable
+fun rememberBackdropTints(imageUrl: String?): BackdropTints? {
+    val context = LocalContext.current
+    return produceState<BackdropTints?>(initialValue = null, imageUrl) {
+        value = imageUrl?.let { url ->
+            try {
+                val result = context.imageLoader.execute(backdropRequest(context, url)) as? SuccessResult
+                val bitmap = (result?.drawable as? BitmapDrawable)?.bitmap
+                bitmap?.let { withContext(Dispatchers.Default) { quarterTints(it) } }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                null
+            }
+        }
+    }.value
+}
+
+private fun quarterTints(source: Bitmap): BackdropTints {
+    // A hardware bitmap cannot be read pixel by pixel; the copy is tiny at this decode size.
+    val bitmap = if (source.config == Bitmap.Config.HARDWARE) source.copy(Bitmap.Config.ARGB_8888, false) else source
+    val width = bitmap.width
+    val height = bitmap.height
+    val pixels = IntArray(width * height)
+    bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
+    return BackdropTints(
+        first = averageTint(pixels, width, 0, 0, width / 2, height / 2),
+        second = averageTint(pixels, width, width / 2, height / 2, width, height)
+    )
+}
+
+private fun averageTint(pixels: IntArray, width: Int, left: Int, top: Int, right: Int, bottom: Int): Color {
+    var r = 0L
+    var g = 0L
+    var b = 0L
+    var count = 0
+    for (y in top until bottom) {
+        for (x in left until right) {
+            val pixel = pixels[y * width + x]
+            r += (pixel shr 16) and 0xFF
+            g += (pixel shr 8) and 0xFF
+            b += pixel and 0xFF
+            count++
+        }
+    }
+    if (count == 0) return Color.Gray
+    val hsl = FloatArray(3)
+    ColorUtils.RGBToHSL((r / count).toInt(), (g / count).toInt(), (b / count).toInt(), hsl)
+    hsl[2] = hsl[2].coerceIn(TINT_MIN_LIGHTNESS, TINT_MAX_LIGHTNESS)
+    return Color(ColorUtils.HSLToColor(hsl))
+}
+
+private const val TINT_MIN_LIGHTNESS = 0.3f
+private const val TINT_MAX_LIGHTNESS = 0.6f
 
 /**
  * How strongly the background carries its grain.

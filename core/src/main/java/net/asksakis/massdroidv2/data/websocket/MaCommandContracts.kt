@@ -82,6 +82,31 @@ object MaCommands {
         const val LIST = "providers"
     }
 
+    /**
+     * The Smart Playlists plugin (MA 2.10 and later). These commands are registered only
+     * while the plugin is loaded, see [net.asksakis.massdroidv2.data.provider.ProviderManifestCache.loadedDomains].
+     */
+    object SmartPlaylists {
+        const val PLUGIN_DOMAIN = "smart_playlist"
+        const val LIST = "smart_playlists/list"
+        const val GET_RULES = "smart_playlists/get_rules"
+        const val UPDATE_RULES = "smart_playlists/update_rules"
+        const val CREATE = "smart_playlists/create"
+    }
+
+    /**
+     * The Party plugin (MA 2.8 and later), which lets guests add songs from a join link. These
+     * commands are registered only while the plugin is loaded, like [SmartPlaylists].
+     */
+    object Party {
+        const val PLUGIN_DOMAIN = "party"
+        /** The guest join link, or null while guest access is off. */
+        const val URL = "party/url"
+        /** The queue that receives the guests' songs, or null when there is none. */
+        const val PLAYER = "party/player"
+        const val CONFIG = "party/config"
+    }
+
     object PlayerQueues {
         const val ITEMS = "player_queues/items"
         const val PLAY_MEDIA = "player_queues/play_media"
@@ -367,7 +392,8 @@ data class PlayMediaArgs(
      * after applying the sort.
      *
      * Used to keep a blocked artist at the head of a playlist from being heard, without
-     * expanding the playlist into a track list. Like [sortBy], it means nothing for a list of
+     * expanding the playlist into a track list, and to start an album or a playlist at the
+     * track tapped in Android Auto. Like [sortBy], it means nothing for a list of
      * tracks, which the caller has already trimmed.
      */
     val startItem: String? = null
@@ -617,6 +643,38 @@ data class VolumeMuteArgs(
     override fun toJson(): JsonObject = buildJsonObject {
         put("player_id", playerId)
         put("muted", muted)
+    }
+}
+
+/** A smart playlist by its provider id (UUID); the server also accepts the library id. */
+data class SmartPlaylistIdArgs(
+    val playlistId: String
+) : MaCommandArgs {
+    override fun toJson(): JsonObject = buildJsonObject {
+        put("playlist_id", playlistId)
+    }
+}
+
+/** `update_rules` replaces the whole rules object, so [rules] must be complete. */
+data class SmartPlaylistUpdateRulesArgs(
+    val playlistId: String,
+    val rules: JsonObject
+) : MaCommandArgs {
+    override fun toJson(): JsonObject = buildJsonObject {
+        put("playlist_id", playlistId)
+        put("rules", rules)
+    }
+}
+
+data class SmartPlaylistCreateArgs(
+    val name: String,
+    val rules: JsonObject,
+    val isDynamic: Boolean = true
+) : MaCommandArgs {
+    override fun toJson(): JsonObject = buildJsonObject {
+        put("name", name)
+        put("rules", rules)
+        put("is_dynamic", isDynamic)
     }
 }
 
