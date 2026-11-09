@@ -202,6 +202,49 @@ class ImageUrlResolverTest {
         assertThat(resolver(31).rehostImageproxyUrl(url)).isEqualTo(url)
     }
 
+    // --- the MA logo on MA's own playlists ---
+
+    @Test
+    fun `the MA logo on a builtin playlist counts as no image`() {
+        // Infinite Mix on MA 2.10 carries only this thumb, and the car drew it at full tile size.
+        val logo = img("logo.png", remote = false, proxyId = "logo1")
+        assertThat(resolver(schema = 31).resolve(logo)).isNull()
+        assertThat(resolver(schema = 31).resolveItem(item(logo, uri = "library://playlist/7"))).isNull()
+    }
+
+    @Test
+    fun `a builtin playlist with only the default fanart shows no cover`() {
+        val playlist = item(img("fanart.jpg", proxyId = "fan1", type = "fanart"), uri = "library://playlist/3")
+        assertThat(resolver(schema = 31).resolveItem(playlist)).isNull()
+    }
+
+    @Test
+    fun `a builtin playlist with the logo and the fanart still shows no cover`() {
+        // Older MA gives the other system playlists the logo thumb and a generic fanart, and
+        // MA's migration 61 strips both, so the playlist falls back to the placeholder.
+        val playlist = item(
+            img("logo.png", proxyId = "logo1"),
+            img("fanart.jpg", proxyId = "fan1", type = "fanart"),
+            uri = "library://playlist/3",
+        )
+        assertThat(resolver(schema = 31).resolveItem(playlist)).isNull()
+    }
+
+    @Test
+    fun `a real builtin playlist cover is still resolved`() {
+        val cover = img("playlists/infinite_mix.png", remote = false, proxyId = "mix1")
+        assertThat(resolver(schema = 31).resolve(cover)).isEqualTo("$serverBase/imageproxy/mix1?size=512")
+        // Newer MA's own playlist fanart sits in the same folder and is real art too.
+        val fanart = img("playlists/fanart.jpg", remote = false, proxyId = "fan2", type = "fanart")
+        assertThat(resolver(schema = 31).resolve(fanart)).isEqualTo("$serverBase/imageproxy/fan2?size=512")
+    }
+
+    @Test
+    fun `another provider's image named logo_png is still resolved`() {
+        val other = img("logo.png", remote = false, proxyId = "own1", provider = "filesystem_local")
+        assertThat(resolver(schema = 31).resolve(other)).isEqualTo("$serverBase/imageproxy/own1?size=512")
+    }
+
     @Test
     fun `a real provider image is still resolved`() {
         val real = img(
