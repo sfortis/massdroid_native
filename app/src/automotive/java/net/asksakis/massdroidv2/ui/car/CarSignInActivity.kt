@@ -23,6 +23,8 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.PrivacyTip
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -52,6 +54,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -60,6 +63,7 @@ import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dagger.hilt.android.AndroidEntryPoint
+import net.asksakis.massdroidv2.BuildConfig
 import net.asksakis.massdroidv2.data.signin.SavedSignIn
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
 import net.asksakis.massdroidv2.data.websocket.OAUTH_CALLBACK_SCHEME
@@ -434,6 +438,11 @@ private fun CarSignInScreen(
                         dither = dither,
                         onDither = viewModel::setDither,
                     )
+
+                    Spacer(Modifier.height(28.dp))
+                    HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
+                    Spacer(Modifier.height(20.dp))
+                    CarAbout()
                 }
             }
         }
@@ -572,13 +581,53 @@ private fun CarPlayerSettings(
             }
             Switch(checked = dither, onCheckedChange = onDither)
         }
+    }
+}
 
-        Spacer(Modifier.height(24.dp))
-        // As text: a car usually has no browser to open it in.
-        Text(
-            "Privacy policy: ${AppLinks.PRIVACY_POLICY_URL.removePrefix("https://")}",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+/**
+ * The app version and the privacy policy, as on the phone's About screen. Google Play requires
+ * the policy to be reachable in the app. The address is shown as text, because a car usually has
+ * no browser to open it in.
+ */
+@Composable
+private fun CarAbout() {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Text("About", style = MaterialTheme.typography.titleLarge)
+        Spacer(Modifier.height(12.dp))
+        CarAboutRow(
+            icon = Icons.Default.Info,
+            title = "Version",
+            lines = listOf("${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})"),
         )
+        Spacer(Modifier.height(12.dp))
+        CarAboutRow(
+            icon = Icons.Default.PrivacyTip,
+            title = "Privacy policy",
+            lines = listOf(
+                "What the app sends, and to whom",
+                AppLinks.PRIVACY_POLICY_URL.removePrefix("https://"),
+            ),
+        )
+    }
+}
+
+@Composable
+private fun CarAboutRow(icon: ImageVector, title: String, lines: List<String>) {
+    Row(
+        modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+        Spacer(Modifier.width(16.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.labelLarge)
+            lines.forEach { line ->
+                Text(
+                    line,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
     }
 }
