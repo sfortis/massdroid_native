@@ -26,7 +26,7 @@ android {
 
 dependencies {
     implementation("androidx.core:core-ktx:1.16.0")
-    implementation("androidx.media3:media3-session:1.7.1")
+    implementation("androidx.media3:media3-session:1.8.1")
     implementation("androidx.media:media:1.7.1")
     implementation("androidx.car.app:app:1.4.0")
     implementation("androidx.lifecycle:lifecycle-livedata-ktx:2.8.7")

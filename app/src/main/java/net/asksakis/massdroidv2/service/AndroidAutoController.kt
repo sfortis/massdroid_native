@@ -12,15 +12,18 @@ import android.util.Log
 import androidx.annotation.OptIn
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.session.MediaLibraryService
+import androidx.media3.session.MediaSession
 import java.io.ByteArrayOutputStream
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import net.asksakis.massdroidv2.auto.AaMetrics
@@ -61,7 +64,15 @@ class AndroidAutoController(
     private val volumeKeyController: net.asksakis.massdroidv2.domain.player.VolumeKeyController,
     private val onPlaybackStopped: (String) -> Unit,
     private val trackedBrowsePaths: () -> Set<String>,
+    /**
+     * Car only: true while there are no saved credentials. The car then shows the Sign in
+     * prompt and an empty now playing instead of the last track of the account it signed out of.
+     */
+    private val signedOut: Flow<Boolean> = flowOf(false),
+    /** Car only: called on a sign out, after the session shows the Sign in prompt. */
+    private val onSignedOut: () -> Unit = {},
 ) {
+    private val carSignInPrompt = if (net.asksakis.massdroidv2.BuildConfig.IS_AUTOMOTIVE) CarSignInPrompt(service) else null
     private var session: MediaLibraryService.MediaLibrarySession? = null
     private var remotePlayer: RemoteControlPlayer? = null
     private var aaProjectionObserver: AaProjectionObserver? = null
@@ -81,6 +92,14 @@ class AndroidAutoController(
      */
     private val volumeOverride = MutableStateFlow<Pair<Int, Long>?>(null)
 
+    /**
+     * [signedOut] as the combine in observeAaState sees it. Only observeCarSignIn writes it, so
+     * the combine reacts to a sign in or a sign out at the point that collector chooses, after the
+     * prompt has been set or cleared. A second subscription to [signedOut] would run in no fixed
+     * order against that collector.
+     */
+    private val shownSignedOut = MutableStateFlow(false)
+
     private var cachedArtworkUrl: String? = null
     private var cachedArtworkKey: String? = null
     // The last AaCompleteState we applied, so the master observer can diff
@@ -99,7 +118,16 @@ class AndroidAutoController(
         observeServerPositionUpdates()
         observeQueueItems()
         observeWsForBrowseInvalidation()
+        observeCarSignIn()
     }
+
+    /** Called from the session's onPostConnect. */
+    fun onControllerConnected(session: MediaSession, controller: MediaSession.ControllerInfo) {
+        carSignInPrompt?.onConnected(session, controller)
+    }
+
+    /** Car only: true while there are no saved credentials, read by the browse tree. */
+    fun isCarSignedOut(): Boolean = carSignInPrompt?.isSignedOut == true
 
     fun getSession(): MediaLibraryService.MediaLibrarySession? = session
 
@@ -166,15 +194,62 @@ class AndroidAutoController(
                 .map { it is ConnectionState.Connected }
                 .distinctUntilChanged()
                 .filter { it }
-                .collect {
-                    val paths = trackedBrowsePaths()
-                    if (paths.isEmpty()) return@collect
-                    val s = session ?: return@collect
-                    Log.d(TAG, "WS connected, invalidating ${paths.size} AA browse paths")
-                    paths.forEach { parentId ->
-                        s.notifyChildrenChanged(parentId, Int.MAX_VALUE, null)
-                    }
+                .collect { invalidateBrowsePaths("WS connected") }
+        }
+    }
+
+    /**
+     * Car: shows the Sign in prompt while there are no saved credentials and clears it once a
+     * sign-in has saved its token. Both edges also invalidate the browse tree. A sign out would
+     * otherwise leave the tree cached from the account that signed out. A sign in saves its token
+     * only after the connection is up, so the media center can ask again in between, while the
+     * tabs are still empty, and nothing else would make it ask once more.
+     *
+     * The order matters on both edges. While the session carries a playback exception, Media3
+     * 1.8.1 keeps the platform session's metadata and queue as they were
+     * (MediaSessionLegacyStub.skipLegacySessionPlaybackStateUpdates), and clearing the exception
+     * re-sends neither. The player's own listener hands a change to the platform session at once
+     * (dispatchRemoteControllerTaskToLegacyStub). So a sign out empties now playing before it
+     * sets the error, and a sign in clears the error before the real state is applied. Recheck
+     * both on a Media3 bump.
+     */
+    private fun observeCarSignIn() {
+        val prompt = carSignInPrompt ?: return
+        scope.launch {
+            signedOut.collect { out ->
+                val s = session ?: return@collect
+                if (out) {
+                    showNothingPlaying()
+                    prompt.update(s, signedOut = true)
+                    shownSignedOut.value = true
+                    onSignedOut()
+                    invalidateBrowsePaths("Signed out")
+                } else {
+                    prompt.update(s, signedOut = false)
+                    shownSignedOut.value = false
+                    invalidateBrowsePaths("Signed in")
                 }
+            }
+        }
+    }
+
+    // The same empty state the combine in observeAaState produces while signed out, applied here
+    // before the error is set; the combine's own Empty that follows is then no change. Both run on
+    // the main thread.
+    private fun showNothingPlaying() {
+        updateArtwork(null)
+        applyAaState(lastAaState, AaCompleteState.Empty)
+        lastAaState = AaCompleteState.Empty
+        lastPlaybackSnapshot = AaCompleteState.Empty.playback
+    }
+
+    private fun invalidateBrowsePaths(reason: String) {
+        val paths = trackedBrowsePaths()
+        if (paths.isEmpty()) return
+        val s = session ?: return
+        Log.d(TAG, "$reason, invalidating ${paths.size} AA browse paths: ${paths.joinToString()}")
+        paths.forEach { parentId ->
+            s.notifyChildrenChanged(parentId, Int.MAX_VALUE, null)
         }
     }
 
@@ -425,7 +500,11 @@ class AndroidAutoController(
                 volumeOverride,
                 sendspinManager.streamActive,
                 sendspinManager.localPausePending,
+                shownSignedOut,
             ) { values: Array<*> ->
+                // Signed out, the car shows nothing playing. A missing player alone keeps the
+                // last state instead, because it is also missing for a moment on every connect.
+                if (values[9] as Boolean) return@combine AaCompleteState.Empty
                 @Suppress("UNCHECKED_CAST")
                 buildAaState(
                     player = values[0] as net.asksakis.massdroidv2.domain.model.Player?,
@@ -822,5 +901,15 @@ class AndroidAutoController(
         val shuffleEnabled: Boolean,
         /** Source image URL for the current track; used by updateArtwork(). */
         val imageUrl: String?,
-    )
+    ) {
+        companion object {
+            val Empty = AaCompleteState(
+                playback = AutoPlaybackSnapshot.Empty,
+                queue = AutoQueueSnapshot.Empty,
+                isFavorite = false,
+                shuffleEnabled = false,
+                imageUrl = null,
+            )
+        }
+    }
 }

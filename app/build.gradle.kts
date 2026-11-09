@@ -305,8 +305,8 @@ dependencies {
     implementation("com.google.zxing:core:3.5.4")
 
     // Media3
-    implementation("androidx.media3:media3-session:1.7.1")
-    implementation("androidx.media3:media3-exoplayer:1.7.1")
+    implementation("androidx.media3:media3-session:1.8.1")
+    implementation("androidx.media3:media3-exoplayer:1.8.1")
     implementation("androidx.media:media:1.7.1")
 
     // DataStore for settings

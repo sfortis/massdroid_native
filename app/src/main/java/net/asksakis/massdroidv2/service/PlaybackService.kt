@@ -18,6 +18,8 @@ import androidx.media3.session.MediaSession
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
 import net.asksakis.massdroidv2.R
 import net.asksakis.massdroidv2.auto.AaMetrics
 import net.asksakis.massdroidv2.data.sendspin.SendspinManager
@@ -89,16 +91,6 @@ class PlaybackService : MediaLibraryService() {
     }
 
     /**
-     * Whether the user has saved auth: a server URL plus either a token or a username/password
-     * pair (the WS auth flow tries the token first, then falls back to credentials). The car
-     * sign-in affordance keys off THIS, not the live connection state - a signed-in car must
-     * not be shown the "Sign in" error just because the WS is still connecting on a cold start
-     * (that left the AAOS media center stuck on a blank, tab-less sign-in screen). Read fresh
-     * (suspending) per query so there is no startup race against the first DataStore emission.
-     */
-    private suspend fun hasStoredCredentials(): Boolean = savedCredentialsConnector.hasSavedCredentials()
-
-    /**
      * In the car (AAOS) the system media center binds this service WITHOUT ever
      * launching an activity, so the UI-layer auto-connect (Home/Discover view models)
      * never runs and the browse tree stays empty ("Media isn't available"). Mirror
@@ -157,6 +149,12 @@ class PlaybackService : MediaLibraryService() {
             volumeKeyController = volumeKeyController,
             onPlaybackStopped = { /* Follow Me's no-room-stop timer self-guards on playback state (now in FollowMeService) */ },
             trackedBrowsePaths = { androidAutoBrowseController.trackedParentIds() },
+            signedOut = if (net.asksakis.massdroidv2.BuildConfig.IS_AUTOMOTIVE) {
+                savedCredentialsConnector.savedCredentials.map { !it }
+            } else {
+                flowOf(false)
+            },
+            onSignedOut = { androidAutoBrowseController.clearSearchCache() },
         )
         androidAutoController.start(androidAutoBrowseController.callback)
     }
@@ -174,7 +172,10 @@ class PlaybackService : MediaLibraryService() {
             isSendspinActive = { sendspinCoordinator.isActive },
             sendspinController = { sendspinCoordinator.controller },
             onCustomCommand = { action -> androidAutoController.handleCustomCommand(action) },
-            hasStoredCredentials = { hasStoredCredentials() },
+            onControllerConnected = { session, controller ->
+                androidAutoController.onControllerConnected(session, controller)
+            },
+            isSignedOut = { androidAutoController.isCarSignedOut() },
             connectIfNeeded = { scope.launch { savedCredentialsConnector.connectIfNeeded() } },
         )
     }

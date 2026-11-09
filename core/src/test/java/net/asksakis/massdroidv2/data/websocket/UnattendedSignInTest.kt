@@ -1,6 +1,16 @@
 package net.asksakis.massdroidv2.data.websocket
 
 import com.google.common.truth.Truth.assertThat
+import io.mockk.every
+import io.mockk.mockk
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.runTest
+import net.asksakis.massdroidv2.domain.repository.SettingsRepository
 import org.junit.Test
 
 /**
@@ -62,5 +72,31 @@ class UnattendedSignInTest {
     fun `no server address is not enough`() {
         assertThat(canSignInUnattended("", token = "t", username = "u", password = "p")).isFalse()
         assertThat(canSignInUnattended("ma.example", token = "t", username = "", password = "")).isFalse()
+    }
+
+    // The car shows its Sign in prompt from this flow, so it has to turn false on a sign out
+    // and true again on the next sign-in, once each.
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test
+    fun `the saved credentials follow a sign out and the next sign-in`() = runTest {
+        val token = MutableStateFlow("t")
+        val password = MutableStateFlow("p")
+        val settings = mockk<SettingsRepository> {
+            every { serverUrl } returns flowOf("https://ma.example")
+            every { authToken } returns token
+            every { username } returns flowOf("u")
+            every { this@mockk.password } returns password
+        }
+        val connector = SavedCredentialsConnector(mockk(), settings)
+        val seen = mutableListOf<Boolean>()
+        val collecting = launch(UnconfinedTestDispatcher(testScheduler)) { connector.savedCredentials.toList(seen) }
+
+        // A sign out forgets the token first and then the password.
+        token.value = ""
+        password.value = ""
+        token.value = "t2"
+        collecting.cancel()
+
+        assertThat(seen).containsExactly(true, false, true).inOrder()
     }
 }

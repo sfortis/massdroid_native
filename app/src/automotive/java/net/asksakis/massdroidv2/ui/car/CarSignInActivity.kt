@@ -399,8 +399,13 @@ private fun CarSignInScreen(
                     }
 
                     if (connected) {
-                        Spacer(Modifier.height(8.dp))
-                        TextButton(onClick = { viewModel.signOut() }) { Text("Sign out") }
+                        Spacer(Modifier.height(16.dp))
+                        OutlinedButton(
+                            onClick = { viewModel.signOut() },
+                            modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp),
+                        ) {
+                            Text("Sign out", fontSize = 18.sp)
+                        }
                     }
 
                     if (statusMessage != null) {
