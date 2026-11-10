@@ -1,0 +1,2 @@
+Search shows your library's matches first and gives a slow answer one more try before No results, and a Library chip searches only your library.
+Android Automotive shows a Sign in button when signed out, and items without artwork get a placeholder.
