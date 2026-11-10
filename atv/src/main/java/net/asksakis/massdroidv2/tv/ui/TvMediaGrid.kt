@@ -24,6 +24,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Sort
+import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
@@ -121,7 +122,8 @@ fun TvMediaGrid(state: LazyGridState, content: LazyGridScope.() -> Unit) {
 
 /**
  * A square-art card of the grid screens. [circular] crops the art to a circle (artists).
- * Without an image, [placeholder] is drawn in its place when given (folders).
+ * Without an image, [placeholder] is drawn in its place: a note unless the caller passes another
+ * icon (folders).
  */
 @Composable
 fun TvMediaCard(
@@ -130,14 +132,14 @@ fun TvMediaCard(
     modifier: Modifier = Modifier,
     subtitle: String? = null,
     circular: Boolean = false,
-    placeholder: ImageVector? = null,
+    placeholder: ImageVector = Icons.Filled.MusicNote,
     titleMaxLines: Int = 1,
     onClick: () -> Unit
 ) {
     Card(onClick = onClick, modifier = modifier.fillMaxWidth().pointerClick(onClick = onClick)) {
         Column {
             val imageModifier = Modifier.fillMaxWidth().aspectRatio(1f)
-            if (imageUrl == null && placeholder != null) {
+            if (imageUrl == null) {
                 Box(modifier = imageModifier, contentAlignment = Alignment.Center) {
                     Icon(
                         placeholder,

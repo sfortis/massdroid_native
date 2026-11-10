@@ -1,5 +1,8 @@
 package net.asksakis.massdroidv2.tv.ui
 
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.MusicNote
+import androidx.compose.material.icons.filled.Person
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
@@ -118,6 +121,7 @@ fun TvBrowseScreen(
                         imageUrl = item.imageUrl,
                         subtitle = item.subtitle,
                         circular = item.circular,
+                        placeholder = if (item.isArtist) Icons.Filled.Person else Icons.Filled.MusicNote,
                         modifier = gridFocus.modifierFor(item.uri)
                     ) {
                         if (item.isArtist) onOpenArtist(item.itemId, item.provider)
