@@ -2,6 +2,9 @@ package net.asksakis.massdroidv2.data.websocket
 
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeoutOrNull
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
@@ -21,15 +24,20 @@ class SavedCredentialsConnector @Inject constructor(
 ) {
 
     /**
-     * True when the app can sign in by itself: a server address and either a token or a
-     * username with its password. Nothing is connected until [connectIfNeeded].
+     * Whether the app can sign in by itself, following every change to the saved settings: a
+     * server address and either a token or a username with its password. It turns false on a
+     * sign out and true again once a sign-in has saved its token.
      */
-    suspend fun hasSavedCredentials(): Boolean = canSignInUnattended(
-        url = settingsRepository.serverUrl.first(),
-        token = settingsRepository.authToken.first(),
-        username = settingsRepository.username.first(),
-        password = settingsRepository.password.first(),
-    )
+    val savedCredentials: Flow<Boolean> = combine(
+        settingsRepository.serverUrl,
+        settingsRepository.authToken,
+        settingsRepository.username,
+        settingsRepository.password,
+        ::canSignInUnattended,
+    ).distinctUntilChanged()
+
+    /** The current value of [savedCredentials]. Nothing is connected until [connectIfNeeded]. */
+    suspend fun hasSavedCredentials(): Boolean = savedCredentials.first()
 
     /**
      * Connect if the client needs it and the listener has not disconnected on purpose,

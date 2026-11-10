@@ -33,6 +33,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.GridView
+import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -441,13 +442,23 @@ private fun MediaCard(
             } else {
                 Modifier.size(CARD_SIZE)
             }
-            Box(modifier = Modifier.size(CARD_SIZE)) {
-                AsyncImage(
-                    model = item.imageUrl,
-                    contentDescription = item.title,
-                    contentScale = ContentScale.Crop,
-                    modifier = imageModifier
-                )
+            Box(modifier = Modifier.size(CARD_SIZE), contentAlignment = Alignment.Center) {
+                // Without art (MA's own system playlists among them) a note icon, as TvMediaCard draws.
+                if (item.imageUrl == null) {
+                    Icon(
+                        Icons.Filled.MusicNote,
+                        contentDescription = null,
+                        tint = LocalContentColor.current.copy(alpha = 0.5f),
+                        modifier = Modifier.size(48.dp)
+                    )
+                } else {
+                    AsyncImage(
+                        model = item.imageUrl,
+                        contentDescription = item.title,
+                        contentScale = ContentScale.Crop,
+                        modifier = imageModifier
+                    )
+                }
             }
             Column(modifier = Modifier.fillMaxWidth().padding(10.dp)) {
                 Text(item.title, style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)

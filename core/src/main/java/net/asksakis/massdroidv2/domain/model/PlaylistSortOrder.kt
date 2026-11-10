@@ -73,9 +73,7 @@ private const val DISPLAY_NAME_SORT_MIN_SCHEMA = 87
 private const val STABLE_2_10_SCHEMA = 65
 
 /** The first 2.10 release whose `sort_tracks` sorts by the displayed names (PR #6906). */
-private val DISPLAY_NAME_SORT_MIN_VERSION = listOf(2, 10, 7)
-
-private val SERVER_VERSION = Regex("""^(\d+)\.(\d+)\.(\d+)""")
+private const val DISPLAY_NAME_SORT_MIN_PATCH = 7
 
 /**
  * The sort rules of a server with [schemaVersion] and [serverVersion].
@@ -94,13 +92,9 @@ fun playlistSortRulesFor(schemaVersion: Int?, serverVersion: String?): PlaylistS
     }
 }
 
-/** Whether [serverVersion] reads as [DISPLAY_NAME_SORT_MIN_VERSION] or later. */
-private fun sortsByDisplayNames(serverVersion: String?): Boolean {
-    val match = serverVersion?.let { SERVER_VERSION.find(it) } ?: return false
-    val parts = match.groupValues.drop(1).map { it.toIntOrNull() ?: return false }
-    val difference = parts.zip(DISPLAY_NAME_SORT_MIN_VERSION).firstOrNull { (part, min) -> part != min }
-    return difference == null || difference.first > difference.second
-}
+/** Whether [serverVersion] reads as 2.10.7 or later. */
+private fun sortsByDisplayNames(serverVersion: String?): Boolean =
+    isServerVersionAtLeast(serverVersion, 2, 10, DISPLAY_NAME_SORT_MIN_PATCH)
 
 /**
  * Order these tracks the way the connected server orders them itself, under [rules].

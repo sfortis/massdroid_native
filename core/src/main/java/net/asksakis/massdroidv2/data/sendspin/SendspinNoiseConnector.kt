@@ -28,6 +28,7 @@ import net.asksakis.massdroidv2.data.websocket.MaCommands
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
 import net.asksakis.massdroidv2.data.websocket.PairWebPlayerArgs
 import net.asksakis.massdroidv2.data.websocket.sendCommand
+import net.asksakis.massdroidv2.domain.model.isServerVersionAtLeast
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
 import java.io.IOException
@@ -295,14 +296,9 @@ class SendspinNoiseConnector @Inject constructor(
 
     internal companion object {
         private const val TAG = "SendspinPairing"
-        private val VERSION = Regex("""^(\d+)\.(\d+)\.""")
         private const val NOISE_MIN_MINOR = 10
         private const val SESSION_DIGEST_BYTES = 8
 
-        /**
-         * True from MA 2.10.0, whose aiosendspin speaks Noise. A version that does not read as
-         * X.Y.Z, and the 0.0.0 of a dev build, count as older.
-         */
         /**
          * The key of an unpair hold: the Sendspin server id and a digest of the MA auth token the
          * unpair arrived under. The token itself is not stored a second time.
@@ -313,12 +309,12 @@ class SendspinNoiseConnector @Inject constructor(
             return "$serverId@$session"
         }
 
-        internal fun supportsNoise(serverVersion: String): Boolean {
-            val match = VERSION.find(serverVersion) ?: return false
-            val major = match.groupValues[1].toIntOrNull() ?: return false
-            val minor = match.groupValues[2].toIntOrNull() ?: return false
-            return major > 2 || (major == 2 && minor >= NOISE_MIN_MINOR)
-        }
+        /**
+         * True from MA 2.10.0, whose aiosendspin speaks Noise. A version that does not read as
+         * X.Y.Z, and the 0.0.0 of a dev build, count as older.
+         */
+        internal fun supportsNoise(serverVersion: String): Boolean =
+            isServerVersionAtLeast(serverVersion, 2, NOISE_MIN_MINOR)
 
         // The command answers after the whole exchange: MA waits up to 10 s for the
         // client to register, then runs a re-handshake, the finalize and another one.

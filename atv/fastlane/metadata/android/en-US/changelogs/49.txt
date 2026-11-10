@@ -1,0 +1,1 @@
+Items without artwork show a placeholder instead of an empty square.

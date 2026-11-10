@@ -59,13 +59,21 @@ class AndroidAutoBrowseController(
     private val isSendspinActive: () -> Boolean,
     private val sendspinController: () -> SendspinAudioController?,
     private val onCustomCommand: (String) -> Boolean,
-    private val hasStoredCredentials: suspend () -> Boolean = { true },
+    /** Called once a controller has connected; the car shows its Sign in prompt from here. */
+    private val onControllerConnected: (MediaSession, MediaSession.ControllerInfo) -> Unit = { _, _ -> },
+    /** Car only: true while there are no saved credentials; see onGetChildren. */
+    private val isSignedOut: () -> Boolean = { false },
     /** Opens the MA connection if nothing has; see onGetLibraryRoot. */
     private val connectIfNeeded: () -> Unit = {},
 ) {
     // Keyed by the query that produced it: onGetSearchResult must never serve a
     // previous query's results when the host requests a newer one.
-    private var cachedSearch: Pair<String, SearchResult>? = null
+    @Volatile private var cachedSearch: Pair<String, SearchResult>? = null
+
+    /** Forgets the last search, so a car that signed out cannot show another account's results. */
+    fun clearSearchCache() {
+        cachedSearch = null
+    }
 
     // Tracks parentIds the AA host has ever queried or subscribed to during this
     // session. Used by AndroidAutoController to broadcast notifyChildrenChanged
@@ -117,28 +125,11 @@ class AndroidAutoBrowseController(
                 session: MediaSession,
                 controller: MediaSession.ControllerInfo
             ) {
-                // Car: a controller (the AAOS media center) just connected. Surface the
-                // standard AAOS sign-in affordance (a non-fatal SessionError carrying a
-                // resolution PendingIntent) ONLY when the user genuinely has no stored
-                // credentials. We must NOT key this off the live connection state: on a
-                // cold start the car binds before the WS has finished connecting, so a
-                // signed-in user would get the sign-in error - and the AAOS media center
-                // then stays stuck on a blank, tab-less sign-in screen even after the WS
-                // comes up (nothing dismisses it). With credentials present the browse
-                // tree (static tabs) renders immediately and content fills in once the
-                // WS-connect invalidation re-queries.
-                //
-                // The credentials read is suspending (DataStore), so launch it: onPostConnect
-                // returns void and the error is sent asynchronously once the real saved state
-                // is known. This also avoids a startup race against the first DataStore emission.
-                if (net.asksakis.massdroidv2.BuildConfig.IS_AUTOMOTIVE) {
-                    scope.launch {
-                        if (!hasStoredCredentials()) {
-                            (session as? MediaLibraryService.MediaLibrarySession)
-                                ?.sendError(controller, buildSignInError())
-                        }
-                    }
-                }
+                // The car's Sign in prompt is a session error kept on the media notification
+                // controller while there are no saved credentials (CarSignInPrompt). It must not
+                // key off the live connection: on a cold start the car binds before the
+                // connection is up, and a signed-in car would get the prompt.
+                onControllerConnected(session, controller)
             }
 
             override fun onCustomCommand(
@@ -228,6 +219,14 @@ class AndroidAutoBrowseController(
                 params: MediaLibraryService.LibraryParams?
             ): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> {
                 knownParentIds.add(parentId)
+                // Signed out, the car's tabs are empty, read from the flag rather than from the
+                // stores, which a sign out clears a moment after the browse tree is invalidated.
+                // The root keeps its static tabs: an error there poisons the media center's
+                // browse cache until its data is cleared.
+                if (parentId != ROOT && isSignedOut()) {
+                    Log.d(TAG, "onGetChildren($parentId): signed out, no items")
+                    return Futures.immediateFuture(LibraryResult.ofItemList(ImmutableList.of(), params))
+                }
                 // Android Auto asks for a whole list at once (pageSize = Int.MAX_VALUE), and the
                 // size goes to MA as the limit: a large library came back as one JSON message
                 // big enough to run the heap out (#78), and as more items than a binder
@@ -236,6 +235,9 @@ class AndroidAutoBrowseController(
                 return scope.future(Dispatchers.IO) {
                     try {
                         val items = children(parentId, page, effectivePageSize)
+                        if (net.asksakis.massdroidv2.BuildConfig.IS_AUTOMOTIVE) {
+                            Log.d(TAG, "onGetChildren($parentId): ${items.size} items")
+                        }
                         LibraryResult.ofItemList(ImmutableList.copyOf(items), params)
                     } catch (e: Exception) {
                         // Return an error, NOT an empty list: the AA host caches a
@@ -265,10 +267,15 @@ class AndroidAutoBrowseController(
                 query: String,
                 params: MediaLibraryService.LibraryParams?
             ): ListenableFuture<LibraryResult<Void>> {
+                if (isSignedOut()) {
+                    session.notifySearchResultChanged(browser, query, 0, params)
+                    return Futures.immediateFuture(LibraryResult.ofVoid())
+                }
                 scope.launch(Dispatchers.IO) {
                     try {
                         val result = musicRepository.search(query)
-                        cachedSearch = query to result
+                        // A search that started before a sign out must not refill the cache it cleared.
+                        if (!isSignedOut()) cachedSearch = query to result
                         val totalCount = result.artists.size + result.albums.size +
                             result.tracks.size + result.playlists.size
                         session.notifySearchResultChanged(browser, query, totalCount, params)
@@ -290,6 +297,7 @@ class AndroidAutoBrowseController(
                 pageSize: Int,
                 params: MediaLibraryService.LibraryParams?
             ): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> {
+                if (isSignedOut()) return Futures.immediateFuture(LibraryResult.ofItemList(ImmutableList.of(), params))
                 return scope.future(Dispatchers.IO) {
                     val cached = cachedSearch?.takeIf { it.first == query }?.second
                     val result = cached ?: runCatching { musicRepository.search(query) }
@@ -700,41 +708,6 @@ class AndroidAutoBrowseController(
     // Category icons: content:// PNG render on the car (the AAOS media center can't
     // decode a cross-package vector android.resource://), raw android.resource on phone/TV.
     private fun iconArtworkUri(iconResId: Int): android.net.Uri = carIconUri(context, iconResId)
-
-    // The AAOS sign-in affordance: a non-fatal SessionError whose resolution extras
-    // carry a "Sign in" label + a PendingIntent into the parked car sign-in screen.
-    // Targets CarSignInActivity by class name (it lives only in the automotive flavor
-    // source set, so the shared main source set must not compile-reference it); this
-    // method is only reached on the IS_AUTOMOTIVE branch. The exported activity can be
-    // started by this PendingIntent without a LAUNCHER filter, which is why the car
-    // build can drop its launcher icon.
-    private fun buildSignInError(): androidx.media3.session.SessionError {
-        val intent = Intent().apply {
-            setClassName(context, "net.asksakis.massdroidv2.ui.car.CarSignInActivity")
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-        }
-        val pendingIntent = android.app.PendingIntent.getActivity(
-            context,
-            0,
-            intent,
-            android.app.PendingIntent.FLAG_IMMUTABLE or android.app.PendingIntent.FLAG_UPDATE_CURRENT
-        )
-        val extras = Bundle().apply {
-            putString(
-                androidx.media3.session.MediaConstants.EXTRAS_KEY_ERROR_RESOLUTION_ACTION_LABEL_COMPAT,
-                "Sign in"
-            )
-            putParcelable(
-                androidx.media3.session.MediaConstants.EXTRAS_KEY_ERROR_RESOLUTION_ACTION_INTENT_COMPAT,
-                pendingIntent
-            )
-        }
-        return androidx.media3.session.SessionError(
-            androidx.media3.session.SessionError.ERROR_SESSION_AUTHENTICATION_EXPIRED,
-            "Sign in to Music Assistant",
-            extras
-        )
-    }
 
     private suspend fun loadArtists(page: Int, pageSize: Int): List<MediaItem> {
         return musicRepository.getArtists(limit = pageSize, offset = page * pageSize, orderBy = "name")

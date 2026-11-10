@@ -48,6 +48,8 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.QueueMusic
+import androidx.compose.material.icons.filled.Album
 import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.CloudSync
@@ -112,6 +114,7 @@ import net.asksakis.massdroidv2.presentation.discover.genrePalette
 import net.asksakis.massdroidv2.domain.recommendation.DiscoverSection
 import net.asksakis.massdroidv2.ui.components.formatAlbumTypeYear
 import net.asksakis.massdroidv2.ui.components.EqualizerBars
+import net.asksakis.massdroidv2.ui.components.MediaArtwork
 
 private val radioStartPhrases = listOf(
     "Tuning the airwaves...",
@@ -1133,18 +1136,16 @@ private fun AlbumCard(
                 onClick = onClick
             )
     ) {
-        AsyncImage(
+        MediaArtwork(
             model = rememberSizedImageModel(
                 album.imageUrl,
                 widthPx = with(density) { metrics.albumImage.roundToPx() }
             ),
             contentDescription = null,
+            fallbackIcon = Icons.Default.Album,
             modifier = Modifier
                 .fillMaxWidth()
                 .aspectRatio(1f)
-                .clip(MaterialTheme.shapes.medium)
-                .background(Color(0x1F888888), MaterialTheme.shapes.medium),
-            contentScale = ContentScale.Crop
         )
         Spacer(modifier = Modifier.height(CardTextGap))
         Text(
@@ -1201,18 +1202,18 @@ private fun PlaylistCard(
                 onClick = onClick
             )
     ) {
-        AsyncImage(
+        // A playlist without art (MA's own system playlists among them) gets the app's
+        // placeholder rather than an empty square.
+        MediaArtwork(
             model = rememberSizedImageModel(
                 playlist.imageUrl,
                 widthPx = with(density) { metrics.albumImage.roundToPx() }
             ),
             contentDescription = null,
+            fallbackIcon = Icons.AutoMirrored.Filled.QueueMusic,
             modifier = Modifier
                 .fillMaxWidth()
                 .aspectRatio(1f)
-                .clip(MaterialTheme.shapes.medium)
-                .background(Color(0x1F888888), MaterialTheme.shapes.medium),
-            contentScale = ContentScale.Crop
         )
         Spacer(modifier = Modifier.height(CardTextGap))
         Text(

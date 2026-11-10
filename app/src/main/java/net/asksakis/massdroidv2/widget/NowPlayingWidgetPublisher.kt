@@ -10,7 +10,6 @@ import javax.inject.Singleton
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import net.asksakis.massdroidv2.data.sendspin.SendspinManager
@@ -19,6 +18,7 @@ import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
 import net.asksakis.massdroidv2.domain.widget.NowPlayingWidgetSnapshot
+import net.asksakis.massdroidv2.domain.widget.settledWidgetChanges
 
 /**
  * Keeps the home screen widget in step with the selected player.
@@ -46,7 +46,12 @@ class NowPlayingWidgetPublisher @Inject constructor(
         val localPlayerId: String?,
         val localPausePending: Boolean,
         val localStreamActive: Boolean,
-    )
+    ) {
+        /** What the widget would show for these inputs; equal values draw the same card. */
+        fun shown(): NowPlayingWidgetSnapshot? = NowPlayingWidgetSnapshot.next(
+            NowPlayingWidgetSnapshot.Empty, player, connected, localPlayerId, localPausePending, localStreamActive,
+        )
+    }
 
     private var job: Job? = null
 
@@ -62,7 +67,7 @@ class NowPlayingWidgetPublisher @Inject constructor(
             ) { player, state, localPlayerId, localPausePending, localStreamActive ->
                 Inputs(player, state is ConnectionState.Connected, localPlayerId, localPausePending, localStreamActive)
             }
-                .distinctUntilChanged()
+                .settledWidgetChanges(shown = Inputs::shown)
                 .collect { publish(it) }
         }
     }

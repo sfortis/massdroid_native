@@ -22,6 +22,7 @@ import net.asksakis.massdroidv2.domain.repository.MusicRepository
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 import net.asksakis.massdroidv2.domain.repository.SEARCHABLE_MEDIA_TYPES
 import net.asksakis.massdroidv2.domain.repository.SearchResult
+import net.asksakis.massdroidv2.domain.repository.SearchScope
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -114,6 +115,19 @@ class MusicRepositoryImpl @Inject constructor(
          * and only pushes the failure further away from the listener.
          */
         private const val SEARCH_TIMEOUT_MS = 12_000L
+
+        /** The provider instance id of the server's own library. */
+        private const val LIBRARY_PROVIDER = "library"
+        private const val PROVIDERS_MIN_MINOR = 10
+
+        /**
+         * True from MA 2.10.0, which takes a `providers` list in a search. Older servers know
+         * only `library_only`, which 2.10 still accepts as a deprecated alias. A version that
+         * does not read as X.Y.Z, and the 0.0.0 of a dev build, count as older, as they do for
+         * the Sendspin transport.
+         */
+        internal fun searchesByProvider(serverVersion: String?): Boolean =
+            isServerVersionAtLeast(serverVersion, 2, PROVIDERS_MIN_MINOR)
     }
     private val librarySyncMutex = Mutex()
     private var lastLibrarySyncAtMs = 0L
@@ -394,13 +408,22 @@ class MusicRepositoryImpl @Inject constructor(
     override fun playlistSortRules(): PlaylistSortRules =
         playlistSortRulesFor(wsClient.serverSchemaVersion(), wsClient.serverVersion())
 
-    override suspend fun search(query: String, mediaTypes: List<MediaType>?, limit: Int): SearchResult {
+    override suspend fun search(
+        query: String,
+        mediaTypes: List<MediaType>?,
+        limit: Int,
+        scope: SearchScope
+    ): SearchResult {
+        val libraryOnly = scope == SearchScope.LIBRARY
+        val byProvider = libraryOnly && searchesByProvider(wsClient.serverVersion())
         val result = wsClient.sendCommand(
             MaCommands.Music.SEARCH,
             SearchArgs(
                 query = query,
                 limit = limit,
-                mediaTypes = (mediaTypes ?: SEARCHABLE_MEDIA_TYPES).map { it.apiValue }
+                mediaTypes = (mediaTypes ?: SEARCHABLE_MEDIA_TYPES).map { it.apiValue },
+                providers = if (byProvider) listOf(LIBRARY_PROVIDER) else null,
+                libraryOnly = libraryOnly && !byProvider
             ),
             timeoutMs = SEARCH_TIMEOUT_MS,
             retryAfterTimeout = false

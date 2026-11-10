@@ -79,8 +79,8 @@ android {
         applicationId = "net.asksakis.massdroidv2"
         minSdk = 26
         targetSdk = 36
-        versionCode = 48
-        versionName = "2.42.0"
+        versionCode = 49
+        versionName = "2.43.0"
 
         // Only the ABIs :core builds its native code for. Without this filter, AndroidX libraries
         // add a lib/x86 folder without our native libraries, so the app would install on an x86
@@ -305,8 +305,8 @@ dependencies {
     implementation("com.google.zxing:core:3.5.4")
 
     // Media3
-    implementation("androidx.media3:media3-session:1.7.1")
-    implementation("androidx.media3:media3-exoplayer:1.7.1")
+    implementation("androidx.media3:media3-session:1.8.1")
+    implementation("androidx.media3:media3-exoplayer:1.8.1")
     implementation("androidx.media:media:1.7.1")
 
     // DataStore for settings

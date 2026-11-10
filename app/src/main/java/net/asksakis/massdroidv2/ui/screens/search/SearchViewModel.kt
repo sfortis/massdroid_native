@@ -12,6 +12,7 @@ import net.asksakis.massdroidv2.domain.model.MediaType
 import net.asksakis.massdroidv2.domain.model.Track
 import net.asksakis.massdroidv2.domain.repository.MusicRepository
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
+import net.asksakis.massdroidv2.domain.repository.SearchScope
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
 import net.asksakis.massdroidv2.domain.search.SearchSession
 import net.asksakis.massdroidv2.domain.search.SearchSessionController
@@ -80,6 +81,9 @@ class SearchViewModel @Inject constructor(
     fun searchAgain(query: String) = searchSession.searchAgain(query)
 
     fun deepenSearch(mediaType: MediaType) = searchSession.deepen(mediaType)
+
+    /** The Library chip: search the library alone, or everywhere again. Not remembered across visits. */
+    fun setSearchScope(scope: SearchScope) = searchSession.setScope(scope)
 
     fun removeRecentSearch(query: String) {
         viewModelScope.launch { settingsRepository.removeRecentSearch(query) }
