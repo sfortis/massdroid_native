@@ -78,14 +78,6 @@ class ImageUrlResolver @Inject constructor(
         // the placeholder every other pictureless artist gets. Treated as no
         // image so the caller can fall back to something real.
         if (p.contains(EMPTY_CONTENT_HASH)) return null
-        // MA's default art for its own playlists (Infinite Mix and the other system playlists):
-        // the Music Assistant logo and a generic fanart. Drawn as a cover the logo fills the whole
-        // tile, and MA's own migration 61 strips both, so they count as no image and the caller
-        // shows its usual placeholder. Newer MA gives these playlists real covers under other
-        // paths, which still resolve. An image the server sends without a provider is read as
-        // builtin, so another provider's image named exactly like these would be dropped too;
-        // no provider is known to send one.
-        if (image.imageProvider == BUILTIN_PROVIDER && p in MA_DEFAULT_ART_PATHS) return null
         // (1) proxy_id: the canonical MA 2.9+ route on our own (external) server URL. The server
         // resolves the real path internally (SSRF-safe) and it is the ONLY way LAN/local provider
         // art (Jellyfin, filesystem, Plex, subsonic cover_art) loads on 2.9+. Best whenever present.
@@ -188,12 +180,6 @@ class ImageUrlResolver @Inject constructor(
         const val DEFAULT_SIZE = 512
         /** md5(""), which a provider uses as the path of "no image here". */
         const val EMPTY_CONTENT_HASH = "d41d8cd98f00b204e9800998ecf8427e"
-        /**
-         * MA's default playlist art in the builtin provider: DEFAULT_THUMB (the logo) and
-         * DEFAULT_FANART, plus the other name MA resolves to that same fanart.
-         */
-        val MA_DEFAULT_ART_PATHS = setOf("logo.png", "fanart.jpg", "fallback_fanart.jpeg")
-        const val BUILTIN_PROVIDER = "builtin"
         const val IMAGEPROXY_SEGMENT = "/imageproxy"
         // MA API schema at/after which the proxy_id imageproxy route exists and the legacy
         // path route rejects private/non-http paths (the MA 2.9 line).
