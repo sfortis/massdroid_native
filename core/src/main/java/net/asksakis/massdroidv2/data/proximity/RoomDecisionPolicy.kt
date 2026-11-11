@@ -18,7 +18,8 @@ internal object RoomDecisionPolicy {
         candidateWinCount: Int,
         thresholds: ConfirmThresholds
     ): DetectResult {
-        if (winner.expectedPrimaryLocalAnchors > 0 && winner.matchedPrimaryLocalAnchors == 0) {
+        val soleCandidate = isSoleCandidate(winner, runnerUpPresent)
+        if (!soleCandidate && winner.expectedPrimaryLocalAnchors > 0 && winner.matchedPrimaryLocalAnchors == 0) {
             return DetectResult.Borderline(
                 winner = winnerDetected,
                 confidence = confidence,
@@ -36,7 +37,9 @@ internal object RoomDecisionPolicy {
                     reason = "insufficient-anchor-evidence"
                 )
             }
-            if (winner.matchedPrimaryLocalAnchors < winner.minimumPrimaryLocalMatchesForStartupConfirm()) {
+            if (!soleCandidate &&
+                winner.matchedPrimaryLocalAnchors < winner.minimumPrimaryLocalMatchesForStartupConfirm()
+            ) {
                 return DetectResult.Borderline(
                     winner = winnerDetected,
                     confidence = confidence,
@@ -82,6 +85,25 @@ internal object RoomDecisionPolicy {
     }
 
     fun isStrongFit(fit: RoomFit): Boolean = fit.matchesStrongFitCriteria()
+
+    /**
+     * Whether the winner is the only room the scan can be, so its signature anchor is not
+     * required.
+     *
+     * The signature-anchor gate stops a room from being confirmed from a neighbouring space
+     * that hears its shared anchors. That neighbour is normally another configured room, and
+     * then it shows up as a runner-up. With no runner-up, at least half the winner's anchors
+     * matched (the startup minimum), and their levels within the strong-fit delta, the scan
+     * looks like the room itself. A room far from home (an office with one configured room)
+     * was otherwise never confirmed whenever its one signature anchor, a battery
+     * thermometer, did not advertise: on 2026-11-11 the office won 195 fits in a row with
+     * confidence 1.00 and 4 to 6 of 8 anchors, and every one was held back.
+     */
+    fun isSoleCandidate(fit: RoomFit, runnerUpPresent: Boolean): Boolean {
+        if (runnerUpPresent) return false
+        if (fit.matchedAnchors < fit.minimumMatchedAnchorsForStartupConfirm()) return false
+        return fit.avgDelta.isFinite() && fit.avgDelta <= STRONG_FIT_MAX_AVG_DELTA_DBM
+    }
 
     private fun RoomFit.matchesStrongFitCriteria(): Boolean {
         if (expectedAnchors < STRONG_FIT_MIN_EXPECTED_ANCHORS) return false

@@ -252,6 +252,11 @@ class RoomDetector @Inject constructor() {
                     "(${formatStrongFitSummary(winner)})"
             )
         }
+        if (winner.matchedPrimaryLocalAnchors < winner.expectedPrimaryLocalAnchors &&
+            RoomDecisionPolicy.isSoleCandidate(winner, runnerUpPresent = runnerUp != null)
+        ) {
+            Log.d(TAG, "Fit: ${winnerRoom.name} is the only candidate, signature anchor not required")
+        }
         val decision = RoomDecisionPolicy.evaluate(
             winnerRoom = winnerRoom,
             winner = winner,
