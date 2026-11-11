@@ -252,19 +252,20 @@ class RoomDetector @Inject constructor() {
                     "(${formatStrongFitSummary(winner)})"
             )
         }
-        if (winner.matchedPrimaryLocalAnchors < winner.expectedPrimaryLocalAnchors &&
-            RoomDecisionPolicy.isSoleCandidate(winner, runnerUpPresent = runnerUp != null)
-        ) {
+        val otherRooms = RoomDecisionPolicy.otherRoomsHeard(winnerId, scanResults.keys, roomPrimaryBleAnchors)
+        val startupDetection = _currentRoom.value == null
+        if (RoomDecisionPolicy.soleCandidateWaivesSignatureGate(winner, runnerUp != null, otherRooms, startupDetection)) {
             Log.d(TAG, "Fit: ${winnerRoom.name} is the only candidate, signature anchor not required")
         }
         val decision = RoomDecisionPolicy.evaluate(
             winnerRoom = winnerRoom,
             winner = winner,
             runnerUpPresent = runnerUp != null,
+            otherRooms = otherRooms,
             winnerDetected = winnerDetected,
             confidence = confidence,
             margin = margin,
-            startupDetection = _currentRoom.value == null,
+            startupDetection = startupDetection,
             motionActive = motionActive,
             candidateWinCount = candidateWinCount,
             thresholds = winnerRoom.confirmThresholds()
