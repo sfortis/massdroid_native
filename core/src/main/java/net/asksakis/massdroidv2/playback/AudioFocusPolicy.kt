@@ -1,6 +1,7 @@
 package net.asksakis.massdroidv2.playback
 
 import net.asksakis.massdroidv2.domain.model.PlaybackState
+import net.asksakis.massdroidv2.domain.repository.PlaybackIntentCause
 
 /**
  * The decisions behind starting the phone's own audio output, separated from the
@@ -334,6 +335,27 @@ object AudioFocusPolicy {
         !grouped -> InterruptionHold.PAUSE
         callModeSet -> InterruptionHold.FREEZE
         else -> InterruptionHold.FREEZE_AND_CHECK_FOR_CALL
+    }
+
+    /**
+     * Whether a pause cancels the resume owed to an interruption.
+     *
+     * A pause the listener makes during an interruption means "stay stopped". A pause
+     * from an external controller that arrives while the interruption still holds the
+     * focus does not. The output is already paused, so the pause changes nothing the
+     * listener can hear. Car head units send exactly this pause when a voice assistant
+     * starts, and a MINI (through AAIdrive) sent it 360 ms after our own focus pause and
+     * never sent play again, which left the music stopped after the assistant closed.
+     * Once the focus is back, an external pause is a decision again.
+     */
+    fun pauseIsListenerDecision(
+        cause: PlaybackIntentCause,
+        owed: OwedResume?,
+        holdsFocus: Boolean,
+    ): Boolean = when (cause) {
+        PlaybackIntentCause.LISTENER -> true
+        PlaybackIntentCause.EXTERNAL_CONTROL -> holdsFocus || owed != OwedResume.INTERRUPTION
+        PlaybackIntentCause.AUDIO_FOCUS, PlaybackIntentCause.REPEAT -> false
     }
 
     fun selectionCancelsOwedResume(newSelectedPlayerId: String?, localPlayerId: String?): Boolean =

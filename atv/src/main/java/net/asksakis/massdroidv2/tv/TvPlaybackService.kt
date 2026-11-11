@@ -26,6 +26,7 @@ import kotlinx.coroutines.launch
 import net.asksakis.massdroidv2.data.sendspin.SendspinManager
 import net.asksakis.massdroidv2.data.sendspin.SendspinVolumeCoordinator
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
+import net.asksakis.massdroidv2.domain.repository.PlaybackIntentCause
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
 import net.asksakis.massdroidv2.domain.shortcut.ShortcutActionDispatcher
@@ -74,7 +75,10 @@ class TvPlaybackService : Service() {
 
     private val mediaCallback = object : MediaSessionCompat.Callback() {
         override fun onPlay() { logCommand("play"); coordinator.controller?.handlePlay() }
-        override fun onPause() { logCommand("pause"); coordinator.controller?.handlePause() }
+        override fun onPause() {
+            logCommand("pause")
+            coordinator.controller?.handlePause(PlaybackIntentCause.EXTERNAL_CONTROL)
+        }
         override fun onSkipToNext() { logCommand("next"); coordinator.controller?.handleNext() }
         override fun onSkipToPrevious() { logCommand("previous"); coordinator.controller?.handlePrev() }
         override fun onSeekTo(pos: Long) { logCommand("seek to ${pos}ms"); coordinator.controller?.handleSeek(pos) }

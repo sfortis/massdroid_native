@@ -36,6 +36,7 @@ import net.asksakis.massdroidv2.domain.model.Playlist
 import net.asksakis.massdroidv2.domain.model.Track
 import net.asksakis.massdroidv2.domain.recommendation.DiscoverSection
 import net.asksakis.massdroidv2.domain.repository.MusicRepository
+import net.asksakis.massdroidv2.domain.repository.PlaybackIntentCause
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 import net.asksakis.massdroidv2.domain.repository.SearchResult
 import net.asksakis.massdroidv2.domain.shortcut.ShortcutAction
@@ -174,7 +175,7 @@ class AndroidAutoBrowseController(
 
                 when (keyEvent.keyCode) {
                     KeyEvent.KEYCODE_MEDIA_PLAY -> ctrl.handlePlay()
-                    KeyEvent.KEYCODE_MEDIA_PAUSE -> ctrl.handlePause()
+                    KeyEvent.KEYCODE_MEDIA_PAUSE -> ctrl.handlePause(PlaybackIntentCause.EXTERNAL_CONTROL)
                     KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, KeyEvent.KEYCODE_HEADSETHOOK -> ctrl.handlePlayPause()
                     KeyEvent.KEYCODE_MEDIA_NEXT -> ctrl.handleNext()
                     KeyEvent.KEYCODE_MEDIA_PREVIOUS -> ctrl.handlePrev()

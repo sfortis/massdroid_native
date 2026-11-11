@@ -36,6 +36,7 @@ import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
 import net.asksakis.massdroidv2.domain.model.MediaType
 import net.asksakis.massdroidv2.domain.model.PlaybackState
 import net.asksakis.massdroidv2.domain.repository.MusicRepository
+import net.asksakis.massdroidv2.domain.repository.PlaybackIntentCause
 import net.asksakis.massdroidv2.domain.repository.PlaybackPosition
 import net.asksakis.massdroidv2.domain.repository.PlayerSelectionLock
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
@@ -345,11 +346,12 @@ class AndroidAutoController(
                 }
             },
             onPause = {
+                val cause = sessionPauseCause()
                 if (routeToSendspin()) {
-                    sendspinController()?.handlePause()
+                    sendspinController()?.handlePause(cause)
                 } else {
                     val id = activePlayerId() ?: return@RemoteControlPlayer
-                    transport("pause") { playerRepository.pause(id) }
+                    transport("pause") { playerRepository.pause(id, cause) }
                 }
             },
             onNext = { dispatchTransport(TransportCommand.NEXT) },
@@ -375,6 +377,18 @@ class AndroidAutoController(
             onVolumeSet = { volume -> noteVolume(volumeKeyController.setLevel(volume)) },
             commandSource = ::currentCommandSource,
         )
+    }
+
+    /**
+     * The cause a session pause carries. The app's own media notification is the
+     * listener; every other controller (a car head unit, a watch) is external, and its
+     * pause during an interruption keeps the resume owed to it, see
+     * [net.asksakis.massdroidv2.playback.AudioFocusPolicy.pauseIsListenerDecision].
+     */
+    private fun sessionPauseCause(): PlaybackIntentCause {
+        val controller = session?.controllerForCurrentRequest
+        val fromNotification = controller != null && session?.isMediaNotificationController(controller) == true
+        return if (fromNotification) PlaybackIntentCause.LISTENER else PlaybackIntentCause.EXTERNAL_CONTROL
     }
 
     /**
