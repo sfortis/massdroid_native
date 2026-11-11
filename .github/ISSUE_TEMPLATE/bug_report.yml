@@ -1,0 +1,86 @@
+name: Bug report
+description: Something in MassDroid does not work as expected.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The version, the device and a log make most problems possible to find.
+  - type: input
+    id: app-version
+    attributes:
+      label: App version
+      description: Settings > Diagnostics shows it.
+      placeholder: 2.43.0
+    validations:
+      required: true
+  - type: dropdown
+    id: installed-from
+    attributes:
+      label: Installed from
+      options:
+        - GitHub release
+        - F-Droid
+        - Google Play
+        - GitHub dev build
+    validations:
+      required: true
+  - type: dropdown
+    id: where
+    attributes:
+      label: Where it happens
+      multiple: true
+      options:
+        - Phone
+        - Android TV
+        - Android Auto
+        - Android Automotive (car)
+    validations:
+      required: true
+  - type: input
+    id: device
+    attributes:
+      label: Device and Android version
+      placeholder: Pixel 8, Android 16
+    validations:
+      required: true
+  - type: input
+    id: server-version
+    attributes:
+      label: Music Assistant server version
+      description: Settings > Diagnostics shows it while the app is connected.
+      placeholder: 2.10.8
+    validations:
+      required: true
+  - type: input
+    id: providers
+    attributes:
+      label: Music providers in use
+      placeholder: Spotify, local files
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you saw, and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open ...
+        2. Tap ...
+        3. See ...
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: >-
+        On the phone, turn on Settings > Diagnostics > Keep a log, reproduce the problem,
+        then tap Share logs on the same screen and attach the zip here.
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: Screenshots
+      description: Drag images or a screen recording here.

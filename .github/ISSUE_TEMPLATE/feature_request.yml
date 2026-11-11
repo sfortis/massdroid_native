@@ -1,0 +1,24 @@
+name: Feature request
+description: Suggest something new or a change to how MassDroid works.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: request
+    attributes:
+      label: What would you like
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why, or what problem it solves
+  - type: dropdown
+    id: where
+    attributes:
+      label: Where
+      multiple: true
+      options:
+        - Phone
+        - Android TV
+        - Android Auto
+        - Android Automotive (car)
