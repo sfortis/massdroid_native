@@ -324,7 +324,7 @@ class MusicBrainzGenreResolverTest {
     fun `the answer says what identified the artist`() = runBlocking<Unit> {
         coEvery { dao.getMusicBrainzTags(any()) } returns null
         val genres = """{"genres":[{"name":"ambient","count":1}]}"""
-        val byMbid = resolverWith(mutableListOf()) { 200 to genres }.recheck("k", "Aes Dana", mbid = "m", trackHint = null)
+        val byMbid = resolverWith(mutableListOf()) { 200 to genres }.recheck("k", "Aes Dana", mbid = "ed5cd4a2-0eb1-4e3b-a9b5-73547a6447da", trackHint = null)
         val recording = """{"recordings":[{"score":100,"artist-credit":[{"artist":{"id":"r","name":"AES Dana"}}]}]}"""
         val byRecording = resolverWith(mutableListOf()) { url -> 200 to (if ("inc=genres" in url) genres else recording) }
             .recheck("k", "Aes Dana", mbid = null, trackHint = "Snöflinga")
@@ -360,5 +360,32 @@ class MusicBrainzGenreResolverTest {
 
         assertThat(resolver.stillWorthAsking(listOf(withTrack))).containsExactly(withTrack)
         assertThat(resolver.stillWorthAsking(listOf(withoutTrack))).isEmpty()
+    }
+
+    /**
+     * The id Music Assistant reports goes into a musicbrainz.org URL path. A value that is
+     * not a UUID would call another endpoint, so it is ignored and the name decides.
+     */
+    @Test
+    fun `an id that is not a MusicBrainz id never reaches a URL`() = runBlocking<Unit> {
+        coEvery { dao.getMusicBrainzTags(any()) } returns null
+        val urls = mutableListOf<String>()
+        val search = """{"artists":[{"id":"44444444-4444-4444-4444-444444444444","name":"Wild","score":100}]}"""
+        val resolver = resolverWith(urls) { url -> 200 to (if ("inc=genres" in url) """{"genres":[]}""" else search) }
+
+        val answer = resolver.resolveDetailed("Wild", mbid = "../recording/x?query=y")
+
+        assertThat(urls.none { "recording/x" in it || "query=y" in it }).isTrue()
+        assertThat(urls.first()).contains("artist?query=")
+        assertThat(answer.evidence).isEqualTo(IdentityEvidence.NAME)
+    }
+
+    @Test
+    fun `only the UUID form is taken as a MusicBrainz id`() {
+        assertThat(validMbidOrNull(" 49A5F5B9-44F3-4DB2-A9A8-DB8773DE4EDC ")).isEqualTo("49a5f5b9-44f3-4db2-a9a8-db8773de4edc")
+        assertThat(validMbidOrNull("../recording/49a5f5b9-44f3-4db2-a9a8-db8773de4edc")).isNull()
+        assertThat(validMbidOrNull("49a5f5b9-44f3-4db2-a9a8-db8773de4edc?inc=x")).isNull()
+        assertThat(validMbidOrNull("")).isNull()
+        assertThat(validMbidOrNull(null)).isNull()
     }
 }

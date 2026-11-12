@@ -13,6 +13,7 @@ import net.asksakis.massdroidv2.data.database.TransactionRunner
 import net.asksakis.massdroidv2.data.musicbrainz.GenreOutcome
 import net.asksakis.massdroidv2.data.musicbrainz.GenreResolution
 import net.asksakis.massdroidv2.data.musicbrainz.IdentityEvidence
+import net.asksakis.massdroidv2.data.musicbrainz.MBID_FORM
 import net.asksakis.massdroidv2.data.musicbrainz.MusicBrainzGenreResolver
 import net.asksakis.massdroidv2.domain.recommendation.genreKey
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
@@ -122,7 +123,7 @@ class NamesakeGenreRepair @Inject constructor(
     }
 
     private suspend fun repair(row: MusicBrainzArtistTagsEntity): Repair {
-        val idKeyed = MBID_KEY.matches(row.artistName)
+        val idKeyed = MBID_FORM.matches(row.artistName)
         val artists = artistsOf(row.artistName, idKeyed)
         val uris = artists.map { it.uri }
         val knownMbid = if (idKeyed) row.artistName else artists.firstNotNullOfOrNull { it.mbid?.takeIf(String::isNotBlank) }
@@ -234,8 +235,6 @@ class NamesakeGenreRepair @Inject constructor(
 
         /** Runs in a row without an answer for one row before the repair moves past it. */
         const val MAX_ROW_FAILURES = 3
-
-        val MBID_KEY = Regex("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
     }
 }
 

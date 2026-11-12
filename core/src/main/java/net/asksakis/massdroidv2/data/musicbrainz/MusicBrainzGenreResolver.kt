@@ -272,7 +272,7 @@ class MusicBrainzGenreResolver @Inject constructor(
      * Missing is returned only when every step that ran actually answered.
      */
     private suspend fun identify(artistName: String, mbid: String?, trackHint: String?): Lookup<Identified> {
-        mbid?.trim()?.takeIf { it.isNotEmpty() }?.let { return Lookup.Found(Identified(it, IdentityEvidence.MBID)) }
+        validMbidOrNull(mbid)?.let { return Lookup.Found(Identified(it, IdentityEvidence.MBID)) }
         val byRecording = trackHint?.takeIf { it.isNotBlank() }
             ?.let { findMbidByRecording(artistName, it) }
             ?: Lookup.Missing
@@ -597,6 +597,18 @@ enum class IdentityEvidence {
 
 /** One result of a MusicBrainz artist search. */
 internal data class MbArtistCandidate(val id: String, val name: String, val score: Int)
+
+/** The form of a MusicBrainz id: a lowercase UUID. */
+internal val MBID_FORM = Regex("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+
+/**
+ * [value] as a MusicBrainz id when it has that form, else null. An id Music Assistant
+ * reports goes into a musicbrainz.org URL path, so a value like "../recording/x" or
+ * "x?query=y" from a misconfigured or hostile server would call another endpoint and
+ * store whatever came back as genres or a bio. Such a value is ignored, and the lookup
+ * goes on as if no id were known.
+ */
+internal fun validMbidOrNull(value: String?): String? = value?.trim()?.lowercase()?.takeIf { MBID_FORM.matches(it) }
 
 /**
  * How far the best of several candidates carrying the same name must lead the next

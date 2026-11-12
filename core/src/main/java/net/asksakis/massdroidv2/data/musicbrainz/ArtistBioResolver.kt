@@ -50,7 +50,8 @@ class ArtistBioResolver @Inject constructor(
         if (key.isEmpty()) return null
         cached(key)?.let { return it.ifEmpty { null } }
         return withContext(Dispatchers.IO) {
-            val resolvedMbid = mbid?.takeIf { it.isNotBlank() }
+            // The id comes from Music Assistant and goes into a URL path; see validMbidOrNull.
+            val resolvedMbid = validMbidOrNull(mbid)
                 ?: genreResolver.findMbidForBio(artistName)
                 ?: run { store(key, "") ; return@withContext null }
             val bio = describe(resolvedMbid).orEmpty()
