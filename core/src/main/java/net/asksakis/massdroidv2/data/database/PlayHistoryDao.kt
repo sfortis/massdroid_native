@@ -595,6 +595,73 @@ interface PlayHistoryDao {
     suspend fun deleteMusicBrainzTags(keys: List<String>)
 
     /**
+     * Name-keyed MusicBrainz answers with genres, for artists credited on a track
+     * played since [since]. Their identity came from a name search and is
+     * re-checked once (see LibraryGenreEnricher.repairNamesakeGenres). The played
+     * names are collected once, for the same reason as
+     * [getNameResolvedArtistsWithRecording].
+     */
+    @Query("""
+        SELECT * FROM musicbrainz_artist_tags m
+        WHERE m.artist_name NOT LIKE '________-____-____-____-____________'
+          AND m.tags != ''
+          AND m.artist_name IN (
+              SELECT DISTINCT lower(a.name) FROM play_history p
+              JOIN track_artists ta ON ta.track_uri = p.track_uri
+              JOIN artists a ON a.uri = ta.artist_uri
+              WHERE p.played_at >= :since
+          )
+    """)
+    suspend fun getPlayedNameResolvedTags(since: Long): List<MusicBrainzArtistTagsEntity>
+
+    /**
+     * MBID-keyed answers that describe a different MusicBrainz artist than the key.
+     * The resolver used to search by name even when it knew the id, so a library
+     * artist could be stored under its own id with a namesake's genres.
+     */
+    @Query("""
+        SELECT * FROM musicbrainz_artist_tags
+        WHERE artist_name LIKE '________-____-____-____-____________'
+          AND mbid != '' AND mbid != artist_name AND tags != ''
+    """)
+    suspend fun getMismatchedIdTags(): List<MusicBrainzArtistTagsEntity>
+
+    @Query("SELECT * FROM artists WHERE lower(name) = :lowercaseName")
+    suspend fun getArtistsByLowercaseName(lowercaseName: String): List<ArtistEntity>
+
+    @Query("SELECT * FROM artists WHERE mbid = :mbid")
+    suspend fun getArtistsByMbid(mbid: String): List<ArtistEntity>
+
+    /** The name of one track credited to any of [artistUris], to identify the artist by a recording. */
+    @Query("""
+        SELECT t.name FROM tracks t
+        JOIN track_artists ta ON ta.track_uri = t.uri
+        WHERE ta.artist_uri IN (:artistUris) AND t.name != ''
+        LIMIT 1
+    """)
+    suspend fun getSampleTrackName(artistUris: List<String>): String?
+
+    /** Every artist credited on a track that any of [artistUris] is credited on, themselves included. */
+    @Query("""
+        SELECT DISTINCT a.* FROM artists a
+        JOIN track_artists co ON co.artist_uri = a.uri
+        WHERE co.track_uri IN (SELECT track_uri FROM track_artists WHERE artist_uri IN (:artistUris))
+    """)
+    suspend fun getCoCreditedArtists(artistUris: List<String>): List<ArtistEntity>
+
+    @Query("DELETE FROM artist_genres WHERE artist_uri = :artistUri AND genre_name IN (:genreNames)")
+    suspend fun deleteArtistGenresNamed(artistUri: String, genreNames: List<String>)
+
+    @Query("""
+        DELETE FROM track_genres WHERE genre_name IN (:genreNames)
+          AND track_uri IN (SELECT track_uri FROM track_artists WHERE artist_uri IN (:artistUris))
+    """)
+    suspend fun deleteTrackGenresOfArtists(artistUris: List<String>, genreNames: List<String>)
+
+    @Query("SELECT track_uri FROM track_artists WHERE artist_uri IN (:artistUris)")
+    suspend fun getTrackUrisOfArtists(artistUris: List<String>): List<String>
+
+    /**
      * Drops the genres of every uri sharing this (lowercased) name, so a re-resolve
      * REPLACES them. Without this the insert-ignore write would merge the old wrong
      * tags with the new right ones and leave the artist described as both.

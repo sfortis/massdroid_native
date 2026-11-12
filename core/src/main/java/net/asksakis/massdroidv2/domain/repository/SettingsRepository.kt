@@ -36,6 +36,16 @@ interface SettingsRepository : TrustedServerStore {
      */
     val musicBrainzIdentityRevision: Flow<Int>
     suspend fun setMusicBrainzIdentityRevision(revision: Int)
+    /** The last cache key the namesake genre repair finished, so a stopped run resumes after it. */
+    val musicBrainzRepairCursor: Flow<String>
+    suspend fun setMusicBrainzRepairCursor(cacheKey: String)
+    /** Runs in a row that ended without an answer at [musicBrainzRepairFailedRow]. */
+    val musicBrainzRepairFailures: Flow<Int>
+    suspend fun setMusicBrainzRepairFailures(count: Int)
+
+    /** The cache key of the row [musicBrainzRepairFailures] counts. */
+    val musicBrainzRepairFailedRow: Flow<String>
+    suspend fun setMusicBrainzRepairFailedRow(cacheKey: String)
 
     /**
      * The highest version code whose new features have already been shown. Zero on a fresh

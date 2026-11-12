@@ -39,7 +39,8 @@ class LibraryGenreEnricher @Inject constructor(
     private val musicRepository: net.asksakis.massdroidv2.domain.repository.MusicRepository,
     private val transactions: TransactionRunner,
     private val genreSpellings: GenreSpellingResolver,
-    private val wsClient: MaWebSocketClient
+    private val wsClient: MaWebSocketClient,
+    private val namesakeGenreRepair: NamesakeGenreRepair
 ) {
     data class EnrichmentProgress(
         val total: Int = 0,
@@ -71,6 +72,10 @@ class LibraryGenreEnricher @Inject constructor(
     // processQueue. The MusicBrainz rate limiter still serialises the actual
     // requests, so running both costs no extra traffic.
     private var discoveryJob: Job? = null
+    // Also separate: the namesake repair has to run once on every install, and the
+    // full run below is skipped whenever a page's enrichInBackground holds enrichJob,
+    // which is the usual case right after the app opens.
+    private var repairJob: Job? = null
     private val enrichedNames: MutableSet<String> = ConcurrentHashMap.newKeySet()
     private val pendingQueue = ConcurrentLinkedQueue<Artist>()
     private val _progress = MutableStateFlow(EnrichmentProgress())
@@ -164,6 +169,7 @@ class LibraryGenreEnricher @Inject constructor(
      */
     @Suppress("TooGenericExceptionCaught")
     fun enrichAllUnenriched(serverId: String) {
+        scheduleNamesakeRepair()
         if (enrichJob?.isActive == true) {
             // A UI-driven enrichInBackground holds enrichJob, and that path never
             // schedules the discovery sweep. Returning outright here skipped
@@ -187,7 +193,7 @@ class LibraryGenreEnricher @Inject constructor(
                 // Keyed by name AND id: the same artist legitimately appears under
                 // several uris, so two gap rows can share a name, and keying on the
                 // name alone silently kept only the last of them.
-                val byRef = allGaps.associateBy { MusicBrainzGenreResolver.ArtistRef(it.name, it.mbid) }
+                val byRef = allGaps.associateBy { MusicBrainzGenreResolver.ArtistRef(it.name, it.mbid, it.sampleTrack) }
                 val gaps = musicBrainzGenreResolver
                     .stillWorthAsking(byRef.keys)
                     .mapNotNull { byRef[it] }
@@ -294,6 +300,19 @@ class LibraryGenreEnricher @Inject constructor(
             throw e
         } catch (e: Exception) {
             Log.w(TAG, "Identity re-check failed: ${e.message}")
+        }
+    }
+
+    /**
+     * The recording re-check runs first because the repair stores the revision after
+     * it; both are no-ops once done, and running the re-check here as well as in the
+     * full run only repeats an idempotent delete.
+     */
+    private fun scheduleNamesakeRepair() {
+        if (repairJob?.isActive == true) return
+        repairJob = scope.launch {
+            revalidateNameResolvedIdentities()
+            namesakeGenreRepair.runIfDue()
         }
     }
 

@@ -57,7 +57,9 @@ class StaleQueueFetchTest {
             playHistoryRepository = mockk<PlayHistoryRepository>(relaxed = true),
             settingsRepository = settings,
             smartListeningRepository = smartListening,
-            musicBrainzGenreResolver = mockk(relaxed = true),
+            musicBrainzGenreResolver = mockk(relaxed = true) {
+                every { identityChanges } returns kotlinx.coroutines.flow.MutableSharedFlow()
+            },
             sessionEventBus = eventBus,
             queueItemsCoordinator = mockk(relaxed = true),
         )

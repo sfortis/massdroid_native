@@ -303,6 +303,11 @@ class PlayerRepositoryImpl @Inject constructor(
             sessionEventBus.resets.collect { resetForAccountSwitch() }
         }
         scope.launch {
+            // A cached MusicBrainz answer turned out to name another artist: genres read
+            // from it this session would write it straight back into the next play.
+            musicBrainzGenreResolver.identityChanges.collect { artistGenreCache.clear() }
+        }
+        scope.launch {
             settingsRepository.smartListeningEnabled.collect { enabled ->
                 smartListeningEnabledSnapshot = enabled
             }
@@ -812,7 +817,7 @@ class PlayerRepositoryImpl @Inject constructor(
                 ?: emptyList()
             Log.d(TAG, "Uncached artists for genre fetch: ${uncachedArtists.size}")
             if (uncachedArtists.isNotEmpty()) {
-                scope.launch { fetchAndApplyGenres(uncachedArtists, queueId, trackUri) }
+                scope.launch { fetchAndApplyGenres(uncachedArtists, queueId, trackUri, track.name) }
             }
         }
     }
@@ -820,11 +825,13 @@ class PlayerRepositoryImpl @Inject constructor(
     /**
      * MusicBrainz genres for an artist name, resolving live when they are not
      * cached yet. Safe to call live ONLY from the background scope: the resolver
-     * is rate-limited to one request per second.
+     * is rate-limited to one request per second. [trackName] is a recording of
+     * this artist, which tells it apart from a namesake: "Aes Dana" alone found a
+     * black metal band, while the ambient project's own recording finds it.
      */
-    private suspend fun musicBrainzGenres(name: String): List<String> =
+    private suspend fun musicBrainzGenres(name: String, trackName: String?): List<String> =
         try {
-            musicBrainzGenreResolver.resolve(name)
+            musicBrainzGenreResolver.resolve(name, trackHint = trackName)
         } catch (e: Exception) {
             Log.w(TAG, "MusicBrainz lookup failed for '$name': ${e.message}")
             emptyList()
@@ -840,7 +847,7 @@ class PlayerRepositoryImpl @Inject constructor(
         // costs nothing - a track lasts minutes, this needs a second.
         val resolved = LinkedHashSet<String>()
         artists.forEach { (_, name) ->
-            val tags = musicBrainzGenres(name)
+            val tags = musicBrainzGenres(name, track.name)
             if (tags.isNotEmpty()) {
                 Log.d(TAG, "History genres from MusicBrainz '$name': $tags")
                 resolved.addAll(tags)
@@ -1170,13 +1177,14 @@ class PlayerRepositoryImpl @Inject constructor(
     private suspend fun fetchAndApplyGenres(
         artists: List<ServerMediaItem>,
         queueId: String,
-        trackUri: String
+        trackUri: String,
+        trackName: String
     ) {
         Log.d(TAG, "fetchAndApplyGenres: ${artists.map { "${it.name}(${it.itemId})" }}")
         val allGenres = mutableSetOf<String>()
         // MusicBrainz first, then the MA server (see enrichTrackGenresForHistory).
         for (artist in artists) {
-            val tags = musicBrainzGenres(artist.name)
+            val tags = musicBrainzGenres(artist.name, trackName)
             if (tags.isNotEmpty()) {
                 Log.d(TAG, "MusicBrainz genres for ${artist.name}: $tags")
                 allGenres.addAll(tags)

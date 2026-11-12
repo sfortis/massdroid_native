@@ -2,6 +2,9 @@ package net.asksakis.massdroidv2.data.musicbrainz
 
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.intOrNull
@@ -49,6 +52,14 @@ class MusicBrainzGenreResolver @Inject constructor(
     private val json: Json,
     private val rateLimiter: MusicBrainzRateLimiter
 ) {
+    private val _identityChanges = MutableSharedFlow<String>(extraBufferCapacity = 16)
+
+    /**
+     * Cache keys whose answer now names a different MusicBrainz artist than before.
+     * Holders of genres read from the old answer drop them on this.
+     */
+    val identityChanges: SharedFlow<String> = _identityChanges.asSharedFlow()
+
     /**
      * Cached genres for [artistName]: weight-ordered, empty when MusicBrainz has
      * nothing, null when we have never asked (or the entry has expired).
@@ -117,7 +128,10 @@ class MusicBrainzGenreResolver @Inject constructor(
         val now = System.currentTimeMillis()
         val answered = rows.mapNotNullTo(mutableSetOf()) { row ->
             val ttl = if (row.tags.isBlank()) EMPTY_CACHE_MS else CACHE_MS
-            row.artistName.takeIf { now - row.fetchedAt <= ttl }
+            // A name left ambiguous by a lookup that had no recording is not settled
+            // for a caller that has one (see resolveDetailed).
+            val decidableByRecording = row.mbid == AMBIGUOUS_NAME && !byKey[row.artistName]?.trackHint.isNullOrBlank()
+            row.artistName.takeIf { now - row.fetchedAt <= ttl && !decidableByRecording }
         }
         return byKey.filterKeys { it !in answered }.values.toList()
     }
@@ -147,61 +161,132 @@ class MusicBrainzGenreResolver @Inject constructor(
         val key = cacheKey(artistName, mbid)
         if (key.isEmpty()) return GenreResolution(emptyList(), GenreOutcome.NOT_FOUND)
         cachedGenres(artistName, mbid)?.let {
-            return GenreResolution(it, if (it.isEmpty()) GenreOutcome.CACHED_EMPTY else GenreOutcome.GENRES)
+            // A name found ambiguous without a recording is settled only for callers that
+            // have none either. The history path always brings one, and must not be held to
+            // an answer a page lookup made without it, for the two weeks an empty answer lives.
+            val decidableNow = it.isEmpty() && !trackHint.isNullOrBlank() && cachedAsAmbiguous(key)
+            if (!decidableNow) {
+                return GenreResolution(it, if (it.isEmpty()) GenreOutcome.CACHED_EMPTY else GenreOutcome.GENRES)
+            }
         }
-        return withContext(Dispatchers.IO) {
-            // Identity, best evidence first.
-            //
-            // 1. An id from Music Assistant is exact. Only library items carry one;
-            //    provider items report `external_ids: []` (verified against the
-            //    server), so most artists reach here without it.
-            // 2. [trackHint] - a recording we know this artist for - is the next
-            //    best thing, because a namesake does not share the recording.
-            //    Measured: "Labelle" name-searches to the American soul group
-            //    LaBelle (score 100, disco/funk/soul) while the artist actually
-            //    played was the Reunion Island electronic producer (score 86, so
-            //    the score bar could never have saved it). The wrong genres then
-            //    became a whole mix's envelope.
-            // 3. Name alone, which is not an identity and is used only as a last
-            //    resort.
-            //
-            // Whether an empty answer is remembered depends on which kind of
-            // nothing it was. MusicBrainz answering "no such artist", or "this
-            // artist has no genres", is a fact worth caching for weeks. A request
-            // that never completed, because the rate limiter gave up after a 503
-            // or the network failed, is not a fact at all, and caching it as one
-            // used to hide the artist from every mix for the next fortnight. Two
-            // days of logs held 38 such give-ups.
-            val byRecording = trackHint?.takeIf { it.isNotBlank() }
-                ?.let { findMbidByRecording(artistName, it) }
-                ?: Lookup.Missing
-            val resolvedMbid = when (byRecording) {
-                is Lookup.Found -> byRecording.value
-                else -> when (val byName = findMbid(artistName)) {
-                    is Lookup.Found -> byName.value
-                    Lookup.Unavailable -> return@withContext GenreResolution(emptyList(), GenreOutcome.UNAVAILABLE)
-                    Lookup.Missing -> {
-                        // Only authoritative when every step actually answered.
-                        if (byRecording != Lookup.Unavailable) {
-                            cache(key, mbid = "", genres = emptyList())
-                            return@withContext GenreResolution(emptyList(), GenreOutcome.NOT_FOUND)
-                        }
-                        return@withContext GenreResolution(emptyList(), GenreOutcome.UNAVAILABLE)
-                    }
-                }
+        return withContext(Dispatchers.IO) { lookUp(key, artistName, mbid, trackHint) }
+    }
+
+    /**
+     * [resolveDetailed] without reading or writing the cache, for an answer that is
+     * already cached and may be wrong. [GenreResolution.mbid] says which artist
+     * answered. The caller decides what to keep and stores it with [storeIdentity],
+     * together with its own writes.
+     */
+    suspend fun recheck(
+        cacheKey: String,
+        artistName: String,
+        mbid: String?,
+        trackHint: String?
+    ): GenreResolution = withContext(Dispatchers.IO) { lookUp(cacheKey, artistName, mbid, trackHint, store = false) }
+
+    /**
+     * Replaces the answer under [cacheKey] with [mbid] and its [genres], for a caller
+     * that found the cached answer named the wrong artist. Run it inside the caller's
+     * transaction, so the cache and the genres the caller fixes cannot disagree.
+     */
+    suspend fun storeIdentity(cacheKey: String, mbid: String, genres: List<String>) {
+        cache(cacheKey, mbid, genres, announce = false)
+    }
+
+    /**
+     * Tells [identityChanges] that [cacheKey] now names another artist. For a caller of
+     * [storeIdentity], after its transaction committed: announced earlier, a holder could
+     * refill its genres from the old row before the new one is visible.
+     */
+    fun announceIdentityChange(cacheKey: String) {
+        _identityChanges.tryEmit(cacheKey)
+    }
+
+    /**
+     * Identifies the artist, fetches its genres and caches the answer under [key].
+     *
+     * Whether an empty answer is remembered depends on which kind of nothing it
+     * was. MusicBrainz answering "no such artist", or "this artist has no genres",
+     * is a fact worth caching for weeks. A request that never completed, because
+     * the rate limiter gave up after a 503 or the network failed, is not a fact at
+     * all, and caching it as one used to hide the artist from every mix for the
+     * next fortnight. Two days of logs held 38 such give-ups.
+     */
+    private suspend fun lookUp(
+        key: String,
+        artistName: String,
+        mbid: String?,
+        trackHint: String?,
+        store: Boolean = true
+    ): GenreResolution {
+        val identified = when (val identity = identify(artistName, mbid, trackHint)) {
+            is Lookup.Found -> identity.value
+            Lookup.Missing -> {
+                if (store) cache(key, mbid = "", genres = emptyList())
+                return GenreResolution(emptyList(), GenreOutcome.NOT_FOUND)
             }
-            when (val fetched = fetchGenres(resolvedMbid)) {
-                is Lookup.Found -> {
-                    cache(key, resolvedMbid, fetched.value)
-                    GenreResolution(
-                        fetched.value,
-                        if (fetched.value.isEmpty()) GenreOutcome.NO_GENRES else GenreOutcome.GENRES
-                    )
-                }
-                else -> GenreResolution(emptyList(), GenreOutcome.UNAVAILABLE)
+            Lookup.Ambiguous -> {
+                // Remembered like a miss, so the enricher does not ask again, but marked by
+                // whether a recording was tried: if not, a later lookup that brings one can
+                // still decide it (resolveDetailed, stillWorthAsking).
+                val marker = if (trackHint.isNullOrBlank()) AMBIGUOUS_NAME else AMBIGUOUS_AFTER_RECORDING
+                if (store) cache(key, mbid = marker, genres = emptyList())
+                return GenreResolution(emptyList(), GenreOutcome.NOT_FOUND)
             }
+            Lookup.Unavailable -> return GenreResolution(emptyList(), GenreOutcome.UNAVAILABLE)
+        }
+        return when (val fetched = fetchGenres(identified.mbid)) {
+            is Lookup.Found -> {
+                if (store) cache(key, identified.mbid, fetched.value)
+                GenreResolution(
+                    fetched.value,
+                    if (fetched.value.isEmpty()) GenreOutcome.NO_GENRES else GenreOutcome.GENRES,
+                    identified.mbid,
+                    identified.evidence
+                )
+            }
+            // The id no longer exists on MusicBrainz (merged or deleted): nothing to
+            // describe the artist with, which is an answer, not an outage.
+            Lookup.Missing -> {
+                if (store) cache(key, mbid = "", genres = emptyList())
+                GenreResolution(emptyList(), GenreOutcome.NOT_FOUND)
+            }
+            else -> GenreResolution(emptyList(), GenreOutcome.UNAVAILABLE)
         }
     }
+
+    /**
+     * Which MusicBrainz artist this is, best evidence first.
+     *
+     * 1. An id from Music Assistant is exact. Only library items carry one;
+     *    provider items report `external_ids: []` (verified against the server).
+     *    It used to be used only as the cache key while the lookup searched by
+     *    name, so a library artist with a known id could still get a namesake's
+     *    genres: "Wild" got power metal and "PAPA" nu metal.
+     * 2. [trackHint], a recording we know this artist for, because a namesake
+     *    does not share the recording.
+     * 3. Name alone, which is not an identity. [pickArtistCandidate] refuses a
+     *    name that several artists share.
+     *
+     * Missing is returned only when every step that ran actually answered.
+     */
+    private suspend fun identify(artistName: String, mbid: String?, trackHint: String?): Lookup<Identified> {
+        mbid?.trim()?.takeIf { it.isNotEmpty() }?.let { return Lookup.Found(Identified(it, IdentityEvidence.MBID)) }
+        val byRecording = trackHint?.takeIf { it.isNotBlank() }
+            ?.let { findMbidByRecording(artistName, it) }
+            ?: Lookup.Missing
+        if (byRecording is Lookup.Found) return Lookup.Found(Identified(byRecording.value, IdentityEvidence.RECORDING))
+        return when (val byName = findMbid(artistName)) {
+            is Lookup.Found -> Lookup.Found(Identified(byName.value, IdentityEvidence.NAME))
+            Lookup.Unavailable -> Lookup.Unavailable
+            // Only authoritative when every step that ran actually answered.
+            Lookup.Missing -> if (byRecording == Lookup.Unavailable) Lookup.Unavailable else Lookup.Missing
+            Lookup.Ambiguous -> if (byRecording == Lookup.Unavailable) Lookup.Unavailable else Lookup.Ambiguous
+        }
+    }
+
+    private data class Identified(val mbid: String, val evidence: IdentityEvidence)
 
     /**
      * The artist credited with [trackName], when we know one of their recordings.
@@ -212,44 +297,65 @@ class MusicBrainzGenreResolver @Inject constructor(
      */
     private suspend fun findMbidByRecording(artistName: String, trackName: String): Lookup<String> {
         val url = "$BASE/recording".toHttpUrlOrNull()?.newBuilder()
-            ?.addQueryParameter("query", "recording:\"$trackName\" AND artist:\"$artistName\"")
+            ?.addQueryParameter("query", "recording:\"${phrase(trackName)}\" AND artist:\"${phrase(artistName)}\"")
             ?.addQueryParameter("fmt", "json")
             ?.addQueryParameter("limit", "3")
             ?.build() ?: return Lookup.Missing
         val body = when (val answer = request(url.toString())) {
             is Lookup.Found -> answer.value
+            Lookup.Missing -> return Lookup.Missing
             else -> return Lookup.Unavailable
         }
         val recordings = json.parseToJsonElement(body).jsonObject["recordings"]?.jsonArray.orEmpty()
-        for (recording in recordings) {
+        // Only a credit whose NAME still matches is usable: a recording can credit
+        // several artists (features, remixes), and picking the wrong one would
+        // reintroduce exactly the bug this exists to prevent. Every matching recording
+        // is read, because two namesakes can each have a song of that title, and then
+        // the recording decides nothing.
+        val ids = recordings.flatMapTo(linkedSetOf()) { recording ->
             val obj = recording.jsonObject
-            if ((obj["score"]?.jsonPrimitive?.intOrNull ?: 0) < MIN_MATCH_SCORE) continue
-            val credits = obj["artist-credit"]?.jsonArray.orEmpty()
-            // Only a credit whose NAME still matches is usable: a recording can
-            // credit several artists (features, remixes) and picking the wrong
-            // one would reintroduce exactly the bug this exists to prevent.
-            val match = credits.firstOrNull { credit ->
-                val artist = credit.jsonObject["artist"]?.jsonObject ?: return@firstOrNull false
-                artist["name"]?.jsonPrimitive?.content
-                    .equals(artistName, ignoreCase = true)
-            }?.jsonObject?.get("artist")?.jsonObject ?: continue
-            val id = match["id"]?.jsonPrimitive?.content?.takeIf { it.isNotEmpty() } ?: continue
-            Log.d(TAG, "'$artistName' identified via recording '$trackName' -> $id")
-            return Lookup.Found(id)
+            if ((obj["score"]?.jsonPrimitive?.intOrNull ?: 0) < MIN_MATCH_SCORE) return@flatMapTo emptyList()
+            obj["artist-credit"]?.jsonArray.orEmpty().mapNotNull { credit ->
+                val artist = credit.jsonObject["artist"]?.jsonObject ?: return@mapNotNull null
+                val named = artist["name"]?.jsonPrimitive?.content.equals(artistName, ignoreCase = true)
+                artist["id"]?.jsonPrimitive?.content?.takeIf { named && it.isNotEmpty() }
+            }
         }
-        return Lookup.Missing
+        if (ids.size > 1) {
+            Log.d(TAG, "'$artistName': recording '$trackName' is credited to ${ids.size} artists of that name")
+            return Lookup.Missing
+        }
+        val id = ids.singleOrNull() ?: return Lookup.Missing
+        Log.d(TAG, "'$artistName' identified via recording '$trackName' -> $id")
+        return Lookup.Found(id)
     }
 
-    private suspend fun cache(key: String, mbid: String, genres: List<String>) {
+    private suspend fun cachedAsAmbiguous(key: String): Boolean =
         try {
+            dao.getMusicBrainzTags(key)?.mbid == AMBIGUOUS_NAME
+        } catch (_: Exception) {
+            false
+        }
+
+    private suspend fun cache(key: String, mbid: String, genres: List<String>, announce: Boolean = true) {
+        try {
+            // The bio shares this row and was fetched for its MBID: it stays while the
+            // answer names the same artist, and goes with a namesake's genres.
+            val previous = dao.getMusicBrainzTags(key)
+            val sameArtist = previous != null && previous.mbid == mbid
             dao.upsertMusicBrainzTags(
                 MusicBrainzArtistTagsEntity(
                     artistName = key,
                     mbid = mbid,
                     tags = genres.joinToString(","),
-                    fetchedAt = System.currentTimeMillis()
+                    fetchedAt = System.currentTimeMillis(),
+                    bio = previous?.bio.takeIf { sameArtist },
+                    bioFetchedAt = previous?.bioFetchedAt.takeIf { sameArtist }
                 )
             )
+            if (announce && previous != null && !sameArtist && previous.mbid.isNotEmpty() && mbid.isNotEmpty()) {
+                announceIdentityChange(key)
+            }
         } catch (e: Exception) {
             Log.w(TAG, "cache write failed for '$key': ${e.message}")
         }
@@ -267,19 +373,18 @@ class MusicBrainzGenreResolver @Inject constructor(
         // Quoting the name makes this a phrase match; without it Lucene splits
         // on whitespace and "Pale Saints" matches any artist called "Saints".
         //
-        // Several candidates are requested rather than one, because MusicBrainz
-        // scores a NEAR name above an EXACT one often enough to matter: searching
-        // "Labelle" returns "LaBelle" (the American soul group) at 100 and the
-        // exact "Labelle" at 86. Taking the top hit picked the namesake, and no
-        // score threshold could have caught it - only one result cleared the bar,
-        // and it was the wrong one.
+        // Several candidates are requested rather than one, because the top hit is
+        // often a namesake: searching "Labelle" returns "LaBelle" (the American soul
+        // group) at 100 and the "Labelle" being played at 86. Seeing the others is
+        // how a name that several artists share is recognised as ambiguous.
         val url = "$BASE/artist".toHttpUrlOrNull()?.newBuilder()
-            ?.addQueryParameter("query", "artist:\"$artistName\"")
+            ?.addQueryParameter("query", "artist:\"${phrase(artistName)}\"")
             ?.addQueryParameter("fmt", "json")
             ?.addQueryParameter("limit", SEARCH_CANDIDATES.toString())
             ?.build() ?: return Lookup.Missing
         val body = when (val answer = request(url.toString())) {
             is Lookup.Found -> answer.value
+            Lookup.Missing -> return Lookup.Missing
             else -> return Lookup.Unavailable
         }
         val artists = json.parseToJsonElement(body).jsonObject["artists"]?.jsonArray.orEmpty()
@@ -295,6 +400,10 @@ class MusicBrainzGenreResolver @Inject constructor(
                 score = obj["score"]?.jsonPrimitive?.intOrNull ?: 0
             )
         }
+        if (isAmbiguousName(scored, artistName, EXACT_NAME_MIN_SCORE)) {
+            Log.d(TAG, "'$artistName': several artists carry this name, a recording or an MBID has to decide")
+            return Lookup.Ambiguous
+        }
         val picked = pickArtistCandidate(scored, artistName, EXACT_NAME_MIN_SCORE, MIN_MATCH_SCORE)
             ?: run {
                 Log.d(TAG, "'$artistName': no usable match in ${scored.size} candidates")
@@ -306,6 +415,7 @@ class MusicBrainzGenreResolver @Inject constructor(
     private suspend fun fetchGenres(mbid: String): Lookup<List<String>> {
         val body = when (val answer = request("$BASE/artist/$mbid?inc=genres&fmt=json")) {
             is Lookup.Found -> answer.value
+            Lookup.Missing -> return Lookup.Missing
             else -> return Lookup.Unavailable
         }
         // An empty list here is an answer: this artist exists and carries no genre
@@ -350,6 +460,13 @@ class MusicBrainzGenreResolver @Inject constructor(
                             rateLimiter.backOff(response.header("Retry-After")?.toLongOrNull())
                             null
                         }
+                        response.code == HTTP_BAD_REQUEST || response.code == HTTP_NOT_FOUND -> {
+                            // The request itself cannot be answered: an id that no longer
+                            // exists, or a query MusicBrainz cannot parse. Asking again
+                            // gives the same answer, so this one is final.
+                            Log.w(TAG, "HTTP ${response.code} for $url")
+                            return Lookup.Missing
+                        }
                         else -> {
                             // Not an answer about this artist either, so it is a
                             // reason to ask again later, not to conclude anything.
@@ -369,6 +486,12 @@ class MusicBrainzGenreResolver @Inject constructor(
     }
 
     /**
+     * [text] for a quoted Lucene phrase. A `"` or `\` in an artist or track name ended the
+     * phrase early, and MusicBrainz answered 400 to the broken query.
+     */
+    private fun phrase(text: String): String = text.replace("\\", "\\\\").replace("\"", "\\\"")
+
+    /**
      * Cache identity: the MusicBrainz id when we have one, otherwise the name.
      * Keying everything by name would make two different artists sharing a name
      * share one cache entry, which is the very thing the id is here to prevent.
@@ -376,8 +499,11 @@ class MusicBrainzGenreResolver @Inject constructor(
     private fun cacheKey(artistName: String, mbid: String?): String =
         mbid?.trim()?.takeIf { it.isNotEmpty() } ?: artistName.trim().lowercase()
 
-    /** An artist to look up: the id if Music Assistant knew one, else the name. */
-    data class ArtistRef(val name: String, val mbid: String? = null)
+    /**
+     * An artist to look up: the id if Music Assistant knew one, else the name. [trackHint]
+     * is a recording of theirs, when the caller has one (see [stillWorthAsking]).
+     */
+    data class ArtistRef(val name: String, val mbid: String? = null, val trackHint: String? = null)
 
     /**
      * Cache rows for [keys], read in chunks. The gap walk passes thousands of
@@ -410,12 +536,24 @@ class MusicBrainzGenreResolver @Inject constructor(
         const val SEARCH_CANDIDATES = 5
 
         /**
-         * Bar for accepting an exact-case name match. Lower than [MIN_MATCH_SCORE]
-         * on purpose: the name already agreed character for character, so the
-         * fuzzy score is corroboration rather than the deciding evidence.
+         * Bar for a candidate that carries the name we searched (ignoring case).
+         * Lower than [MIN_MATCH_SCORE] on purpose: the name already agrees, so the
+         * fuzzy score is corroboration rather than the deciding evidence. Two such
+         * candidates make the name ambiguous (see [pickArtistCandidate]).
          */
         const val EXACT_NAME_MIN_SCORE = 80
         const val HTTP_SERVICE_UNAVAILABLE = 503
+        const val HTTP_BAD_REQUEST = 400
+        const val HTTP_NOT_FOUND = 404
+
+        /**
+         * Stored as the MBID of a name that several artists carry, looked up without a
+         * recording; a later lookup with one may still decide it. See [Lookup.Ambiguous].
+         */
+        const val AMBIGUOUS_NAME = "ambiguous"
+
+        /** The same, after a recording was tried and did not decide it either. Settled. */
+        const val AMBIGUOUS_AFTER_RECORDING = "ambiguous-recording"
         const val RATE_LIMIT_RETRIES = 3
     }
 }
@@ -434,23 +572,55 @@ enum class GenreOutcome {
     CACHED_EMPTY,
 }
 
-data class GenreResolution(val genres: List<String>, val outcome: GenreOutcome)
+/**
+ * [mbid] is the MusicBrainz artist that answered, and [evidence] what identified it; both
+ * null when none did or the answer came from the cache.
+ */
+data class GenreResolution(
+    val genres: List<String>,
+    val outcome: GenreOutcome,
+    val mbid: String? = null,
+    val evidence: IdentityEvidence? = null
+)
+
+/** What identified an artist on MusicBrainz, strongest first. */
+enum class IdentityEvidence {
+    /** The id Music Assistant reported for the library item. */
+    MBID,
+
+    /** A recording of theirs that we hold, credited to that name. */
+    RECORDING,
+
+    /** The name alone, by its score lead over namesakes ([NAME_TIE_MARGIN]). */
+    NAME
+}
 
 /** One result of a MusicBrainz artist search. */
 internal data class MbArtistCandidate(val id: String, val name: String, val score: Int)
 
 /**
- * Which search result is actually the artist we asked for.
+ * How far the best of several candidates carrying the same name must lead the next
+ * one for the name to pick it. Measured on musicbrainz.org on 2026-11-12, the
+ * candidates being played lead by 13 ("AES Dana" over a black metal "Aes Dana") and
+ * 11 ("Asura" over a grindcore namesake), and a well-known artist leads its
+ * namesakes by far more. Accepted cost, decided by the owner: "LaBelle" leads the
+ * Reunion Island "Labelle" by 14, so a caller with no recording to go by gets the US
+ * soul group. Callers that have a recording are decided by it before the name.
+ */
+internal const val NAME_TIE_MARGIN = 10
+
+/**
+ * Which search result is actually the artist we asked for, or null when the name
+ * alone cannot tell.
  *
- * MusicBrainz scores a NEAR name above an EXACT one often enough to matter, and no
- * score threshold can fix that because the wrong hit is the one clearing the bar.
- * Measured on the real service: searching "Labelle" returns the American soul group
- * "LaBelle" at 100 and the exact "Labelle" (a Reunion Island electronic producer, the
- * one actually being played) at 86. Taking the top hit gave a whole Smart Mix the
- * genres disco/funk/soul and filled it with French chanson.
- *
- * So an exact-case name match wins outright, and the fuzzy score decides only when
- * nothing matches exactly.
+ * A name is not an identity, and the spelling decides nothing: preferring the
+ * candidate spelled exactly like the artist made "Aes Dana" a French black metal
+ * band and "ASURA" a Japanese power metal band, and turned an ambient listener's
+ * Smart Mix into metal. Among the candidates that carry the name (ignoring case,
+ * at [exactNameMinScore] or above), the best one is taken only when it leads the
+ * next by [NAME_TIE_MARGIN]; closer than that, the name is ambiguous and nothing is
+ * picked, because an artist with no genres is merely undescribed while a
+ * misidentified one poisons every mix built on it.
  */
 internal fun pickArtistCandidate(
     candidates: List<MbArtistCandidate>,
@@ -458,11 +628,23 @@ internal fun pickArtistCandidate(
     exactNameMinScore: Int = 80,
     minMatchScore: Int = 90
 ): String? {
-    candidates.firstOrNull { it.name == artistName && it.score >= exactNameMinScore }
-        ?.let { return it.id }
+    if (isAmbiguousName(candidates, artistName, exactNameMinScore)) return null
+    candidates.filter { it.carriesName(artistName, exactNameMinScore) }.maxByOrNull { it.score }?.let { return it.id }
     val best = candidates.maxByOrNull { it.score } ?: return null
     return if (best.score >= minMatchScore) best.id else null
 }
+
+/**
+ * Whether several candidates carry [artistName] (ignoring case, at [exactNameMinScore]
+ * or above) without the best leading the next by [NAME_TIE_MARGIN].
+ */
+internal fun isAmbiguousName(candidates: List<MbArtistCandidate>, artistName: String, exactNameMinScore: Int = 80): Boolean {
+    val scores = candidates.filter { it.carriesName(artistName, exactNameMinScore) }.map { it.score }.sortedDescending()
+    return scores.size > 1 && scores[0] - scores[1] < NAME_TIE_MARGIN
+}
+
+private fun MbArtistCandidate.carriesName(artistName: String, minScore: Int): Boolean =
+    name.equals(artistName, ignoreCase = true) && score >= minScore
 
 /**
  * What a MusicBrainz call produced.
@@ -480,4 +662,7 @@ internal sealed interface Lookup<out T> {
 
     /** No answer: rate limited, an HTTP error, or the network failed. */
     data object Unavailable : Lookup<Nothing>
+
+    /** The server answered with several artists of that name, and the name cannot tell them apart. */
+    data object Ambiguous : Lookup<Nothing>
 }

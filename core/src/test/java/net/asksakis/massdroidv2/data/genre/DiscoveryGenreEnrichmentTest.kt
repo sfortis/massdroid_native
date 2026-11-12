@@ -15,6 +15,8 @@ import net.asksakis.massdroidv2.data.musicbrainz.GenreOutcome
 import net.asksakis.massdroidv2.data.musicbrainz.GenreResolution
 import net.asksakis.massdroidv2.data.musicbrainz.MusicBrainzGenreResolver
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.awaitCancellation
+import net.asksakis.massdroidv2.domain.model.Artist
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertThrows
 import org.junit.Test
@@ -50,6 +52,8 @@ class DiscoveryGenreEnrichmentTest {
         override suspend fun <R> inTransaction(block: suspend () -> R): R = block()
     }
 
+    private val namesakeRepair = mockk<NamesakeGenreRepair>(relaxed = true)
+
     private val enricher = LibraryGenreEnricher(
         musicBrainzGenreResolver = resolver,
         dao = dao,
@@ -58,6 +62,7 @@ class DiscoveryGenreEnrichmentTest {
         transactions = transactions,
         genreSpellings = GenreSpellingResolver(dao),
         wsClient = mockk(relaxed = true),
+        namesakeGenreRepair = namesakeRepair,
     )
 
     private fun gap(name: String, uri: String, mbid: String? = null) =
@@ -254,5 +259,18 @@ class DiscoveryGenreEnrichmentTest {
         enricher.enrichDiscoveryArtists()
 
         coVerify(exactly = 0) { resolver.resolveDetailed(any(), any()) }
+    }
+
+    /**
+     * The repair has to run once on every install. The full run is skipped while a page
+     * enrichment holds its job, which is the usual case right after the app opens, and on
+     * the S25 that skipped the repair after the update.
+     */
+    @Test
+    fun `the namesake repair runs even while a page enrichment holds the full run`() {
+        coEvery { resolver.resolveDetailed(any(), any(), any()) } coAnswers { awaitCancellation() }
+        enricher.enrichInBackground(listOf(Artist(itemId = "1", provider = "library", name = "Busy", uri = "library://artist/1")))
+        enricher.enrichAllUnenriched("server")
+        coVerify(timeout = 5_000) { namesakeRepair.runIfDue() }
     }
 }

@@ -9,7 +9,9 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import net.asksakis.massdroidv2.data.database.MusicBrainzArtistTagsEntity
 import net.asksakis.massdroidv2.data.database.PlayHistoryDao
+import kotlinx.coroutines.launch
 import okhttp3.Call
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Protocol
 import okhttp3.Request
@@ -132,5 +134,231 @@ class MusicBrainzGenreResolverTest {
         assertThat(notFound.outcome).isEqualTo(GenreOutcome.NOT_FOUND)
         assertThat(unavailable.outcome).isEqualTo(GenreOutcome.UNAVAILABLE)
         assertThat(listOf(noTags, notFound, unavailable).map { it.genres }).containsExactly(emptyList<String>(), emptyList<String>(), emptyList<String>())
+    }
+
+    /** Records each requested URL and answers by path: genres for an artist lookup, [search] for a search. */
+    private fun resolverRecording(urls: MutableList<String>, search: String, genres: String): MusicBrainzGenreResolver {
+        val client = mockk<OkHttpClient>()
+        every { client.newCall(any()) } answers {
+            val request = firstArg<Request>()
+            val url = request.url.toString()
+            urls += url
+            val body = if ("inc=genres" in url) genres else search
+            mockk<Call> {
+                every { execute() } returns Response.Builder()
+                    .request(request).protocol(Protocol.HTTP_1_1).code(200).message("OK")
+                    .body(body.toResponseBody()).build()
+            }
+        }
+        return MusicBrainzGenreResolver(dao, client, Json { ignoreUnknownKeys = true }, rateLimiter)
+    }
+
+    /** "Wild" had its own id and still got a power metal namesake's genres from a name search. */
+    @Test
+    fun `a known MBID is looked up directly, never by name`() = runBlocking {
+        coEvery { dao.getMusicBrainzTags(any()) } returns null
+        val urls = mutableListOf<String>()
+        val namesake = """{"artists":[{"id":"99999999-9999-9999-9999-999999999999","name":"Wild","score":100}]}"""
+        val resolver = resolverRecording(urls, namesake, """{"genres":[{"name":"indie pop","count":3}]}""")
+
+        val answer = resolver.resolveDetailed("Wild", mbid = "22222222-2222-2222-2222-222222222222")
+
+        assertThat(answer.genres).containsExactly("indie pop")
+        assertThat(answer.mbid).isEqualTo("22222222-2222-2222-2222-222222222222")
+        assertThat(urls).hasSize(1)
+        assertThat(urls.single()).contains("artist/22222222-2222-2222-2222-222222222222")
+    }
+
+    @Test
+    fun `a recheck ignores the cached answer and writes nothing`() = runBlocking {
+        coEvery { dao.getMusicBrainzTags(any()) } returns MusicBrainzArtistTagsEntity(
+            artistName = "aes dana", mbid = "4b1591fd", tags = "black metal,metal", fetchedAt = System.currentTimeMillis()
+        )
+        val urls = mutableListOf<String>()
+        val resolver = resolverRecording(urls, """{"artists":[]}""", """{"genres":[{"name":"psybient","count":4}]}""")
+
+        val answer = resolver.recheck("aes dana", "Aes Dana", mbid = "ed5cd4a2-0000-0000-0000-000000000000", trackHint = null)
+
+        assertThat(answer.genres).containsExactly("psybient")
+        assertThat(answer.mbid).isEqualTo("ed5cd4a2-0000-0000-0000-000000000000")
+        // The caller stores it with its own writes (storeIdentity), in one transaction.
+        coVerify(exactly = 0) { dao.upsertMusicBrainzTags(any()) }
+    }
+
+    /** With no recording and no id, a shared name gives no genres instead of a namesake's. */
+    @Test
+    fun `an ambiguous name is not found rather than misidentified`() = runBlocking {
+        coEvery { dao.getMusicBrainzTags(any()) } returns null
+        val urls = mutableListOf<String>()
+        val search = """{"artists":[{"id":"a","name":"AES Dana","score":100},{"id":"b","name":"Aes Dana","score":95}]}"""
+        val resolver = resolverRecording(urls, search, """{"genres":[{"name":"black metal","count":4}]}""")
+
+        val answer = resolver.resolveDetailed("Aes Dana")
+
+        assertThat(answer.outcome).isEqualTo(GenreOutcome.NOT_FOUND)
+        assertThat(answer.genres).isEmpty()
+        assertThat(urls.none { "inc=genres" in it }).isTrue()
+    }
+
+    @Test
+    fun `an ambiguous name is cached as such, so the enricher does not ask again`() = runBlocking {
+        coEvery { dao.getMusicBrainzTags(any()) } returns null
+        val search = """{"artists":[{"id":"a","name":"AES Dana","score":100},{"id":"b","name":"Aes Dana","score":95}]}"""
+        resolverRecording(mutableListOf(), search, "{}").resolveDetailed("Aes Dana")
+
+        coVerify {
+            dao.upsertMusicBrainzTags(match<MusicBrainzArtistTagsEntity> { it.artistName == "aes dana" && it.mbid == "ambiguous" })
+        }
+    }
+
+    /**
+     * A page lookup without a recording cached the name as ambiguous. The history path,
+     * which always has the track, must still be able to identify the artist by it instead
+     * of reading that empty answer for two weeks.
+     */
+    @Test
+    fun `a recording still decides a name cached as ambiguous`() = runBlocking {
+        coEvery { dao.getMusicBrainzTags("aes dana") } returns MusicBrainzArtistTagsEntity(
+            artistName = "aes dana", mbid = "ambiguous", tags = "", fetchedAt = System.currentTimeMillis()
+        )
+        val urls = mutableListOf<String>()
+        val recording = """{"recordings":[{"score":100,"artist-credit":[{"artist":{"id":"ed5cd4a2-0000-0000-0000-000000000000","name":"AES Dana"}}]}]}"""
+        val resolver = resolverRecording(urls, recording, """{"genres":[{"name":"psybient","count":4}]}""")
+
+        val answer = resolver.resolveDetailed("Aes Dana", trackHint = "Snöflinga")
+        val withoutTrack = resolver.resolveDetailed("Aes Dana")
+
+        assertThat(answer.genres).containsExactly("psybient")
+        assertThat(urls.first()).contains("recording")
+        assertThat(withoutTrack.outcome).isEqualTo(GenreOutcome.CACHED_EMPTY)
+    }
+
+    /** Records each URL and answers each with [respond], which returns a status and a body. */
+    private fun resolverWith(urls: MutableList<String>, respond: (String) -> Pair<Int, String>): MusicBrainzGenreResolver {
+        val client = mockk<OkHttpClient>()
+        every { client.newCall(any()) } answers {
+            val request = firstArg<Request>()
+            val url = request.url.toString()
+            urls += url
+            val (code, body) = respond(url)
+            mockk<Call> {
+                every { execute() } returns Response.Builder()
+                    .request(request).protocol(Protocol.HTTP_1_1).code(code).message("x")
+                    .body(body.toResponseBody()).build()
+            }
+        }
+        return MusicBrainzGenreResolver(dao, client, Json { ignoreUnknownKeys = true }, rateLimiter)
+    }
+
+    /** A 404 used to read as "no answer", and the repair stopped on it for good. */
+    @Test
+    fun `an MBID MusicBrainz no longer has is an answer, not an outage`() = runBlocking {
+        coEvery { dao.getMusicBrainzTags(any()) } returns null
+        val answer = resolverWith(mutableListOf()) { 404 to "" }.resolveDetailed("Gone", mbid = "33333333-3333-3333-3333-333333333333")
+        assertThat(answer.outcome).isEqualTo(GenreOutcome.NOT_FOUND)
+    }
+
+    @Test
+    fun `a quote or backslash in a name is escaped inside the phrase`() = runBlocking {
+        coEvery { dao.getMusicBrainzTags(any()) } returns null
+        val urls = mutableListOf<String>()
+        resolverWith(urls) { 200 to """{"artists":[]}""" }.resolveDetailed("""The "Band" \ Co""")
+        val query = urls.single().toHttpUrl().queryParameter("query")
+        assertThat(query).isEqualTo("""artist:"The \"Band\" \\ Co"""")
+    }
+
+    /** Two namesakes can each have a song of that title; then the recording decides nothing. */
+    @Test
+    fun `a recording credited to two artists of the name identifies neither`() = runBlocking {
+        coEvery { dao.getMusicBrainzTags(any()) } returns null
+        val urls = mutableListOf<String>()
+        val recordings = """{"recordings":[
+            {"score":100,"artist-credit":[{"artist":{"id":"one","name":"Wild"}}]},
+            {"score":95,"artist-credit":[{"artist":{"id":"two","name":"Wild"}}]}]}"""
+        val answer = resolverWith(urls) { url ->
+            when {
+                "/recording" in url -> 200 to recordings
+                else -> 200 to """{"artists":[{"id":"one","name":"Wild","score":100},{"id":"two","name":"Wild","score":98}]}"""
+            }
+        }.resolveDetailed("Wild", trackHint = "Love")
+        assertThat(answer.outcome).isEqualTo(GenreOutcome.NOT_FOUND)
+        assertThat(urls.none { "inc=genres" in it }).isTrue()
+    }
+
+    @Test
+    fun `the bio stays while the answer names the same artist and goes with a namesake`() = runBlocking<Unit> {
+        val withBio = MusicBrainzArtistTagsEntity("aes dana", "old", "metal", 0L, bio = "A French band.", bioFetchedAt = 5L)
+        coEvery { dao.getMusicBrainzTags("aes dana") } returns withBio
+        val resolver = resolverWith(mutableListOf()) { 200 to "{}" }
+
+        resolver.storeIdentity("aes dana", "old", listOf("metal"))
+        resolver.storeIdentity("aes dana", "new", listOf("ambient"))
+
+        coVerify { dao.upsertMusicBrainzTags(match<MusicBrainzArtistTagsEntity> { it.mbid == "old" && it.bio == "A French band." }) }
+        coVerify { dao.upsertMusicBrainzTags(match<MusicBrainzArtistTagsEntity> { it.mbid == "new" && it.bio == null }) }
+    }
+
+    /**
+     * A lookup that replaces an answer with another artist announces it at once; a
+     * repair's [MusicBrainzGenreResolver.storeIdentity] waits for its transaction and
+     * announces with announceIdentityChange.
+     */
+    @Test
+    fun `replacing an answer with another artist is announced, after the transaction for a repair`() = runBlocking<Unit> {
+        coEvery { dao.getMusicBrainzTags("aes dana") } returns MusicBrainzArtistTagsEntity("aes dana", "old", "metal", 0L)
+        val resolver = resolverWith(mutableListOf()) { 200 to "{}" }
+        val announced = mutableListOf<String>()
+        val job = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Unconfined).launch {
+            resolver.identityChanges.collect { announced += it }
+        }
+
+        resolver.storeIdentity("aes dana", "new", listOf("ambient"))
+        assertThat(announced).isEmpty()
+        resolver.announceIdentityChange("aes dana")
+
+        job.cancel()
+        assertThat(announced).containsExactly("aes dana")
+    }
+
+    @Test
+    fun `the answer says what identified the artist`() = runBlocking<Unit> {
+        coEvery { dao.getMusicBrainzTags(any()) } returns null
+        val genres = """{"genres":[{"name":"ambient","count":1}]}"""
+        val byMbid = resolverWith(mutableListOf()) { 200 to genres }.recheck("k", "Aes Dana", mbid = "m", trackHint = null)
+        val recording = """{"recordings":[{"score":100,"artist-credit":[{"artist":{"id":"r","name":"AES Dana"}}]}]}"""
+        val byRecording = resolverWith(mutableListOf()) { url -> 200 to (if ("inc=genres" in url) genres else recording) }
+            .recheck("k", "Aes Dana", mbid = null, trackHint = "Snöflinga")
+        val name = """{"artists":[{"id":"n","name":"AES Dana","score":100}]}"""
+        val byName = resolverWith(mutableListOf()) { url -> 200 to (if ("inc=genres" in url) genres else name) }
+            .recheck("k", "Aes Dana", mbid = null, trackHint = null)
+
+        assertThat(byMbid.evidence).isEqualTo(IdentityEvidence.MBID)
+        assertThat(byRecording.evidence).isEqualTo(IdentityEvidence.RECORDING)
+        assertThat(byName.evidence).isEqualTo(IdentityEvidence.NAME)
+    }
+
+    /** A recording was already tried for this row, so asking again would only repeat it. */
+    @Test
+    fun `a name left ambiguous after a recording is not asked again`() = runBlocking {
+        coEvery { dao.getMusicBrainzTags("aes dana") } returns MusicBrainzArtistTagsEntity(
+            artistName = "aes dana", mbid = "ambiguous-recording", tags = "", fetchedAt = System.currentTimeMillis()
+        )
+        val urls = mutableListOf<String>()
+        val answer = resolverWith(urls) { 200 to "{}" }.resolveDetailed("Aes Dana", trackHint = "Snöflinga")
+        assertThat(answer.outcome).isEqualTo(GenreOutcome.CACHED_EMPTY)
+        assertThat(urls).isEmpty()
+    }
+
+    @Test
+    fun `a name left ambiguous without a recording is still worth asking for a caller with one`() = runBlocking<Unit> {
+        coEvery { dao.getMusicBrainzTagsFor(any()) } returns listOf(
+            MusicBrainzArtistTagsEntity("aes dana", "ambiguous", "", System.currentTimeMillis())
+        )
+        val resolver = resolverWith(mutableListOf()) { 200 to "{}" }
+        val withTrack = MusicBrainzGenreResolver.ArtistRef("Aes Dana", trackHint = "Snöflinga")
+        val withoutTrack = MusicBrainzGenreResolver.ArtistRef("Aes Dana")
+
+        assertThat(resolver.stillWorthAsking(listOf(withTrack))).containsExactly(withTrack)
+        assertThat(resolver.stillWorthAsking(listOf(withoutTrack))).isEmpty()
     }
 }
