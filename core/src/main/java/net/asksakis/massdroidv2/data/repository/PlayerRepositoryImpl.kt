@@ -757,11 +757,10 @@ class PlayerRepositoryImpl @Inject constructor(
             // Start with track-level metadata genres when present, then enrich from artist cache.
             val trackMetadataGenres = normalizeGenres(mediaItem.metadata?.genres)
 
-            // Resolve genres from cache immediately if available
-            val cachedGenres = mediaItem.artists
-                ?.flatMap { artistGenreCache[it.uri] ?: emptyList() }
-                ?.distinct()
-                ?: emptyList()
+            // Resolve genres from cache immediately if available. The primary artist's only,
+            // see enrichTrackGenresForHistory.
+            val primaryArtist = mediaItem.artists?.firstOrNull()
+            val cachedGenres = primaryArtist?.let { artistGenreCache[it.uri] }.orEmpty()
             val initialGenres = distinctGenres(trackMetadataGenres + cachedGenres)
 
             val track = Track(
@@ -811,13 +810,11 @@ class PlayerRepositoryImpl @Inject constructor(
             )
             scheduleBlockedQueueCleanup(queueId, reason = "queue_update")
 
-            // Fetch genres async for uncached artists
-            val uncachedArtists = mediaItem.artists
-                ?.filter { it.uri.isNotBlank() && !artistGenreCache.containsKey(it.uri) }
-                ?: emptyList()
-            Log.d(TAG, "Uncached artists for genre fetch: ${uncachedArtists.size}")
-            if (uncachedArtists.isNotEmpty()) {
-                scope.launch { fetchAndApplyGenres(uncachedArtists, queueId, trackUri, track.name) }
+            // Fetch genres async when the primary artist's are not cached
+            if (primaryArtist != null && primaryArtist.uri.isNotBlank() &&
+                !artistGenreCache.containsKey(primaryArtist.uri)
+            ) {
+                scope.launch { fetchAndApplyGenres(primaryArtist, queueId, trackUri, track.name) }
             }
         }
     }
@@ -837,7 +834,8 @@ class PlayerRepositoryImpl @Inject constructor(
             emptyList()
         }
 
-    private suspend fun enrichTrackGenresForHistory(
+    @VisibleForTesting
+    internal suspend fun enrichTrackGenresForHistory(
         track: Track,
         artists: List<Pair<String, String>>
     ): Track {
@@ -845,22 +843,25 @@ class PlayerRepositoryImpl @Inject constructor(
         // Last.fm gave free-text crowd tags matched on a name. This runs on a
         // background scope (see the caller), so MusicBrainz's 1 req/s ceiling
         // costs nothing - a track lasts minutes, this needs a second.
-        val resolved = LinkedHashSet<String>()
-        artists.forEach { (_, name) ->
+        //
+        // The PRIMARY artist's genres only, here and in every fallback below. The play
+        // is recorded with these genres on the track and on its primary artist, so a
+        // guest's genres became the primary artist's own: Gunship collected Dave
+        // Lombardo's death metal from one song. Credited artists get their own genres
+        // from the enricher.
+        val primary = artists.firstOrNull()
+        primary?.let { (_, name) ->
             val tags = musicBrainzGenres(name, track.name)
             if (tags.isNotEmpty()) {
                 Log.d(TAG, "History genres from MusicBrainz '$name': $tags")
-                resolved.addAll(tags)
+                return track.copy(genres = tags)
             }
-        }
-        if (resolved.isNotEmpty()) {
-            return track.copy(genres = resolved.toList())
         }
 
         // Fall back to MA provider genres + artist cache
         val mergedGenres = LinkedHashSet<String>()
         mergedGenres.addAll(normalizeGenres(track.genres))
-        artists.forEach { (artistUri, _) ->
+        primary?.let { (artistUri, _) ->
             artistGenreCache[artistUri]?.let { mergedGenres.addAll(normalizeGenres(it)) }
         }
         if (mergedGenres.isNotEmpty()) {
@@ -888,7 +889,7 @@ class PlayerRepositoryImpl @Inject constructor(
             return track.copy(genres = mergedGenres.toList())
         }
 
-        val artistRefs = artistRefs(track, trackMeta, artists)
+        val artistRefs = primaryArtistRefs(track, trackMeta, primary)
         artistRefs.forEach { ref ->
             val artistMeta = fetchMediaItem(
                 command = MaCommands.Music.ARTISTS_GET,
@@ -947,26 +948,23 @@ class PlayerRepositoryImpl @Inject constructor(
         return parseMaItemRef(track.albumUri)
     }
 
-    private fun artistRefs(
+    /** The primary artist's refs as each source names it (several providers can know it). */
+    private fun primaryArtistRefs(
         track: Track,
         trackMeta: ServerMediaItem?,
-        artists: List<Pair<String, String>>
+        primary: Pair<String, String>?
     ): List<MaItemRef> {
         val refs = linkedSetOf<MaItemRef>()
 
-        trackMeta?.artists
-            ?.asSequence()
-            ?.mapNotNull { artist ->
+        trackMeta?.artists?.firstOrNull()
+            ?.let { artist ->
                 if (artist.itemId.isNotBlank() && artist.provider.isNotBlank()) {
                     MaItemRef(itemId = artist.itemId, provider = artist.provider)
                 } else parseMaItemRef(artist.uri)
             }
-            ?.forEach { refs.add(it) }
+            ?.let { refs.add(it) }
 
-        artists
-            .asSequence()
-            .mapNotNull { (uri, _) -> parseMaItemRef(uri) }
-            .forEach { refs.add(it) }
+        primary?.let { (uri, _) -> parseMaItemRef(uri) }?.let { refs.add(it) }
 
         if (!track.artistItemId.isNullOrBlank() && !track.artistProvider.isNullOrBlank()) {
             refs.add(MaItemRef(itemId = track.artistItemId, provider = track.artistProvider))
@@ -1174,55 +1172,47 @@ class PlayerRepositoryImpl @Inject constructor(
         }
     }
 
+    /** Genres of a track's PRIMARY artist for the tracked item (see enrichTrackGenresForHistory). */
     private suspend fun fetchAndApplyGenres(
-        artists: List<ServerMediaItem>,
+        artist: ServerMediaItem,
         queueId: String,
         trackUri: String,
         trackName: String
     ) {
-        Log.d(TAG, "fetchAndApplyGenres: ${artists.map { "${it.name}(${it.itemId})" }}")
+        Log.d(TAG, "fetchAndApplyGenres: ${artist.name}(${artist.itemId})")
         val allGenres = mutableSetOf<String>()
         // MusicBrainz first, then the MA server (see enrichTrackGenresForHistory).
-        for (artist in artists) {
-            val tags = musicBrainzGenres(artist.name, trackName)
-            if (tags.isNotEmpty()) {
-                Log.d(TAG, "MusicBrainz genres for ${artist.name}: $tags")
-                allGenres.addAll(tags)
-                artistGenreCache[artist.uri] = tags
-            }
-        }
-        // Fall back to MA server if MusicBrainz returned nothing
-        if (allGenres.isEmpty()) {
-            for (artist in artists) {
-                try {
-                    val result = wsClient.sendCommand(
-                        MaCommands.Music.ARTISTS_GET,
-                        ItemRefLazyArgs(
-                            itemId = artist.itemId,
-                            provider = artist.provider,
-                            lazy = true
-                        )
+        val tags = musicBrainzGenres(artist.name, trackName)
+        if (tags.isNotEmpty()) {
+            Log.d(TAG, "MusicBrainz genres for ${artist.name}: $tags")
+            allGenres.addAll(tags)
+            artistGenreCache[artist.uri] = tags
+        } else {
+            // Fall back to MA server if MusicBrainz returned nothing
+            try {
+                val result = wsClient.sendCommand(
+                    MaCommands.Music.ARTISTS_GET,
+                    ItemRefLazyArgs(
+                        itemId = artist.itemId,
+                        provider = artist.provider,
+                        lazy = true
                     )
-                    val genres = normalizeGenres(
-                        result?.let {
-                            json.decodeFromJsonElement<ServerMediaItem>(it)
-                        }?.metadata?.genres
-                    )
-                    Log.d(TAG, "MA genres for ${artist.name}: $genres")
-                    artistGenreCache[artist.uri] = genres
-                    allGenres.addAll(genres)
-                } catch (e: Exception) {
-                    Log.w(TAG, "MA genre fetch failed for ${artist.name}: ${e.message}")
-                    artistGenreCache[artist.uri] = emptyList()
-                }
+                )
+                val genres = normalizeGenres(
+                    result?.let {
+                        json.decodeFromJsonElement<ServerMediaItem>(it)
+                    }?.metadata?.genres
+                )
+                Log.d(TAG, "MA genres for ${artist.name}: $genres")
+                artistGenreCache[artist.uri] = genres
+                allGenres.addAll(genres)
+            } catch (e: Exception) {
+                Log.w(TAG, "MA genre fetch failed for ${artist.name}: ${e.message}")
+                artistGenreCache[artist.uri] = emptyList()
             }
         }
         // Include already-known genres already attached to the tracked item (track metadata / previous cache).
         queueTracking[queueId]?.track?.genres?.let { allGenres.addAll(it) }
-        // Include already-cached genres from other artists on this track
-        queueTracking[queueId]?.artists?.forEach { (uri, _) ->
-            artistGenreCache[uri]?.let { allGenres.addAll(it) }
-        }
         if (allGenres.isNotEmpty()) {
             queueTracking.computeIfPresent(queueId) { _, state ->
                 if (state.track.uri == trackUri) {
