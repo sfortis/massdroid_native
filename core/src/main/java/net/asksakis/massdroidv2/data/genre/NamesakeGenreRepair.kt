@@ -8,11 +8,13 @@ import net.asksakis.massdroidv2.data.database.ArtistGenreEntity
 import net.asksakis.massdroidv2.data.database.GenreEntity
 import net.asksakis.massdroidv2.data.database.MusicBrainzArtistTagsEntity
 import net.asksakis.massdroidv2.data.database.PlayHistoryDao
+import net.asksakis.massdroidv2.data.database.SampleTrack
 import net.asksakis.massdroidv2.data.database.TrackGenreEntity
 import net.asksakis.massdroidv2.data.database.TransactionRunner
 import net.asksakis.massdroidv2.data.musicbrainz.GenreOutcome
 import net.asksakis.massdroidv2.data.musicbrainz.GenreResolution
 import net.asksakis.massdroidv2.data.musicbrainz.IdentityEvidence
+import net.asksakis.massdroidv2.data.musicbrainz.Lookup
 import net.asksakis.massdroidv2.data.musicbrainz.MBID_FORM
 import net.asksakis.massdroidv2.data.musicbrainz.MusicBrainzGenreResolver
 import net.asksakis.massdroidv2.domain.recommendation.genreKey
@@ -42,7 +44,7 @@ import javax.inject.Singleton
  * correct genres from Aqua, Birdy and six others that way. Plays, and genres from
  * Music Assistant that the wrong artist did not bring, are not changed.
  *
- * It costs one to three MusicBrainz requests per artist, paced by the shared rate
+ * It costs a few MusicBrainz requests per artist, paced by the shared rate
  * limiter. The position is stored after each artist, so a run stopped by the app
  * closing or by MusicBrainz not answering continues from there on the next connect.
  */
@@ -126,13 +128,19 @@ class NamesakeGenreRepair @Inject constructor(
         val idKeyed = MBID_FORM.matches(row.artistName)
         val artists = artistsOf(row.artistName, idKeyed)
         val uris = artists.map { it.uri }
+        val name = artists.firstOrNull()?.name ?: row.artistName
         val knownMbid = if (idKeyed) row.artistName else artists.firstNotNullOfOrNull { it.mbid?.takeIf(String::isNotBlank) }
-        val answer = resolver.recheck(
-            cacheKey = row.artistName,
-            artistName = artists.firstOrNull()?.name ?: row.artistName,
-            mbid = knownMbid,
-            trackHint = uris.takeIf { it.isNotEmpty() }?.let { dao.getSampleTrackName(it) }
-        )
+        val answer = if (knownMbid != null) {
+            resolver.recheck(cacheKey = row.artistName, artistName = name, mbid = knownMbid, trackHint = null)
+        } else {
+            val tracks = if (uris.isEmpty()) emptyList() else dao.getSampleTracks(uris, MAX_SAMPLE_TRACKS)
+            when (val agreed = recordingsAgree(name, tracks)) {
+                is Lookup.Found -> resolver.recheck(row.artistName, name, agreed.value, trackHint = null)
+                    .copy(evidence = IdentityEvidence.RECORDING)
+                Lookup.Unavailable -> return Repair.UNANSWERED
+                else -> return Repair.UNCHANGED
+            }
+        }
         if (answer.outcome == GenreOutcome.UNAVAILABLE) return Repair.UNANSWERED
         val newMbid = correctedIdentity(row.mbid, answer) ?: return Repair.UNCHANGED
         val oldGenres = row.tags.split(",").map { it.trim() }.filter { it.isNotEmpty() }
@@ -149,6 +157,46 @@ class NamesakeGenreRepair @Inject constructor(
         }
         resolver.announceIdentityChange(row.artistName)
         return Repair.CORRECTED
+    }
+
+    /**
+     * The one artist the recordings of [tracks] are credited to under [name]. One name can
+     * cover two artists in the history: the owner's "Cannons" held a US electropop band and
+     * an Israeli indie band, and the one track the first version read named the Israeli
+     * band, so the US band's tracks lost their genres.
+     *
+     * Two recordings naming different artists mean the name is shared, and nothing is
+     * corrected ([Lookup.Ambiguous]); the remaining tracks are not asked then. When the
+     * tracks come from several uris, every uri needs a recording that names the artist,
+     * because a uri none of whose recordings was found may be another artist; it gives
+     * [Lookup.Missing], like no recording found at all. A request that got no answer is
+     * [Lookup.Unavailable], and the row is asked again on a later run. Decided by the owner
+     * on 2026-11-12.
+     */
+    private suspend fun recordingsAgree(name: String, tracks: List<SampleTrack>): Lookup<String> {
+        val answers = mutableMapOf<String, Lookup<String>>()
+        val confirmedUris = mutableSetOf<String>()
+        var mbid: String? = null
+        for (track in tracks) {
+            when (val found = answers.getOrPut(track.name) { resolver.identifyByRecording(name, track.name) }) {
+                is Lookup.Found -> {
+                    if (mbid != null && found.value != mbid) {
+                        Log.d(TAG, "Namesake repair: '$name' recordings name different artists, not corrected")
+                        return Lookup.Ambiguous
+                    }
+                    mbid = found.value
+                    confirmedUris += track.artistUri
+                }
+                Lookup.Unavailable -> return Lookup.Unavailable
+                else -> Unit
+            }
+        }
+        val uris = tracks.mapTo(mutableSetOf()) { it.artistUri }
+        if (mbid != null && confirmedUris.size < uris.size) {
+            Log.d(TAG, "Namesake repair: '$name' recordings of ${uris.size - confirmedUris.size} uris not found, not corrected")
+            return Lookup.Missing
+        }
+        return mbid?.let { Lookup.Found(it) } ?: Lookup.Missing
     }
 
     /**
@@ -232,6 +280,12 @@ class NamesakeGenreRepair @Inject constructor(
 
         /** Plays older than this barely move any score, and their cache rows expire within it. */
         const val PLAYED_WINDOW_MS = 90L * 24 * 60 * 60 * 1000
+
+        /**
+         * Distinct recordings asked per name at least, so a name shared by two artists in the
+         * history shows. A name with more uris than this asks one recording per uri.
+         */
+        const val MAX_SAMPLE_TRACKS = 3
 
         /** Runs in a row without an answer for one row before the repair moves past it. */
         const val MAX_ROW_FAILURES = 3

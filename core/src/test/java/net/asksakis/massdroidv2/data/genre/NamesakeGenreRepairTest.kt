@@ -9,10 +9,12 @@ import kotlinx.coroutines.test.runTest
 import net.asksakis.massdroidv2.data.database.ArtistEntity
 import net.asksakis.massdroidv2.data.database.MusicBrainzArtistTagsEntity
 import net.asksakis.massdroidv2.data.database.PlayHistoryDao
+import net.asksakis.massdroidv2.data.database.SampleTrack
 import net.asksakis.massdroidv2.data.database.TransactionRunner
 import net.asksakis.massdroidv2.data.musicbrainz.GenreOutcome
 import net.asksakis.massdroidv2.data.musicbrainz.GenreResolution
 import net.asksakis.massdroidv2.data.musicbrainz.IdentityEvidence
+import net.asksakis.massdroidv2.data.musicbrainz.Lookup
 import io.mockk.coVerifyOrder
 import net.asksakis.massdroidv2.data.musicbrainz.MusicBrainzGenreResolver
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
@@ -57,7 +59,7 @@ class NamesakeGenreRepairTest {
         coEvery { dao.getPlayedNameResolvedTags(any()) } returns listOf(aesDanaRow)
         coEvery { dao.getMismatchedIdTags() } returns emptyList()
         coEvery { dao.getArtistsByLowercaseName("aes dana") } returns listOf(aesDana)
-        coEvery { dao.getSampleTrackName(any()) } returns "Snöflinga"
+        coEvery { dao.getSampleTracks(any(), any()) } returns samples("Snöflinga")
         coEvery { dao.getCoCreditedArtists(any()) } returns listOf(aesDana, lauge, maOnlyGuest)
         coEvery { dao.getTrackUrisOfArtists(any()) } returns listOf("deezer://track/1")
         coEvery { resolver.cachedGenres("Lauge", lauge.mbid) } returns listOf("ambient", "dark ambient", "drone")
@@ -65,8 +67,18 @@ class NamesakeGenreRepairTest {
         coEvery { dao.getArtistsByLowercaseName("lauge") } returns listOf(lauge, laugeOnDeezer)
     }
 
+    /** Sample tracks all credited to the Aes Dana uri. */
+    private fun samples(vararg names: String) = names.map { SampleTrack(aesDana.uri, it) }
+
+    /** The recheck answers [resolution]; every recording names its MBID when it was found by one. */
     private fun answering(resolution: GenreResolution) {
         coEvery { resolver.recheck(any(), any(), any(), any()) } returns resolution
+        val byRecording: Lookup<String> = when {
+            resolution.outcome == GenreOutcome.UNAVAILABLE -> Lookup.Unavailable
+            resolution.evidence == IdentityEvidence.RECORDING && resolution.mbid != null -> Lookup.Found(resolution.mbid!!)
+            else -> Lookup.Missing
+        }
+        coEvery { resolver.identifyByRecording(any(), any()) } returns byRecording
     }
 
     @Test
@@ -76,7 +88,8 @@ class NamesakeGenreRepairTest {
 
         repair.runIfDue()
 
-        coVerify { resolver.recheck("aes dana", "Aes Dana", null, "Snöflinga") }
+        coVerify { resolver.identifyByRecording("Aes Dana", "Snöflinga") }
+        coVerify { resolver.recheck("aes dana", "Aes Dana", ambientProject, null) }
         coVerify { dao.deleteTrackGenresOfArtists(listOf(aesDana.uri), listOf("black metal", "metal")) }
         coVerify { dao.deleteArtistGenresNamed(aesDana.uri, listOf("black metal", "metal")) }
         coVerify { dao.deleteArtistGenresNamed(lauge.uri, listOf("black metal", "metal")) }
@@ -166,7 +179,7 @@ class NamesakeGenreRepairTest {
         repair.runIfDue()
 
         coVerify { dao.deleteArtistGenresNamed(wildOnDeezer.uri, listOf("power metal", "metal")) }
-        coVerify { resolver.recheck(wild.mbid!!, "Wild", wild.mbid, "Snöflinga") }
+        coVerify { resolver.recheck(wild.mbid!!, "Wild", wild.mbid, null) }
     }
 
     /** A request that never completed is no answer: nothing is removed and the run resumes later. */
@@ -289,7 +302,7 @@ class NamesakeGenreRepairTest {
     @Test
     fun `a row that failed three runs in a row is left unchanged and passed`() = runTest {
         due(failures = 2)
-        coEvery { resolver.recheck(any(), any(), any(), any()) } throws IllegalStateException("boom")
+        coEvery { resolver.identifyByRecording(any(), any()) } throws IllegalStateException("boom")
 
         repair.runIfDue()
 
@@ -333,5 +346,106 @@ class NamesakeGenreRepairTest {
         repair.runIfDue()
 
         coVerify { dao.deleteArtistGenresNamed(olafur.uri, listOf("black metal", "metal")) }
+    }
+
+    /** Three tracks of the name, all credited to the same new artist: corrected. */
+    @Test
+    fun `recordings that agree correct the row`() = runTest {
+        due()
+        coEvery { dao.getSampleTracks(any(), any()) } returns samples("Anamnesis", "Low Tide", "Snöflinga")
+        coEvery { resolver.identifyByRecording(any(), any()) } returns Lookup.Found(ambientProject)
+        coEvery { resolver.recheck(any(), any(), any(), any()) } returns
+            GenreResolution(listOf("psybient"), GenreOutcome.GENRES, ambientProject, IdentityEvidence.MBID)
+
+        repair.runIfDue()
+
+        coVerify(exactly = 3) { resolver.identifyByRecording("Aes Dana", any()) }
+        coVerify { resolver.storeIdentity("aes dana", ambientProject, listOf("psybient")) }
+    }
+
+    /**
+     * Cannons on the S25: the history held a US and an Israeli band of that name, and one
+     * track named the Israeli one. Recordings naming different artists correct nothing.
+     */
+    @Test
+    fun `recordings that name different artists leave the row unchanged`() = runTest {
+        due()
+        coEvery { dao.getArtistsByLowercaseName("aes dana") } returns listOf(aesDana)
+        coEvery { dao.getSampleTracks(any(), any()) } returns samples("Invisible Cities", "Fire for You")
+        coEvery { resolver.identifyByRecording(any(), "Invisible Cities") } returns Lookup.Found("israeli-band")
+        coEvery { resolver.identifyByRecording(any(), "Fire for You") } returns Lookup.Found("us-band")
+        coEvery { resolver.recheck(any(), any(), any(), any()) } returns
+            GenreResolution(emptyList(), GenreOutcome.NO_GENRES, "israeli-band", IdentityEvidence.RECORDING)
+
+        repair.runIfDue()
+
+        coVerify(exactly = 0) { resolver.storeIdentity(any(), any(), any()) }
+        coVerify(exactly = 0) { dao.deleteArtistGenresNamed(any(), any()) }
+        coVerify(exactly = 0) { dao.deleteTrackGenresOfArtists(any(), any()) }
+    }
+
+    @Test
+    fun `a recording without an answer pauses the row instead of deciding on the others`() = runTest {
+        due()
+        coEvery { dao.getSampleTracks(any(), any()) } returns samples("Anamnesis", "Snöflinga")
+        coEvery { resolver.identifyByRecording(any(), "Anamnesis") } returns Lookup.Found(ambientProject)
+        coEvery { resolver.identifyByRecording(any(), "Snöflinga") } returns Lookup.Unavailable
+
+        repair.runIfDue()
+
+        coVerify(exactly = 0) { resolver.storeIdentity(any(), any(), any()) }
+        coVerify(exactly = 0) { settings.setMusicBrainzRepairCursor(any()) }
+    }
+
+    /** M1: two uris of one name; the second uri's recording was not found, so it may be another artist. */
+    @Test
+    fun `a uri whose recordings were not found leaves the row unchanged`() = runTest {
+        due()
+        val usBand = ArtistEntity(uri = "library://artist/cannons", name = "Aes Dana")
+        coEvery { dao.getArtistsByLowercaseName("aes dana") } returns listOf(aesDana, usBand)
+        coEvery { dao.getSampleTracks(any(), any()) } returns
+            listOf(SampleTrack(aesDana.uri, "Anamnesis"), SampleTrack(usBand.uri, "Fire for You"))
+        coEvery { resolver.identifyByRecording(any(), "Anamnesis") } returns Lookup.Found(ambientProject)
+        coEvery { resolver.identifyByRecording(any(), "Fire for You") } returns Lookup.Missing
+        coEvery { resolver.recheck(any(), any(), any(), any()) } returns
+            GenreResolution(listOf("psybient"), GenreOutcome.GENRES, ambientProject, IdentityEvidence.MBID)
+
+        repair.runIfDue()
+
+        coVerify(exactly = 0) { resolver.storeIdentity(any(), any(), any()) }
+        coVerify(exactly = 0) { dao.deleteArtistGenresNamed(any(), any()) }
+        coVerify { settings.setMusicBrainzRepairCursor("aes dana") }
+    }
+
+    @Test
+    fun `every uri naming the same artist by a recording corrects the row`() = runTest {
+        due()
+        val onLibrary = ArtistEntity(uri = "library://artist/5586", name = "Aes Dana")
+        coEvery { dao.getArtistsByLowercaseName("aes dana") } returns listOf(aesDana, onLibrary)
+        coEvery { dao.getSampleTracks(any(), any()) } returns
+            listOf(SampleTrack(aesDana.uri, "Anamnesis"), SampleTrack(onLibrary.uri, "Snöflinga"))
+        coEvery { resolver.identifyByRecording(any(), any()) } returns Lookup.Found(ambientProject)
+        coEvery { resolver.recheck(any(), any(), any(), any()) } returns
+            GenreResolution(listOf("psybient"), GenreOutcome.GENRES, ambientProject, IdentityEvidence.MBID)
+
+        repair.runIfDue()
+
+        coVerify { resolver.storeIdentity("aes dana", ambientProject, listOf("psybient")) }
+    }
+
+    /** L2: two artists already named decide the row; a later track is not asked and cannot pause it. */
+    @Test
+    fun `recordings stop at the second artist and a later failure does not pause the row`() = runTest {
+        due()
+        coEvery { dao.getSampleTracks(any(), any()) } returns samples("Fire for You", "Invisible Cities", "Zebra")
+        coEvery { resolver.identifyByRecording(any(), "Fire for You") } returns Lookup.Found("us-band")
+        coEvery { resolver.identifyByRecording(any(), "Invisible Cities") } returns Lookup.Found("israeli-band")
+        coEvery { resolver.identifyByRecording(any(), "Zebra") } returns Lookup.Unavailable
+
+        repair.runIfDue()
+
+        coVerify(exactly = 0) { resolver.identifyByRecording(any(), "Zebra") }
+        coVerify(exactly = 0) { resolver.storeIdentity(any(), any(), any()) }
+        coVerify { settings.setMusicBrainzRepairCursor("aes dana") }
     }
 }

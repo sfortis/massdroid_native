@@ -632,14 +632,41 @@ interface PlayHistoryDao {
     @Query("SELECT * FROM artists WHERE mbid = :mbid")
     suspend fun getArtistsByMbid(mbid: String): List<ArtistEntity>
 
-    /** The name of one track credited to any of [artistUris], to identify the artist by a recording. */
+    /**
+     * Tracks to identify the artists of [artistUris] by their recordings: the first track
+     * of every uri, so a name two artists share is sampled under both, then more tracks by
+     * name until there are [minimum] distinct names. Ordered by uri and name, so the same
+     * database gives the same tracks and a repair can be reproduced. Sampling by name alone
+     * read three tracks of the Israeli "Cannons" and none of the US band of that name.
+     */
+    @Transaction
+    suspend fun getSampleTracks(artistUris: List<String>, minimum: Int): List<SampleTrack> {
+        val perArtist = getFirstTrackPerArtist(artistUris)
+        val taken = perArtist.mapTo(mutableSetOf()) { it.name }
+        val more = getFirstTracksByName(artistUris, minimum + perArtist.size)
+            .filter { it.name !in taken }
+            .take((minimum - taken.size).coerceAtLeast(0))
+        return perArtist + more
+    }
+
     @Query("""
-        SELECT t.name FROM tracks t
+        SELECT ta.artist_uri AS artistUri, MIN(t.name) AS name FROM tracks t
         JOIN track_artists ta ON ta.track_uri = t.uri
         WHERE ta.artist_uri IN (:artistUris) AND t.name != ''
-        LIMIT 1
+        GROUP BY ta.artist_uri
+        ORDER BY ta.artist_uri
     """)
-    suspend fun getSampleTrackName(artistUris: List<String>): String?
+    suspend fun getFirstTrackPerArtist(artistUris: List<String>): List<SampleTrack>
+
+    @Query("""
+        SELECT MIN(ta.artist_uri) AS artistUri, t.name AS name FROM tracks t
+        JOIN track_artists ta ON ta.track_uri = t.uri
+        WHERE ta.artist_uri IN (:artistUris) AND t.name != ''
+        GROUP BY t.name
+        ORDER BY t.name
+        LIMIT :limit
+    """)
+    suspend fun getFirstTracksByName(artistUris: List<String>, limit: Int): List<SampleTrack>
 
     /** Every artist credited on a track that any of [artistUris] is credited on, themselves included. */
     @Query("""
@@ -1428,6 +1455,12 @@ data class RecentPlayRow(
 
 data class TimeAnalysisRow(
     @ColumnInfo(name = "playedAt") val playedAt: Long
+)
+
+/** A track name sampled to identify an artist, with the uri it is credited to. */
+data class SampleTrack(
+    @ColumnInfo(name = "artistUri") val artistUri: String,
+    val name: String
 )
 
 data class TrackArtistRow(

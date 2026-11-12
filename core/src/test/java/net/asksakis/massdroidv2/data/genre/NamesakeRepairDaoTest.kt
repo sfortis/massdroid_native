@@ -14,6 +14,7 @@ import net.asksakis.massdroidv2.data.database.GenreEntity
 import net.asksakis.massdroidv2.data.database.MusicBrainzArtistTagsEntity
 import net.asksakis.massdroidv2.data.database.PlayHistoryDao
 import net.asksakis.massdroidv2.data.database.PlayHistoryEntity
+import net.asksakis.massdroidv2.data.database.SampleTrack
 import net.asksakis.massdroidv2.data.database.TrackArtistEntity
 import net.asksakis.massdroidv2.data.database.TrackEntity
 import net.asksakis.massdroidv2.data.database.TrackGenreEntity
@@ -21,6 +22,7 @@ import net.asksakis.massdroidv2.data.database.TransactionRunner
 import net.asksakis.massdroidv2.data.musicbrainz.GenreOutcome
 import net.asksakis.massdroidv2.data.musicbrainz.GenreResolution
 import net.asksakis.massdroidv2.data.musicbrainz.IdentityEvidence
+import net.asksakis.massdroidv2.data.musicbrainz.Lookup
 import net.asksakis.massdroidv2.data.musicbrainz.MusicBrainzGenreResolver
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
 import org.junit.After
@@ -117,7 +119,7 @@ class NamesakeRepairDaoTest {
     @Test
     fun `the sample track, the co-credits and the track uris come from the credits`() = runBlocking<Unit> {
         val aesDana = listOf("deezer://artist/5586")
-        assertThat(dao.getSampleTrackName(aesDana)).isEqualTo("Snöflinga")
+        assertThat(dao.getSampleTracks(aesDana, 3).map { it.name }).containsExactly("Snöflinga")
         assertThat(dao.getCoCreditedArtists(aesDana).map { it.uri })
             .containsExactly("deezer://artist/5586", "library://artist/345")
         assertThat(dao.getTrackUrisOfArtists(aesDana)).containsExactly("deezer://track/snoflinga")
@@ -154,8 +156,11 @@ class NamesakeRepairDaoTest {
     fun `a co-credited artist does not get the namesake's genre back from its other uris`() = runBlocking<Unit> {
         val resolver = mockk<MusicBrainzGenreResolver>(relaxed = true)
         coEvery { resolver.recheck(any(), any(), any(), any()) } returns GenreResolution(emptyList(), GenreOutcome.NOT_FOUND)
+        coEvery { resolver.identifyByRecording(any(), any()) } returns Lookup.Missing
+        coEvery { resolver.identifyByRecording("Aes Dana", "Snöflinga") } returns
+            Lookup.Found("ed5cd4a2-0000-0000-0000-000000000000")
         coEvery { resolver.recheck("aes dana", any(), any(), any()) } returns GenreResolution(
-            listOf("ambient", "psybient"), GenreOutcome.GENRES, "ed5cd4a2-0000-0000-0000-000000000000", IdentityEvidence.RECORDING
+            listOf("ambient", "psybient"), GenreOutcome.GENRES, "ed5cd4a2-0000-0000-0000-000000000000", IdentityEvidence.MBID
         )
         coEvery { resolver.cachedGenres("Lauge", any()) } returns listOf("ambient", "dark ambient", "drone")
 
@@ -176,6 +181,36 @@ class NamesakeRepairDaoTest {
             override suspend fun <R> inTransaction(block: suspend () -> R): R = block()
         }
         return NamesakeGenreRepair(dao, resolver, settings, transactions, GenreSpellingResolver(dao))
+    }
+
+    @Test
+    fun `sample tracks are distinct and ordered by name, so a repair can be reproduced`() = runBlocking<Unit> {
+        track("deezer://track/z", "Zebra", "deezer://artist/5586")
+        track("deezer://track/a", "Anamnesis", "deezer://artist/5586")
+        track("deezer://track/a2", "Anamnesis", "deezer://artist/5586")
+        track("deezer://track/m", "Mesh", "deezer://artist/5586")
+
+        assertThat(dao.getSampleTracks(listOf("deezer://artist/5586"), 3).map { it.name })
+            .containsExactly("Anamnesis", "Mesh", "Snöflinga").inOrder()
+    }
+
+    /** M1: the Israeli band's tracks sort first; sampling by name alone never reached the US band. */
+    @Test
+    fun `every uri of a shared name is sampled, even when another uri's tracks sort first`() = runBlocking<Unit> {
+        artist("deezer://artist/israeli", "Cannons")
+        artist("deezer://artist/us", "Cannons")
+        track("deezer://track/i1", "A Day", "deezer://artist/israeli")
+        track("deezer://track/i2", "Blue", "deezer://artist/israeli")
+        track("deezer://track/i3", "Cities", "deezer://artist/israeli")
+        track("deezer://track/u1", "Fire for You", "deezer://artist/us")
+
+        val samples = dao.getSampleTracks(listOf("deezer://artist/israeli", "deezer://artist/us"), 3)
+
+        assertThat(samples).containsExactly(
+            SampleTrack("deezer://artist/israeli", "A Day"),
+            SampleTrack("deezer://artist/us", "Fire for You"),
+            SampleTrack("deezer://artist/israeli", "Blue")
+        ).inOrder()
     }
 
     private suspend fun artist(uri: String, name: String, mbid: String? = null) =

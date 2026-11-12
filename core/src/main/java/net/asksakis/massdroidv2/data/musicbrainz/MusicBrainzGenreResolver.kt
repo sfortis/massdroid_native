@@ -195,6 +195,14 @@ class MusicBrainzGenreResolver @Inject constructor(
     }
 
     /**
+     * The artist a recording of [trackName] is credited to under [artistName], without
+     * fetching genres or touching the cache. For a caller that asks several recordings
+     * of one name and must see them agree before it trusts any.
+     */
+    internal suspend fun identifyByRecording(artistName: String, trackName: String): Lookup<String> =
+        withContext(Dispatchers.IO) { findMbidByRecording(artistName, trackName) }
+
+    /**
      * Tells [identityChanges] that [cacheKey] now names another artist. For a caller of
      * [storeIdentity], after its transaction committed: announced earlier, a holder could
      * refill its genres from the old row before the new one is visible.
