@@ -307,7 +307,7 @@ class MusicBrainzGenreResolver @Inject constructor(
         val url = "$BASE/recording".toHttpUrlOrNull()?.newBuilder()
             ?.addQueryParameter("query", "recording:\"${phrase(trackName)}\" AND artist:\"${phrase(artistName)}\"")
             ?.addQueryParameter("fmt", "json")
-            ?.addQueryParameter("limit", "3")
+            ?.addQueryParameter("limit", RECORDING_CANDIDATES.toString())
             ?.build() ?: return Lookup.Missing
         val body = when (val answer = request(url.toString())) {
             is Lookup.Found -> answer.value
@@ -542,6 +542,14 @@ class MusicBrainzGenreResolver @Inject constructor(
          * namesake outscoring the exact match.
          */
         const val SEARCH_CANDIDATES = 5
+
+        /**
+         * Recordings pulled from a title search, all read for credits of the name. Two
+         * namesakes with a song of one title are caught only when both come back: with 3,
+         * MusicBrainz sometimes returned only one of the two Neve bands' "It's Over Now",
+         * and the repair took it for the owner's artist.
+         */
+        const val RECORDING_CANDIDATES = 10
 
         /**
          * Bar for a candidate that carries the name we searched (ignoring case).

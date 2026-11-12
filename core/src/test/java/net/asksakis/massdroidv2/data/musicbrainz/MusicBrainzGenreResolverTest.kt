@@ -285,6 +285,26 @@ class MusicBrainzGenreResolverTest {
         assertThat(urls.none { "inc=genres" in it }).isTrue()
     }
 
+    /**
+     * Neve on the S25: two bands of the name have "It's Over Now", and the second one can
+     * rank below other matches. The search must reach it to see that the title is shared.
+     */
+    @Test
+    fun `a namesake's recording below the third result still makes the title shared`() = runBlocking {
+        coEvery { dao.getMusicBrainzTags(any()) } returns null
+        val credits = listOf("la-band", "la-band", "la-band", "uk-trio").map { id ->
+            """{"score":100,"artist-credit":[{"artist":{"id":"$id","name":"Neve"}}]}"""
+        }
+        val answer = resolverWith(mutableListOf()) { url ->
+            val limit = Regex("[?&]limit=(\\d+)").find(url)?.groupValues?.get(1)?.toInt() ?: credits.size
+            when {
+                "/recording" in url -> 200 to """{"recordings":[${credits.take(limit).joinToString(",")}]}"""
+                else -> 200 to """{"artists":[{"id":"la-band","name":"Neve","score":100},{"id":"uk-trio","name":"Neve","score":98}]}"""
+            }
+        }.identifyByRecording("Neve", "It's Over Now")
+        assertThat(answer).isEqualTo(Lookup.Missing)
+    }
+
     @Test
     fun `the bio stays while the answer names the same artist and goes with a namesake`() = runBlocking<Unit> {
         val withBio = MusicBrainzArtistTagsEntity("aes dana", "old", "metal", 0L, bio = "A French band.", bioFetchedAt = 5L)
