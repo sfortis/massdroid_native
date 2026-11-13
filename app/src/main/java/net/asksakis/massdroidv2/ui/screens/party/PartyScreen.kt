@@ -20,6 +20,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Celebration
+import androidx.compose.material.icons.filled.DirectionsCar
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Speaker
@@ -60,6 +61,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.repeatOnLifecycle
+import net.asksakis.massdroidv2.domain.model.PartyJoinLink
 import net.asksakis.massdroidv2.domain.model.PlaybackState
 import net.asksakis.massdroidv2.domain.party.PartyFit
 import net.asksakis.massdroidv2.domain.party.PartyIdleTimer
@@ -156,15 +158,13 @@ fun PartyScreen(
                 when (val current = state) {
                     PartyUiState.Loading -> CircularProgressIndicator(Modifier.align(Alignment.Center))
                     PartyUiState.GuestAccessOff -> PartyNotice(
-                        title = "Guest access is off",
-                        text = "Turn it on in Music Assistant, under Settings, Plugins, Party. Then come back here.",
+                        notice = GUEST_ACCESS_OFF_NOTICE,
                         isDark = isDark,
                         ballRoom = ballRoom,
                         onRefresh = viewModel::refresh
                     )
                     is PartyUiState.Failed -> PartyNotice(
-                        title = "Party unavailable",
-                        text = current.message,
+                        notice = current.notice(),
                         isDark = isDark,
                         ballRoom = ballRoom,
                         onRefresh = viewModel::refresh
@@ -228,38 +228,45 @@ private fun PartyReady(state: PartyUiState.Ready, isDark: Boolean, ballRoom: Mut
                         textAlign = TextAlign.Center
                     )
                     Text(
-                        text = state.qrText ?: "Scan to add songs",
+                        text = state.subtitle,
                         style = MaterialTheme.typography.bodyLarge,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         textAlign = TextAlign.Center
                     )
                 }
                 PartyPlayerCard(state.target, isDark)
-                // The hint replaces the footer, because a guest on mobile data cannot open the
-                // link at all, and the two together do not fit a small phone.
-                if (state.link.homeNetworkOnly) {
-                    PartyCard(isDark) {
-                        Text(
-                            text = "This link works only on your home network. Set an External URL or " +
-                                "Remote Access in Music Assistant so guests on mobile data can join.",
-                            style = MaterialTheme.typography.bodySmall
-                        )
-                    }
-                } else {
-                    Text(
-                        text = "Guests open the link on their own phone. No app needed.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        textAlign = TextAlign.Center
-                    )
-                }
+                PartyJoinFooter(state.link, isDark)
             }
         }
     }
 }
 
+/**
+ * How guests join. The hint replaces the footer, because a guest on mobile data cannot open the
+ * link at all, and the two together do not fit a small phone.
+ */
 @Composable
-private fun QrCard(url: String, title: String, isDark: Boolean, size: Dp) {
+internal fun PartyJoinFooter(link: PartyJoinLink, isDark: Boolean) {
+    if (link.homeNetworkOnly) {
+        PartyCard(isDark) {
+            Text(
+                text = "This link works only on your home network. Set an External URL or " +
+                    "Remote Access in Music Assistant so guests on mobile data can join.",
+                style = MaterialTheme.typography.bodySmall
+            )
+        }
+    } else {
+        Text(
+            text = "Guests open the link on their own phone. No app needed.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center
+        )
+    }
+}
+
+@Composable
+internal fun QrCard(url: String, title: String, isDark: Boolean, size: Dp) {
     val shape = MaterialTheme.shapes.extraLarge
     // Opaque, still and white in both themes, because a scanner needs the contrast. The
     // shadow is drawn, so the card itself never needs an alpha below one.
@@ -284,7 +291,7 @@ private fun QrCard(url: String, title: String, isDark: Boolean, size: Dp) {
  * card says so instead, and the name comes back once the server names a player that plays.
  */
 @Composable
-private fun PartyPlayerCard(target: PartyTarget, isDark: Boolean) {
+internal fun PartyPlayerCard(target: PartyTarget, isDark: Boolean, device: PartyDevice = PartyDevice.Phone) {
     if (target == PartyTarget.Idle) {
         PartyCard(isDark) {
             PartyCardRow(icon = Icons.Default.Speaker) {
@@ -300,23 +307,28 @@ private fun PartyPlayerCard(target: PartyTarget, isDark: Boolean) {
     val name = when (target) {
         PartyTarget.GuestSession -> "Each guest's own phone"
         PartyTarget.GuestSessionUnavailable -> "Not available"
-        is PartyTarget.SelectedPlayer -> target.name.label()
-        is PartyTarget.OtherPlayer -> target.name.label()
+        is PartyTarget.SelectedPlayer -> target.name.label(device)
+        is PartyTarget.OtherPlayer -> target.name.label(device)
         PartyTarget.Idle -> return
     }
-    val onPhone = target == PartyTarget.GuestSession || target == PartyTarget.GuestSessionUnavailable ||
-        (target as? PartyTarget.SelectedPlayer)?.name == PartyPlayerName.ThisPhone ||
+    val onGuestPhones = target == PartyTarget.GuestSession || target == PartyTarget.GuestSessionUnavailable
+    val onThisDevice = (target as? PartyTarget.SelectedPlayer)?.name == PartyPlayerName.ThisPhone ||
         (target as? PartyTarget.OtherPlayer)?.name == PartyPlayerName.ThisPhone
+    val icon = when {
+        onGuestPhones -> Icons.Default.PhoneAndroid
+        onThisDevice -> device.icon
+        else -> Icons.Default.Speaker
+    }
     val warning = when (target) {
         is PartyTarget.OtherPlayer -> "This is not the player you selected. Guest songs will play on " +
-            "${target.name.inSentence()}." +
+            "${target.name.inSentence(device)}." +
             if (target.state == PlaybackState.IDLE) " The first guest song starts it." else ""
         PartyTarget.GuestSessionUnavailable -> "Music Assistant could not start the silent disco player. " +
             "Check the Party settings in Music Assistant, then refresh."
         else -> null
     }
     PartyCard(isDark) {
-        PartyCardRow(icon = if (onPhone) Icons.Default.PhoneAndroid else Icons.Default.Speaker) {
+        PartyCardRow(icon = icon) {
             Text(
                 text = "Party Player",
                 style = MaterialTheme.typography.labelMedium,
@@ -346,13 +358,22 @@ private fun PartyCardRow(icon: ImageVector, content: @Composable ColumnScope.() 
     }
 }
 
-private fun PartyPlayerName.label(): String = when (this) {
-    PartyPlayerName.ThisPhone -> "This phone"
+/**
+ * The device the app runs on, as the player card names it when that device's own player is the
+ * party player ([PartyPlayerName.ThisPhone]).
+ */
+internal enum class PartyDevice(val label: String, val inSentence: String, val icon: ImageVector) {
+    Phone("This phone", "this phone", Icons.Default.PhoneAndroid),
+    Car("This car", "this car", Icons.Default.DirectionsCar)
+}
+
+private fun PartyPlayerName.label(device: PartyDevice): String = when (this) {
+    PartyPlayerName.ThisPhone -> device.label
     is PartyPlayerName.Named -> name
 }
 
-private fun PartyPlayerName.inSentence(): String = when (this) {
-    PartyPlayerName.ThisPhone -> "this phone"
+private fun PartyPlayerName.inSentence(device: PartyDevice): String = when (this) {
+    PartyPlayerName.ThisPhone -> device.inSentence
     is PartyPlayerName.Named -> name
 }
 
@@ -372,11 +393,23 @@ private fun PartyCard(isDark: Boolean, content: @Composable ColumnScope.() -> Un
     }
 }
 
+/** The line under the party's name: the plugin's own QR text, or a plain default. */
+internal val PartyUiState.Ready.subtitle: String get() = qrText ?: "Scan to add songs"
+
+/** What a notice in place of the QR code says. */
+internal data class PartyNoticeText(val title: String, val text: String)
+
+internal val GUEST_ACCESS_OFF_NOTICE = PartyNoticeText(
+    title = "Guest access is off",
+    text = "Turn it on in Music Assistant, under Settings, Plugins, Party. Then come back here."
+)
+
+internal fun PartyUiState.Failed.notice() = PartyNoticeText(title = "Party unavailable", text = message)
+
 /** A notice in place of the QR code, in one compact card under the ball when it fits. */
 @Composable
 private fun PartyNotice(
-    title: String,
-    text: String,
+    notice: PartyNoticeText,
     isDark: Boolean,
     ballRoom: MutableState<Dp?>,
     onRefresh: () -> Unit
@@ -395,11 +428,11 @@ private fun PartyNotice(
             Box(modifier = Modifier.onSizeChanged { content = with(density) { it.height.toDp() } }) {
                 PartyCard(isDark) {
                     PartyCardRow(icon = Icons.Default.Celebration) {
-                        Text(text = title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                        Text(text = notice.title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                     }
                     Spacer(Modifier.height(8.dp))
                     Text(
-                        text = text,
+                        text = notice.text,
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

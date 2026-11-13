@@ -152,6 +152,7 @@ private fun CarSignInScreen(
     val providers by viewModel.providers.collectAsStateWithLifecycle()
     val oauthInProgress by viewModel.oauthInProgress.collectAsStateWithLifecycle()
     val homeAssistantPage by viewModel.homeAssistantPage.collectAsStateWithLifecycle()
+    val partyAvailable by viewModel.partyAvailable.collectAsStateWithLifecycle()
 
     // What was typed for the chosen server; null shows what is saved for that server. Keyed by
     // the server, so what was typed for one never reaches the next. The password is kept out of
@@ -159,6 +160,7 @@ private fun CarSignInScreen(
     var typedUsername by rememberSaveable(chosen?.url) { mutableStateOf<String?>(null) }
     var typedPassword by remember(chosen?.url) { mutableStateOf<String?>(null) }
     var choosingOther by rememberSaveable { mutableStateOf(false) }
+    var partyOpen by rememberSaveable { mutableStateOf(false) }
     // The server this screen last sent a sign-in to; only its success closes the screen, so
     // opening the gear while connected, to change server or sign out, does not close it.
     var sentUrl by rememberSaveable { mutableStateOf<String?>(null) }
@@ -186,20 +188,29 @@ private fun CarSignInScreen(
     LaunchedEffect(Unit) { viewModel.loadSavedCertificate(context) }
 
     // Closes on a sign-in from this screen that saved its server. Connected alone is not enough:
-    // a failed switch connects to the previous server again.
+    // a failed switch connects to the previous server again. A sign-in that lands while the Party
+    // page is open is taken without closing, so the page the user went on to stays up.
     val succeeded by viewModel.succeeded.collectAsStateWithLifecycle()
-    LaunchedEffect(succeeded, sentUrl) {
+    LaunchedEffect(succeeded, sentUrl, partyOpen) {
         val done = succeeded ?: return@LaunchedEffect
         val sent = sentUrl ?: return@LaunchedEffect
         if (sameServer(done, sent)) {
             viewModel.consumeSuccess()
-            onClose()
+            if (!partyOpen) onClose()
         }
     }
+
+    // Held above the pages below, so coming back from one keeps the place in the settings.
+    val scrollState = rememberScrollState()
 
     // The Home Assistant page covers the screen while it is open; BACK and Cancel return here.
     homeAssistantPage?.let { url ->
         CarHomeAssistantPage(url, viewModel)
+        return
+    }
+    // The Party page covers the screen too; its BACK and its arrow return here.
+    if (partyOpen) {
+        CarPartyPage(onBack = { partyOpen = false })
         return
     }
 
@@ -251,7 +262,7 @@ private fun CarSignInScreen(
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .verticalScroll(rememberScrollState())
+                    .verticalScroll(scrollState)
                     .padding(horizontal = 48.dp, vertical = 32.dp),
                 verticalArrangement = Arrangement.Center,
                 horizontalAlignment = Alignment.CenterHorizontally,
@@ -423,6 +434,15 @@ private fun CarSignInScreen(
                                 MaterialTheme.colorScheme.onSurfaceVariant
                             },
                         )
+                    }
+
+                    // The plugin list is not cleared on a sign-out or a dropped connection, and the
+                    // page can load the party only while connected.
+                    if (partyAvailable && connected) {
+                        Spacer(Modifier.height(28.dp))
+                        HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
+                        Spacer(Modifier.height(20.dp))
+                        CarPartyRow(onOpen = { partyOpen = true })
                     }
 
                     Spacer(Modifier.height(28.dp))

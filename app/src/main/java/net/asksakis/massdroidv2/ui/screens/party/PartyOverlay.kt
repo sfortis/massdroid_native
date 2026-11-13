@@ -74,7 +74,7 @@ fun PartyOverlay(visible: Boolean, onClose: () -> Unit) {
  * long after the screen closed.
  */
 @Composable
-private fun rememberPartyViewModelStoreOwner(activity: ComponentActivity): ViewModelStoreOwner {
+internal fun rememberPartyViewModelStoreOwner(activity: ComponentActivity): ViewModelStoreOwner {
     val owner = remember(activity) { PartyViewModelStoreOwner(activity) }
     DisposableEffect(owner) {
         onDispose { owner.viewModelStore.clear() }

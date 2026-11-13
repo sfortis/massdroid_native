@@ -28,6 +28,7 @@ import net.asksakis.massdroidv2.domain.model.CrossfadeMode
 import net.asksakis.massdroidv2.domain.model.QueueChoice
 import net.asksakis.massdroidv2.domain.model.SendspinAudioFormat
 import net.asksakis.massdroidv2.domain.repository.MusicRepository
+import net.asksakis.massdroidv2.domain.repository.PartyRepository
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
 import javax.inject.Inject
@@ -46,6 +47,7 @@ class CarSignInViewModel @Inject constructor(
     private val playerRepository: PlayerRepository,
     private val musicRepository: MusicRepository,
     private val queueToggles: QueueTogglesCache,
+    partyRepository: PartyRepository,
     serverPickerFactory: ServerPicker.Factory,
     signInFactory: SignInController.Factory,
 ) : ViewModel() {
@@ -60,6 +62,10 @@ class CarSignInViewModel @Inject constructor(
 
     /** The form's error or the last attempt's; see [SignInController.error]. */
     val error: StateFlow<String?> = signIn.error
+
+    /** Whether the server has Music Assistant's Party plugin, which the Party row needs. */
+    val partyAvailable: StateFlow<Boolean> = partyRepository.available
+        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
     // ---- MassDroid player audio settings ----------------------------------
     // The car IS the Sendspin player, so these tune its own output. Audio
