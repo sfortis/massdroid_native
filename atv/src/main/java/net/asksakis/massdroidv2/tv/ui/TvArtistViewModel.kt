@@ -81,7 +81,8 @@ class TvArtistViewModel @Inject constructor(
             // ~empty on MA 2.9+, so the TV artist screen would otherwise show no albums.
             runCatching { musicRepository.getArtistDiscography(itemId, provider) }
                 .onSuccess { list ->
-                    loadedAlbums = list
+                    // The grid keys albums by uri, and MA before 2.9 can repeat one (#87).
+                    loadedAlbums = list.distinctBy { it.uri }
                     applySort()
                     _load.value = TvLoad.READY
                 }

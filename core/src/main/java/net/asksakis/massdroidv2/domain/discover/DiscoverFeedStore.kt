@@ -224,12 +224,23 @@ class DiscoverFeedStore @Inject constructor(
             genreItems = genreData?.second.orEmpty()
             // Stale-while-revalidate: the last rendered feed shows at once and the first build
             // replaces it with a live one.
-            _state.update { it.copy(sections = cached.sections, isLoading = false) }
-            val hasMissingImages = cached.sections.any { section ->
+            val sections = cached.sections.map { it.withoutRepeats() }
+            _state.update { it.copy(sections = sections, isLoading = false) }
+            val hasMissingImages = sections.any { section ->
                 section is DiscoverSection.AlbumSection && section.albums.any { it.imageUrl == null }
             }
             cacheStale = discoverCache.isStale(cached) || hasMissingImages
         }
+    }
+
+    // Each Home row keys its items by uri (genres by name). A feed saved before the live build
+    // removed repeats can hold one twice, which would crash Home on launch (#87).
+    private fun DiscoverSection.withoutRepeats(): DiscoverSection = when (this) {
+        is DiscoverSection.ArtistSection -> copy(artists = artists.distinctBy { it.uri })
+        is DiscoverSection.AlbumSection -> copy(albums = albums.distinctBy { it.uri })
+        is DiscoverSection.PlaylistSection -> copy(playlists = playlists.distinctBy { it.uri })
+        is DiscoverSection.TrackSection -> copy(tracks = tracks.distinctBy { it.uri })
+        is DiscoverSection.GenreRadioSection -> copy(genres = genres.distinctBy { it.name })
     }
 
     // The genre maps of a cached feed are rebuilt from its artists, so the mixes and the car's
