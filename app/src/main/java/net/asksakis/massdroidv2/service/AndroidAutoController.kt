@@ -14,6 +14,7 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.session.MediaLibraryService
 import androidx.media3.session.MediaSession
 import java.io.ByteArrayOutputStream
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
@@ -26,6 +27,7 @@ import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import net.asksakis.massdroidv2.auto.AaMetrics
 import net.asksakis.massdroidv2.auto.AaProjectionObserver
 import net.asksakis.massdroidv2.data.sendspin.SendspinManager
@@ -83,7 +85,7 @@ class AndroidAutoController(
     // updates (artwork download, queue fetch, AA-initiated volume tap) write
     // into these instead of pushing to remotePlayer directly. The single
     // master observer in observeAaState() consumes them coherently.
-    private val artworkData = MutableStateFlow<ByteArray?>(null)
+    private val artworkData = MutableStateFlow<LoadedArtwork?>(null)
     private val queueSnapshot = MutableStateFlow(AutoQueueSnapshot.Empty)
     /**
      * AA-originated optimistic volume bump: (volume, expiresAtMs). The
@@ -101,7 +103,6 @@ class AndroidAutoController(
      */
     private val shownSignedOut = MutableStateFlow(false)
 
-    private var cachedArtworkUrl: String? = null
     private var cachedArtworkKey: String? = null
     // The last AaCompleteState we applied, so the master observer can diff
     // and dispatch only the channel that actually changed (playback / queue /
@@ -525,7 +526,7 @@ class AndroidAutoController(
                     queue = values[1] as net.asksakis.massdroidv2.domain.model.QueueState?,
                     ssConn = values[2] as SendspinState,
                     ssSync = values[3] as SyncState,
-                    artwork = values[4] as ByteArray?,
+                    artwork = values[4] as LoadedArtwork?,
                     queueEntries = values[5] as AutoQueueSnapshot,
                     volumeOv = values[6] as Pair<Int, Long>?,
                     ssStreamActive = values[7] as Boolean,
@@ -553,7 +554,7 @@ class AndroidAutoController(
         queue: net.asksakis.massdroidv2.domain.model.QueueState?,
         ssConn: SendspinState,
         ssSync: SyncState,
-        artwork: ByteArray?,
+        artwork: LoadedArtwork?,
         queueEntries: AutoQueueSnapshot,
         volumeOv: Pair<Int, Long>?,
         ssStreamActive: Boolean,
@@ -601,7 +602,10 @@ class AndroidAutoController(
                 ?: player.currentMedia?.duration
                 ?: 0.0) * 1000).toLong(),
             currentIndex = currentIndex,
-            artworkData = artwork,
+            // Only bytes fetched for the current image are used. The collector starts the next
+            // download after this state is built, so on a track change the bytes still belong to
+            // the previous track, and the car showed that cover under the new title (#84).
+            artworkData = artwork?.takeIf { it.key == imageUrl?.toArtworkKey() }?.bytes,
             // Car only: give the AAOS media center a content:// artworkUri it can load
             // itself (it ignores artworkData). Phone/TV/AA stay on artworkData (null here).
             artworkUri = if (net.asksakis.massdroidv2.BuildConfig.IS_AUTOMOTIVE) {
@@ -793,19 +797,17 @@ class AndroidAutoController(
 
     private fun updateArtwork(imageUrl: String?) {
         val artworkKey = imageUrl?.toArtworkKey()
-        if (imageUrl != null && artworkKey != cachedArtworkKey) {
-            cachedArtworkUrl = imageUrl
+        if (imageUrl != null && artworkKey != null && artworkKey != cachedArtworkKey) {
             cachedArtworkKey = artworkKey
             artworkData.value = null
-            scope.launch(Dispatchers.IO) { downloadArtwork(imageUrl) }
+            scope.launch(Dispatchers.IO) { downloadArtwork(imageUrl, artworkKey) }
         } else if (imageUrl == null && cachedArtworkKey != null) {
-            cachedArtworkUrl = null
             cachedArtworkKey = null
             artworkData.value = null
         }
     }
 
-    private fun downloadArtwork(url: String) {
+    private suspend fun downloadArtwork(url: String, artworkKey: String) {
         try {
             val request = Request.Builder().url(url).build()
             val call = wsClient.getImageClient().newCall(request).apply {
@@ -831,15 +833,21 @@ class AndroidAutoController(
                     null
                 }
             }
-            if (url != cachedArtworkUrl || rawBytes == null || rawBytes.isEmpty()) return
+            if (rawBytes == null || rawBytes.isEmpty()) return
             val resized = resizeArtwork(rawBytes)
-            val currentData = artworkData.value
-            if (currentData != null && resized.contentEquals(currentData)) return
-            if (url != cachedArtworkUrl) return
             // Feed artwork into the master combine. It re-emits with the new
             // bytes in AutoPlaybackSnapshot, applyAaState detects the change
             // (only the artwork differs) and calls updatePlayback once.
-            artworkData.value = resized
+            // The check runs on Main with updateArtwork, so a download that finishes after a
+            // newer track change cannot write, and a second download of the same image is
+            // dropped.
+            withContext(Dispatchers.Main) {
+                if (artworkKey == cachedArtworkKey && artworkData.value?.key != artworkKey) {
+                    artworkData.value = LoadedArtwork(artworkKey, resized)
+                }
+            }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             // Name the exception in the message, not only in the stack trace. Shared
             // logs are routinely trimmed to the single matching line, and without the
@@ -926,4 +934,7 @@ class AndroidAutoController(
             )
         }
     }
+
+    /** Downloaded artwork, with the key of the image it was fetched for. */
+    private class LoadedArtwork(val key: String, val bytes: ByteArray)
 }
