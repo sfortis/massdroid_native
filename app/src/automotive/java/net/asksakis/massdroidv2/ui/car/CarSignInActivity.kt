@@ -8,19 +8,19 @@ import androidx.activity.compose.LocalActivity
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Info
@@ -32,7 +32,6 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -45,6 +44,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -55,6 +55,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -160,7 +161,6 @@ private fun CarSignInScreen(
     var typedUsername by rememberSaveable(chosen?.url) { mutableStateOf<String?>(null) }
     var typedPassword by remember(chosen?.url) { mutableStateOf<String?>(null) }
     var choosingOther by rememberSaveable { mutableStateOf(false) }
-    var partyOpen by rememberSaveable { mutableStateOf(false) }
     // The server this screen last sent a sign-in to; only its success closes the screen, so
     // opening the gear while connected, to change server or sign out, does not close it.
     var sentUrl by rememberSaveable { mutableStateOf<String?>(null) }
@@ -170,47 +170,59 @@ private fun CarSignInScreen(
         sentUrl = null
     }
 
-    // BACK walks one step back, as on the phone and the TV: from Other server or from a chosen
-    // server to the server list. From the list it closes the screen the way the arrow in the top
-    // bar does, into the media center.
-    BackHandler(enabled = !choosingOther && chosen == null, onBack = onClose)
-    BackHandler(enabled = choosingOther || chosen != null) {
-        if (choosingOther) {
-            picker.clearTyped()
-            choosingOther = false
-        } else {
-            leaveServer()
-            picker.changeServer()
+    // Wide windows show the section list beside the open section, like the car's own Settings;
+    // narrow ones show one at a time.
+    val wide = LocalConfiguration.current.screenWidthDp >= TWO_PANE_MIN_WIDTH_DP
+    // The open section. Every new screen opens on Server, the one opened from the signed-out
+    // session error included, and a failed sign-in sent from here brings Server back (below).
+    var section by rememberSaveable { mutableStateOf(CarSection.Server) }
+    // Narrow windows only: whether the open section covers the section list.
+    var sectionShown by rememberSaveable { mutableStateOf(true) }
+    val serverShown = section == CarSection.Server && (wide || sectionShown)
+
+    // BACK and the arrow in the top bar walk one step back, as on the phone and the TV: in the
+    // Server section from Other server or from a chosen server to the server list, and on a narrow
+    // window from a section to the section list. Otherwise they close the screen into the media
+    // center.
+    val goBack: () -> Unit = {
+        when {
+            serverShown && choosingOther -> {
+                picker.clearTyped()
+                choosingOther = false
+            }
+            serverShown && chosen != null -> {
+                leaveServer()
+                picker.changeServer()
+            }
+            !wide && sectionShown -> sectionShown = false
+            else -> onClose()
         }
     }
+    BackHandler(onBack = goBack)
 
     // Reload any saved client certificate so a re-opened screen keeps mTLS active.
     LaunchedEffect(Unit) { viewModel.loadSavedCertificate(context) }
 
     // Closes on a sign-in from this screen that saved its server. Connected alone is not enough:
-    // a failed switch connects to the previous server again. A sign-in that lands while the Party
-    // page is open is taken without closing, so the page the user went on to stays up.
+    // a failed switch connects to the previous server again. A sign-in that lands while another
+    // section is open is taken without closing, so the section the user went on to stays up.
     val succeeded by viewModel.succeeded.collectAsStateWithLifecycle()
-    LaunchedEffect(succeeded, sentUrl, partyOpen) {
+    LaunchedEffect(succeeded, sentUrl, serverShown) {
         val done = succeeded ?: return@LaunchedEffect
         val sent = sentUrl ?: return@LaunchedEffect
         if (sameServer(done, sent)) {
             viewModel.consumeSuccess()
-            if (!partyOpen) onClose()
+            if (serverShown) onClose()
         }
     }
 
-    // Held above the pages below, so coming back from one keeps the place in the settings.
-    val scrollState = rememberScrollState()
+    // One scroll position per section, held above the Home Assistant page, so coming back from it
+    // or from another section keeps each section's place.
+    val scrollStates = CarSection.entries.associateWith { rememberScrollState() }
 
     // The Home Assistant page covers the screen while it is open; BACK and Cancel return here.
     homeAssistantPage?.let { url ->
         CarHomeAssistantPage(url, viewModel)
-        return
-    }
-    // The Party page covers the screen too; its BACK and its arrow return here.
-    if (partyOpen) {
-        CarPartyPage(onBack = { partyOpen = false })
         return
     }
 
@@ -225,6 +237,16 @@ private fun CarSignInScreen(
             connected -> "Connected to ${displayAddressOf(serverUrl)}"
             else -> null
         }
+
+    // A sign-in sent from here that fails shows its error in Server, so Server is brought up when
+    // the user went on to another section while it ran.
+    val signInFailed = sentUrl != null && (error != null || connectionError != null)
+    LaunchedEffect(signInFailed) {
+        if (signInFailed) {
+            section = CarSection.Server
+            sectionShown = true
+        }
+    }
 
     if (choosingOther) {
         OtherServerSheet(
@@ -243,15 +265,185 @@ private fun CarSignInScreen(
         )
     }
 
+    val serverSection: @Composable () -> Unit = {
+        Text("Music Assistant", style = MaterialTheme.typography.headlineMedium)
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "Sign in to your Music Assistant server.",
+            style = MaterialTheme.typography.bodyLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(24.dp))
+
+        val server = chosen
+        if (server == null) {
+            // Typing in a car is slow, so the servers found come first and an
+            // address of one's own is the last row.
+            ServerList(
+                rows = rows,
+                searching = searching,
+                onPick = { row ->
+                    leaveServer()
+                    picker.choose(row.url, row.name)
+                },
+                onSearchAgain = picker::searchAgain,
+                onForget = viewModel::forget,
+                largeTargets = true,
+                onOther = { choosingOther = true }
+            )
+        } else {
+            ChosenServerCard(
+                server = server,
+                onChange = {
+                    leaveServer()
+                    picker.changeServer()
+                },
+                onCheckAgain = picker::checkAgain
+            )
+            Spacer(Modifier.height(16.dp))
+            val saved by remember(server) { viewModel.savedSignIn(server) }
+                .collectAsStateWithLifecycle(SavedSignIn.NONE)
+            val username = typedUsername ?: saved.username
+            val password = typedPassword ?: saved.password
+            saved.continueAs?.let { name ->
+                Button(
+                    onClick = {
+                        viewModel.continueAs(server, saved)
+                        sentUrl = server.url
+                    },
+                    enabled = !connecting,
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp),
+                ) {
+                    Text("Continue as $name", fontSize = 18.sp)
+                }
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    "Or sign in with another account:",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(8.dp))
+            }
+            // The providers belong to the server checked last, which is this one
+            // once it answered.
+            val webView = remember { isWebViewAvailable() }
+            if (webView && server.check is ServerCheck.Found && providers.any { it.isHomeAssistant }) {
+                HomeAssistantSignIn(inProgress = oauthInProgress) {
+                    viewModel.openHomeAssistantSignIn(server)
+                    sentUrl = server.url
+                }
+                Spacer(Modifier.height(12.dp))
+            }
+            OutlinedTextField(
+                value = username,
+                onValueChange = { typedUsername = it },
+                label = { Text("Username") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(12.dp))
+            OutlinedTextField(
+                value = password,
+                onValueChange = { typedPassword = it },
+                label = { Text("Password") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                visualTransformation = PasswordVisualTransformation(),
+                modifier = Modifier.fillMaxWidth(),
+            )
+
+            Spacer(Modifier.height(20.dp))
+            Button(
+                onClick = {
+                    // Only a sign-in that was actually sent may close the screen on
+                    // Connected; a rejected input while already connected keeps it open.
+                    if (viewModel.login(server, username, password)) {
+                        sentUrl = server.url
+                    }
+                },
+                enabled = !connecting,
+                modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp),
+            ) {
+                if (connecting) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.height(20.dp),
+                        strokeWidth = 2.dp,
+                        color = MaterialTheme.colorScheme.onPrimary,
+                    )
+                } else {
+                    Text(if (connected) "Reconnect" else "Sign in", fontSize = 18.sp)
+                }
+            }
+        }
+
+        Spacer(Modifier.height(16.dp))
+        // Optional mTLS client certificate (must already be installed in the
+        // head unit's Android keystore; this only selects an existing one).
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    "Client certificate (optional)",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                Text(
+                    certAlias ?: "None selected",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            if (certAlias != null) {
+                TextButton(onClick = { viewModel.clearCertificate() }) { Text("Remove") }
+            }
+            OutlinedButton(onClick = {
+                val host = activity ?: return@OutlinedButton
+                chooseClientCertificate(host, certAlias) { alias ->
+                    viewModel.onCertificateSelected(alias, context)
+                }
+            }) {
+                Icon(Icons.Default.Security, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+                Text(if (certAlias != null) "Change" else "Select")
+            }
+        }
+
+        if (connected) {
+            Spacer(Modifier.height(16.dp))
+            OutlinedButton(
+                onClick = { viewModel.signOut() },
+                modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp),
+            ) {
+                Text("Sign out", fontSize = 18.sp)
+            }
+        }
+
+        if (statusMessage != null) {
+            Spacer(Modifier.height(16.dp))
+            Text(
+                statusMessage,
+                style = MaterialTheme.typography.bodyMedium,
+                color = if (error != null || connection is ConnectionState.Error) {
+                    MaterialTheme.colorScheme.error
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+            )
+        }
+    }
+
     Scaffold(
         topBar = {
             // Explicit back affordance: the AAOS media center has no guaranteed back
             // button on a parked settings activity, so the gear/SessionError entry would
-            // otherwise be a one-way trip. The arrow closes into the media center.
+            // otherwise be a one-way trip. It takes the same steps as BACK.
             TopAppBar(
-                title = {},
+                title = { Text(if (!wide && sectionShown) section.title else "Settings") },
                 navigationIcon = {
-                    IconButton(onClick = onClose) {
+                    IconButton(onClick = goBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                     }
                 },
@@ -259,211 +451,55 @@ private fun CarSignInScreen(
         },
     ) { innerPadding ->
         Surface(modifier = Modifier.fillMaxSize().padding(innerPadding)) {
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .verticalScroll(scrollState)
-                    .padding(horizontal = 48.dp, vertical = 32.dp),
-                verticalArrangement = Arrangement.Center,
-                horizontalAlignment = Alignment.CenterHorizontally,
-            ) {
-                Column(modifier = Modifier.widthIn(max = 640.dp).fillMaxWidth()) {
-                    Text("Music Assistant", style = MaterialTheme.typography.headlineMedium)
-                    Spacer(Modifier.height(6.dp))
-                    Text(
-                        "Sign in to your Music Assistant server.",
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Spacer(Modifier.height(24.dp))
-
-                    val server = chosen
-                    if (server == null) {
-                        // Typing in a car is slow, so the servers found come first and an
-                        // address of one's own is the last row.
-                        ServerList(
-                            rows = rows,
-                            searching = searching,
-                            onPick = { row ->
-                                leaveServer()
-                                picker.choose(row.url, row.name)
-                            },
-                            onSearchAgain = picker::searchAgain,
-                            onForget = viewModel::forget,
-                            largeTargets = true,
-                            onOther = { choosingOther = true }
+            val pane: @Composable (CarSection) -> Unit = { shown ->
+                CarSectionPane(scrollStates.getValue(shown)) { viewportHeight ->
+                    when (shown) {
+                        CarSection.Server -> serverSection()
+                        // The plugin list is not cleared on a sign-out or a dropped connection, so
+                        // the pane checks the connection itself before it loads the party.
+                        CarSection.GuestAccess -> CarGuestAccessPane(
+                            connecting = connecting,
+                            connected = connected,
+                            partyAvailable = partyAvailable,
+                            viewportHeight = viewportHeight,
                         )
-                    } else {
-                        ChosenServerCard(
-                            server = server,
-                            onChange = {
-                                leaveServer()
-                                picker.changeServer()
-                            },
-                            onCheckAgain = picker::checkAgain
+                        CarSection.Player -> CarPlayerSettings(
+                            audioFormat = audioFormat,
+                            onAudioFormat = viewModel::setAudioFormat,
+                            crossfade = crossfade,
+                            onCrossfade = viewModel::setCrossfade,
+                            compressorLevel = compressorLevel,
+                            onCompressorLevel = viewModel::setCompressorLevel,
+                            dither = dither,
+                            onDither = viewModel::setDither,
                         )
-                        Spacer(Modifier.height(16.dp))
-                        val saved by remember(server) { viewModel.savedSignIn(server) }
-                            .collectAsStateWithLifecycle(SavedSignIn.NONE)
-                        val username = typedUsername ?: saved.username
-                        val password = typedPassword ?: saved.password
-                        saved.continueAs?.let { name ->
-                            Button(
-                                onClick = {
-                                    viewModel.continueAs(server, saved)
-                                    sentUrl = server.url
-                                },
-                                enabled = !connecting,
-                                modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp),
-                            ) {
-                                Text("Continue as $name", fontSize = 18.sp)
-                            }
-                            Spacer(Modifier.height(12.dp))
-                            Text(
-                                "Or sign in with another account:",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                            Spacer(Modifier.height(8.dp))
-                        }
-                        // The providers belong to the server checked last, which is this one
-                        // once it answered.
-                        val webView = remember { isWebViewAvailable() }
-                        if (webView && server.check is ServerCheck.Found && providers.any { it.isHomeAssistant }) {
-                            HomeAssistantSignIn(inProgress = oauthInProgress) {
-                                viewModel.openHomeAssistantSignIn(server)
-                                sentUrl = server.url
-                            }
-                            Spacer(Modifier.height(12.dp))
-                        }
-                        OutlinedTextField(
-                            value = username,
-                            onValueChange = { typedUsername = it },
-                            label = { Text("Username") },
-                            singleLine = true,
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                        Spacer(Modifier.height(12.dp))
-                        OutlinedTextField(
-                            value = password,
-                            onValueChange = { typedPassword = it },
-                            label = { Text("Password") },
-                            singleLine = true,
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                            visualTransformation = PasswordVisualTransformation(),
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-
-                        Spacer(Modifier.height(20.dp))
-                        Button(
-                            onClick = {
-                                // Only a sign-in that was actually sent may close the screen on
-                                // Connected; a rejected input while already connected keeps it open.
-                                if (viewModel.login(server, username, password)) {
-                                    sentUrl = server.url
-                                }
-                            },
-                            enabled = !connecting,
-                            modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp),
-                        ) {
-                            if (connecting) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.height(20.dp),
-                                    strokeWidth = 2.dp,
-                                    color = MaterialTheme.colorScheme.onPrimary,
-                                )
-                            } else {
-                                Text(if (connected) "Reconnect" else "Sign in", fontSize = 18.sp)
-                            }
-                        }
+                        CarSection.About -> CarAbout()
                     }
-
-                    Spacer(Modifier.height(16.dp))
-                    // Optional mTLS client certificate (must already be installed in the
-                    // head unit's Android keystore; this only selects an existing one).
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                "Client certificate (optional)",
-                                style = MaterialTheme.typography.bodyMedium,
-                            )
-                            Text(
-                                certAlias ?: "None selected",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        if (certAlias != null) {
-                            TextButton(onClick = { viewModel.clearCertificate() }) { Text("Remove") }
-                        }
-                        OutlinedButton(onClick = {
-                            val host = activity ?: return@OutlinedButton
-                            chooseClientCertificate(host, certAlias) { alias ->
-                                viewModel.onCertificateSelected(alias, context)
-                            }
-                        }) {
-                            Icon(Icons.Default.Security, contentDescription = null)
-                            Spacer(Modifier.width(8.dp))
-                            Text(if (certAlias != null) "Change" else "Select")
-                        }
-                    }
-
-                    if (connected) {
-                        Spacer(Modifier.height(16.dp))
-                        OutlinedButton(
-                            onClick = { viewModel.signOut() },
-                            modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp),
-                        ) {
-                            Text("Sign out", fontSize = 18.sp)
-                        }
-                    }
-
-                    if (statusMessage != null) {
-                        Spacer(Modifier.height(16.dp))
-                        Text(
-                            statusMessage,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = if (error != null || connection is ConnectionState.Error) {
-                                MaterialTheme.colorScheme.error
-                            } else {
-                                MaterialTheme.colorScheme.onSurfaceVariant
-                            },
-                        )
-                    }
-
-                    // The plugin list is not cleared on a sign-out or a dropped connection, and the
-                    // page can load the party only while connected.
-                    if (partyAvailable && connected) {
-                        Spacer(Modifier.height(28.dp))
-                        HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
-                        Spacer(Modifier.height(20.dp))
-                        CarPartyRow(onOpen = { partyOpen = true })
-                    }
-
-                    Spacer(Modifier.height(28.dp))
-                    HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
-                    Spacer(Modifier.height(20.dp))
-                    CarPlayerSettings(
-                        audioFormat = audioFormat,
-                        onAudioFormat = viewModel::setAudioFormat,
-                        crossfade = crossfade,
-                        onCrossfade = viewModel::setCrossfade,
-                        compressorLevel = compressorLevel,
-                        onCompressorLevel = viewModel::setCompressorLevel,
-                        dither = dither,
-                        onDither = viewModel::setDither,
-                    )
-
-                    Spacer(Modifier.height(28.dp))
-                    HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
-                    Spacer(Modifier.height(20.dp))
-                    CarAbout()
                 }
+            }
+            when {
+                wide -> Row(modifier = Modifier.fillMaxSize()) {
+                    CarSectionList(
+                        selected = section,
+                        onSelect = {
+                            section = it
+                            // So a later narrow window opens on this section, not on the list.
+                            sectionShown = true
+                        },
+                        modifier = Modifier.width(SECTION_LIST_WIDTH).fillMaxHeight(),
+                    )
+                    VerticalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
+                    Box(modifier = Modifier.weight(1f).fillMaxHeight()) { pane(section) }
+                }
+                sectionShown -> pane(section)
+                else -> CarSectionList(
+                    selected = null,
+                    onSelect = {
+                        section = it
+                        sectionShown = true
+                    },
+                    modifier = Modifier.fillMaxSize(),
+                )
             }
         }
     }
