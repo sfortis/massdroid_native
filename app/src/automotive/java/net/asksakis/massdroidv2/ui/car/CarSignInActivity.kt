@@ -212,6 +212,8 @@ private fun CarSignInScreen(
         val sent = sentUrl ?: return@LaunchedEffect
         if (sameServer(done, sent)) {
             viewModel.consumeSuccess()
+            // The sign-in is over, so a later connection error on this server is not its failure.
+            sentUrl = null
             if (serverShown) onClose()
         }
     }
