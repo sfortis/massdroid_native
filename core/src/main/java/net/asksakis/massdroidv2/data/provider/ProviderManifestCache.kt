@@ -20,7 +20,9 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -49,6 +51,26 @@ class ProviderManifestCache @Inject constructor() {
      */
     private val _loadedDomains = MutableStateFlow<Set<String>>(emptySet())
     val loadedDomains: StateFlow<Set<String>> = _loadedDomains.asStateFlow()
+
+    // The first loaded instance of each domain, for the commands that take an instance id.
+    @Volatile private var instanceIds: Map<String, String> = emptyMap()
+
+    // Each read of the instance list is numbered when it starts.
+    private val instanceReadsStartedCount = AtomicInteger(0)
+    private val _instancesRead = MutableStateFlow(0)
+
+    /**
+     * The number of the latest read of the instance list that has completed, numbered in the
+     * order the reads started. A caller waits for a value above [instanceReadsStarted], taken
+     * at the right moment, to see a read that started after that moment.
+     */
+    val instancesRead: StateFlow<Int> = _instancesRead.asStateFlow()
+
+    /** The number of reads of the instance list started so far. */
+    val instanceReadsStarted: Int get() = instanceReadsStartedCount.get()
+
+    /** The instance id of the loaded provider of [domain], or null when none is loaded. */
+    fun instanceIdOf(domain: String): String? = instanceIds[domain]
 
     suspend fun fetchManifests(wsClient: MaWebSocketClient, json: Json) {
         try {
@@ -92,13 +114,16 @@ class ProviderManifestCache @Inject constructor() {
     }
 
     private suspend fun refreshInstances(wsClient: MaWebSocketClient, json: Json) {
+        val readNumber = instanceReadsStartedCount.incrementAndGet()
         try {
             val result = wsClient.sendCommand(MaCommands.Providers.LIST) ?: return
             val instances = json.decodeFromJsonElement(
                 kotlinx.serialization.builtins.ListSerializer(ProviderInstance.serializer()),
                 result
             )
+            instanceIds = instances.groupBy { it.domain }.mapValues { (_, list) -> list.first().instanceId }
             _loadedDomains.value = instances.mapTo(HashSet()) { it.domain }
+            _instancesRead.update { maxOf(it, readNumber) }
             val refreshedMusicProviders = instances
                 .filter { it.type == "music" && it.domain != "builtin" }
                 .map { MusicProvider(it.instanceId, it.domain, it.name, it.supportedFeatures.toSet()) }

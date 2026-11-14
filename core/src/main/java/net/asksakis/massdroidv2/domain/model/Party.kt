@@ -33,3 +33,19 @@ data class PartyJoinLink(
      */
     val homeNetworkOnly: Boolean
 )
+
+/**
+ * The Party plugin's player setting, which an admin can change. [value] is a player id or [AUTO],
+ * and [options] are the choices the plugin offers for it, in the plugin's own order.
+ */
+data class PartyPlayerSetting(val value: String, val options: List<QueueConfigOption>) {
+    val isAuto: Boolean get() = value == AUTO
+
+    companion object {
+        /**
+         * The value that lets the plugin pick the player itself. It takes the first playing
+         * queue in the server's order, not the player that started last.
+         */
+        const val AUTO = "__auto__"
+    }
+}

@@ -1,6 +1,7 @@
 package net.asksakis.massdroidv2.ui.car
 
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.LocalActivity
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -11,15 +12,23 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -29,7 +38,11 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.repeatOnLifecycle
+import net.asksakis.massdroidv2.domain.model.PartyPlayerSetting
+import net.asksakis.massdroidv2.domain.model.QueueConfigOption
 import net.asksakis.massdroidv2.ui.screens.party.GUEST_ACCESS_OFF_NOTICE
+import net.asksakis.massdroidv2.ui.screens.party.choices
+import net.asksakis.massdroidv2.ui.screens.party.playerName
 import net.asksakis.massdroidv2.ui.screens.party.PartyDevice
 import net.asksakis.massdroidv2.ui.screens.party.PartyJoinFooter
 import net.asksakis.massdroidv2.ui.screens.party.PartyNoticeText
@@ -87,6 +100,12 @@ private fun CarPartyContent(viewportHeight: Dp) {
     val activity = LocalActivity.current as ComponentActivity
     val viewModel: PartyViewModel = hiltViewModel(rememberPartyViewModelStoreOwner(activity))
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val thisDevicePlayerId by viewModel.thisDevicePlayerId.collectAsStateWithLifecycle()
+    // The party player choices cover the code while open; BACK and the top bar's arrow return to
+    // the code. BACK is taken only while the choices are on screen, not while a load hides them.
+    var choosing by rememberSaveable { mutableStateOf(false) }
+    val choicesShown = choosing && (state as? PartyUiState.Ready)?.playerControl != null
+    BackHandler(enabled = choicesShown) { choosing = false }
 
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     LaunchedEffect(lifecycle, viewModel) {
@@ -97,7 +116,23 @@ private fun CarPartyContent(viewportHeight: Dp) {
         PartyUiState.Loading -> CircularProgressIndicator(modifier = Modifier.padding(vertical = 24.dp))
         PartyUiState.GuestAccessOff -> CarGuestNotice(GUEST_ACCESS_OFF_NOTICE, viewModel::refresh)
         is PartyUiState.Failed -> CarGuestNotice(current.notice(), viewModel::refresh)
-        is PartyUiState.Ready -> CarPartyReady(current, viewportHeight, viewModel::refresh)
+        is PartyUiState.Ready -> {
+            val control = current.playerControl
+            if (choicesShown && control != null) {
+                CarPartyPlayerChoices(
+                    options = control.choices(thisDevicePlayerId, PartyDevice.Car),
+                    selected = control.setting.value,
+                    autoNow = current.target.playerName(PartyDevice.Car).takeIf { control.setting.isAuto },
+                    onPick = { value ->
+                        choosing = false
+                        viewModel.setPlayer(value)
+                    },
+                    onCancel = { choosing = false },
+                )
+            } else {
+                CarPartyReady(current, viewportHeight, viewModel::refresh, onChangePlayer = { choosing = true })
+            }
+        }
     }
 }
 
@@ -108,7 +143,12 @@ private fun CarPartyContent(viewportHeight: Dp) {
  * [MIN_QR] it stops shrinking, and on a display too short even for that the section scrolls.
  */
 @Composable
-private fun CarPartyReady(state: PartyUiState.Ready, viewportHeight: Dp, onRefresh: () -> Unit) {
+private fun CarPartyReady(
+    state: PartyUiState.Ready,
+    viewportHeight: Dp,
+    onRefresh: () -> Unit,
+    onChangePlayer: () -> Unit,
+) {
     val heightLeft = viewportHeight - SECTION_PANE_VERTICAL_PADDING * 2 - READY_HEADER_HEIGHT
     BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
         val beside = maxWidth >= QR_BESIDE_MIN_WIDTH
@@ -124,9 +164,20 @@ private fun CarPartyReady(state: PartyUiState.Ready, viewportHeight: Dp, onRefre
                     style = MaterialTheme.typography.bodyLarge,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                PartyPlayerCard(state.target, CAR_IS_DARK, PartyDevice.Car)
+                PartyPlayerCard(
+                    state.target,
+                    CAR_IS_DARK,
+                    PartyDevice.Car,
+                    control = state.playerControl,
+                    onChange = onChangePlayer,
+                )
                 PartyJoinFooter(state.link, CAR_IS_DARK)
-                OutlinedButton(onClick = onRefresh, modifier = Modifier.heightIn(min = 56.dp)) {
+                // A load during a change would only wait for it (see PartyViewModel.refresh).
+                OutlinedButton(
+                    onClick = onRefresh,
+                    enabled = state.playerControl?.saving != true,
+                    modifier = Modifier.heightIn(min = 56.dp),
+                ) {
                     Text("Refresh", fontSize = 18.sp)
                 }
             }
@@ -142,6 +193,66 @@ private fun CarPartyReady(state: PartyUiState.Ready, viewportHeight: Dp, onRefre
                 details()
             }
         }
+    }
+}
+
+/**
+ * The party player choices in place of the code: Auto, with what it picks now while it is the
+ * choice ([autoNow] is null otherwise), and the players
+ * the plugin offers, as rows of the car's touch-target height, like the section list. Picking one
+ * saves it at once, so there is no confirm button.
+ */
+@Composable
+private fun CarPartyPlayerChoices(
+    options: List<QueueConfigOption>,
+    selected: String,
+    autoNow: String?,
+    onPick: (String) -> Unit,
+    onCancel: () -> Unit,
+) {
+    Text("Party player", style = MaterialTheme.typography.titleLarge)
+    Spacer(Modifier.height(8.dp))
+    Text(
+        "Guest songs play on the player you pick. Auto takes the first player that is playing.",
+        style = MaterialTheme.typography.bodyLarge,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    Spacer(Modifier.height(16.dp))
+    Column(modifier = Modifier.fillMaxWidth().selectableGroup()) {
+        options.forEach { option ->
+            val isAuto = option.value == PartyPlayerSetting.AUTO
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = CHOICE_ROW_MIN_HEIGHT)
+                    .selectable(
+                        selected = option.value == selected,
+                        enabled = !option.disabled,
+                        role = Role.RadioButton,
+                        onClick = { onPick(option.value) },
+                    )
+                    .padding(horizontal = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                RadioButton(selected = option.value == selected, onClick = null, enabled = !option.disabled)
+                Spacer(Modifier.width(16.dp))
+                Column {
+                    Text(option.title, style = MaterialTheme.typography.titleMedium)
+                    val subtitle = if (isAuto) autoNow?.let { "Now: $it" } else option.disabledReason
+                    subtitle?.let {
+                        Text(
+                            it,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+        }
+    }
+    Spacer(Modifier.height(16.dp))
+    OutlinedButton(onClick = onCancel, modifier = Modifier.heightIn(min = 56.dp)) {
+        Text("Cancel", fontSize = 18.sp)
     }
 }
 
@@ -179,6 +290,9 @@ private val HEADER_GAP: Dp = 24.dp
 /** The section title's line height (headlineMedium) and the gap under it. */
 private val READY_HEADER_HEIGHT: Dp = 36.dp + HEADER_GAP
 private val QR_GAP: Dp = 32.dp
+
+/** The car's minimum touch target, as in the section list. */
+private val CHOICE_ROW_MIN_HEIGHT: Dp = 76.dp
 private val QR_BESIDE_MIN_WIDTH: Dp = 560.dp
 private val MIN_QR: Dp = 200.dp
 private val MAX_QR: Dp = 360.dp

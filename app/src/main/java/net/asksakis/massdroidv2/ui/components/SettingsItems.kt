@@ -319,7 +319,9 @@ fun SettingsChoiceDialog(
     selectedValue: String?,
     onSelect: (String) -> Unit,
     onDismiss: () -> Unit,
-    resolvesTo: String? = null
+    resolvesTo: String? = null,
+    // The option [resolvesTo] describes: a queue's "global", or the Party plugin's "auto".
+    resolvesFor: String = QueueChoice.VALUE_GLOBAL
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -332,7 +334,7 @@ fun SettingsChoiceDialog(
                     QueueOptionRow(
                         option = option,
                         selected = option.value == selectedValue,
-                        resolvesTo = resolvesTo?.takeIf { option.value == QueueChoice.VALUE_GLOBAL },
+                        resolvesTo = resolvesTo?.takeIf { option.value == resolvesFor },
                         onSelect = { onSelect(option.value) }
                     )
                 }

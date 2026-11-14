@@ -4,6 +4,7 @@ import android.content.ActivityNotFoundException
 import android.os.Bundle
 import android.util.Log
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.LocalOnBackPressedDispatcherOwner
 import androidx.activity.compose.LocalActivity
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -199,6 +200,7 @@ private fun CarSignInScreen(
         }
     }
     BackHandler(onBack = goBack)
+    val backDispatcher = LocalOnBackPressedDispatcherOwner.current?.onBackPressedDispatcher
 
     // Reload any saved client certificate so a re-opened screen keeps mTLS active.
     LaunchedEffect(Unit) { viewModel.loadSavedCertificate(context) }
@@ -441,11 +443,12 @@ private fun CarSignInScreen(
         topBar = {
             // Explicit back affordance: the AAOS media center has no guaranteed back
             // button on a parked settings activity, so the gear/SessionError entry would
-            // otherwise be a one-way trip. It takes the same steps as BACK.
+            // otherwise be a one-way trip. It goes through the back dispatcher, so it takes the
+            // same steps as BACK, a section's own step first (the party player choices).
             TopAppBar(
                 title = { Text(if (!wide && sectionShown) section.title else "Settings") },
                 navigationIcon = {
-                    IconButton(onClick = goBack) {
+                    IconButton(onClick = { backDispatcher?.onBackPressed() ?: goBack() }) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                     }
                 },
