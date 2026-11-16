@@ -35,9 +35,10 @@ object MediaKeyRoutePolicy {
 
     /**
      * The phone's own input devices, whose keys the platform dispatches as "android". On API 26
-     * and 27 Media3 cannot read a key's caller, so every key there, a watch's included, reports
-     * the legacy controller name below and follows this rule. #88 therefore stays unfixed on
-     * those versions, by the owner's decision to keep the old behaviour for hardware keys.
+     * and 27 Media3 reads a key's caller through the hidden getCallingPackage() and falls back to
+     * the legacy controller name below when that read fails. A key that falls back, a watch's
+     * included, follows this rule, so #88 stays unfixed for it, by the owner's decision to keep
+     * the old behaviour for hardware keys.
      */
     val LOCAL_HARDWARE_PACKAGES = setOf("android", "android.media.session.MediaController")
 
@@ -81,8 +82,11 @@ object MediaKeyRoutePolicy {
 
     /**
      * Whether a key is a button of the app's media notification. Media3 puts the session URI on
-     * its notification's intents; the media button receiver and the platform send none, and also
-     * come from the notification controller.
+     * its notification's intents. A key that the media button receiver hands over through
+     * MediaSessionService.onStartCommand also reports the notification controller, and from
+     * API 31 its intent carries no URI; below API 31 the platform's receiver intent carries it
+     * too, so such a key counts as a notification key there. A platform key to a live session
+     * reports its sender's own package.
      */
     fun isNotificationKey(isNotificationController: Boolean, hasIntentData: Boolean): Boolean =
         isNotificationController && hasIntentData

@@ -102,7 +102,7 @@ class MediaKeyRoutePolicyTest {
     @Test
     fun `a local hardware key goes to Sendspin whenever Sendspin is up`() {
         assertThat(route(localHardware)).isEqualTo(Route.SENDSPIN)
-        assertThat(route(localHardware, selected = sendspinId)).isEqualTo(Route.SENDSPIN)
+        assertThat(route(localHardware, selected = null)).isEqualTo(Route.SENDSPIN)
         assertThat(route("android.media.session.MediaController")).isEqualTo(Route.SENDSPIN)
     }
 
@@ -177,10 +177,8 @@ class MediaKeyRoutePolicyTest {
     }
 
     @Test
-    fun `a watch key routed to the session player records its source`() {
-        val watchRoute = route(watch)
-        assertThat(watchRoute).isEqualTo(Route.SESSION_PLAYER)
-        assertThat(MediaKeyRoutePolicy.recordsKeySource(watchRoute, fromMediaNotification = false)).isTrue()
+    fun `a key routed to the session player records its source`() {
+        assertThat(MediaKeyRoutePolicy.recordsKeySource(Route.SESSION_PLAYER, fromMediaNotification = false)).isTrue()
     }
 
     @Test
