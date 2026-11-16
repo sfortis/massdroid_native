@@ -2,11 +2,13 @@ package net.asksakis.massdroidv2.service
 
 import net.asksakis.massdroidv2.playback.SendspinAudioController
 import net.asksakis.massdroidv2.playback.LocalPlayingPolicy
+import net.asksakis.massdroidv2.playback.MediaKeyRoutePolicy
 
 import android.app.PendingIntent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
+import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import androidx.annotation.OptIn
@@ -78,6 +80,8 @@ class AndroidAutoController(
     private val carSignInPrompt = if (net.asksakis.massdroidv2.BuildConfig.IS_AUTOMOTIVE) CarSignInPrompt(service) else null
     private var session: MediaLibraryService.MediaLibrarySession? = null
     private var remotePlayer: RemoteControlPlayer? = null
+    /** The session's application thread: the session player is built on the main looper. */
+    private val mainHandler = Handler(Looper.getMainLooper())
     private var aaProjectionObserver: AaProjectionObserver? = null
     private val isAaProjecting = MutableStateFlow(false)
 
@@ -312,7 +316,7 @@ class AndroidAutoController(
     }
 
     private fun requestFromCarHost(): Boolean =
-        session?.controllerForCurrentRequest?.packageName in CAR_HOST_PACKAGES
+        session?.controllerForCurrentRequest?.packageName in MediaKeyRoutePolicy.CAR_HOST_PACKAGES
 
     fun dispatchTransport(command: TransportCommand) {
         val sendspin = if (routeToSendspin()) sendspinController() else null
@@ -381,25 +385,30 @@ class AndroidAutoController(
     }
 
     /**
-     * The cause a session pause carries. The app's own media notification is the
-     * listener; every other controller (a car head unit, a watch) is external, and its
-     * pause during an interruption keeps the resume owed to it, see
-     * [net.asksakis.massdroidv2.playback.AudioFocusPolicy.pauseIsListenerDecision].
+     * The sender of a media key that Media3 is running on the session player. Media3 runs such a
+     * key as its media notification controller, so without this a watch's pause would read as
+     * the notification's. Set before the key's command runs, in the same main-thread message, and
+     * cleared by a message posted behind it, so it cannot reach a later request.
      */
-    private fun sessionPauseCause(): PlaybackIntentCause {
-        val controller = session?.controllerForCurrentRequest
-        val fromNotification = controller != null && session?.isMediaNotificationController(controller) == true
-        return if (fromNotification) PlaybackIntentCause.LISTENER else PlaybackIntentCause.EXTERNAL_CONTROL
+    private var mediaKeySource: String? = null
+
+    fun noteMediaKeySource(sourcePackage: String) {
+        mediaKeySource = sourcePackage
+        mainHandler.post { mediaKeySource = null }
     }
 
-    /**
-     * Who sent the session command being handled. Media3's own notification controller runs in
-     * this process, so its package alone would read like an in-app control.
-     */
+    /** The cause a session pause carries, see [MediaKeyRoutePolicy.pauseCause]. */
+    private fun sessionPauseCause(): PlaybackIntentCause = MediaKeyRoutePolicy.pauseCause(currentCommandSource())
+
+    /** Who sent the session command being handled, see [MediaKeyRoutePolicy.commandSource]. */
     private fun currentCommandSource(): String? {
         val session = session ?: return null
         val controller = session.controllerForCurrentRequest ?: return null
-        return if (session.isMediaNotificationController(controller)) "the media notification" else controller.packageName
+        return MediaKeyRoutePolicy.commandSource(
+            isNotificationController = session.isMediaNotificationController(controller),
+            controllerPackage = controller.packageName,
+            mediaKeySource = mediaKeySource
+        )
     }
 
     /**
@@ -904,11 +913,6 @@ class AndroidAutoController(
         // the device-volume mapping (now 1:1 with MA), so it can be tuned freely.
         private const val VOLUME_OVERRIDE_MS = 15_000L
         private const val ARTWORK_FETCH_TIMEOUT_S = 8L
-        /** The Android Auto host on the phone, and its embedded variant. */
-        private val CAR_HOST_PACKAGES = setOf(
-            "com.google.android.projection.gearhead",
-            "com.google.android.embedded.projection",
-        )
     }
 
     /**
