@@ -3,6 +3,7 @@ package net.asksakis.massdroidv2.auto
 import android.content.Context
 import android.net.Uri
 import android.os.Bundle
+import androidx.car.app.mediaextensions.MetadataExtras
 import androidx.media.utils.MediaConstants
 
 /**
@@ -43,6 +44,20 @@ object AutoBrowseExtras {
      */
     fun placeholderArtworkUri(context: Context, name: String): Uri =
         PlaceholderArtworkProvider.uri("${context.packageName}.placeholder", name)
+
+    /**
+     * Playing-item extras that make the car's playing screen link its subtitle and description
+     * lines to browsable items: a tap opens the item with [subtitleLinkMediaId] or
+     * [descriptionLinkMediaId], which the host reads through onGetItem. Null when there is no
+     * link.
+     */
+    fun nowPlayingLinkExtras(subtitleLinkMediaId: String?, descriptionLinkMediaId: String?): Bundle? {
+        if (subtitleLinkMediaId == null && descriptionLinkMediaId == null) return null
+        return Bundle().apply {
+            subtitleLinkMediaId?.let { putString(MetadataExtras.KEY_SUBTITLE_LINK_MEDIA_ID, it) }
+            descriptionLinkMediaId?.let { putString(MetadataExtras.KEY_DESCRIPTION_LINK_MEDIA_ID, it) }
+        }
+    }
 
     /**
      * Per-item extras that mark a row as the start of a labeled group in search results.

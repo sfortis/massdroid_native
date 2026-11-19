@@ -18,6 +18,7 @@ import com.google.common.collect.ImmutableList
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
 import net.asksakis.massdroidv2.auto.AaMetrics
+import net.asksakis.massdroidv2.auto.AutoBrowseExtras
 import net.asksakis.massdroidv2.domain.model.Chapter
 import net.asksakis.massdroidv2.domain.model.displayName
 
@@ -87,6 +88,10 @@ data class AutoPlaybackSnapshot(
     // the single playable item, surfaced to AA as the queue/timeline so the user
     // can see and jump between them.
     val chapters: List<Chapter> = emptyList(),
+    // The browse ids the playing screen links its album and artist lines to (#86); null where
+    // there is nothing to open, see CarNowPlayingLinks.
+    val albumLinkId: String? = null,
+    val artistLinkId: String? = null,
 ) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
@@ -105,6 +110,8 @@ data class AutoPlaybackSnapshot(
             isMuted == other.isMuted &&
             isRemotePlayback == other.isRemotePlayback &&
             chapters == other.chapters &&
+            albumLinkId == other.albumLinkId &&
+            artistLinkId == other.artistLinkId &&
             ((artworkData == null && other.artworkData == null) ||
                 (artworkData != null && other.artworkData != null &&
                     artworkData.contentEquals(other.artworkData)))
@@ -126,6 +133,8 @@ data class AutoPlaybackSnapshot(
         r = 31 * r + isMuted.hashCode()
         r = 31 * r + isRemotePlayback.hashCode()
         r = 31 * r + chapters.hashCode()
+        r = 31 * r + (albumLinkId?.hashCode() ?: 0)
+        r = 31 * r + (artistLinkId?.hashCode() ?: 0)
         return r
     }
 
@@ -345,6 +354,24 @@ class RemoteControlPlayer(
                 playback.artworkData?.let { b.setArtworkData(it, MediaMetadata.PICTURE_TYPE_FRONT_COVER) }
                 // Car: the AAOS media center renders artworkUri, not the bytes.
                 playback.artworkUri?.let { b.setArtworkUri(it) }
+                // A tap on the artist or the album line opens that page (#86). No displayTitle
+                // is set, so the session's description is title, artist, album, and the AAOS
+                // media center draws its two lines from it: the subtitle link goes on the artist
+                // line and the description link on the album line. The media center links a line
+                // only when the item also sets the subtitle or the description, so both are set,
+                // and only with both texts present: with one of them blank the active queue item
+                // would show the artist where the album belongs. Media3 compares extras only by
+                // null, so a link id that changes alone (a provider artist id replaced by the
+                // library id) is published with the next metadata change.
+                val hasLink = playback.artistLinkId != null || playback.albumLinkId != null
+                if (hasLink && playback.artist.isNotBlank() && playback.album.isNotBlank()) {
+                    b.setSubtitle(playback.artist)
+                    b.setDescription(playback.album)
+                }
+                AutoBrowseExtras.nowPlayingLinkExtras(
+                    subtitleLinkMediaId = playback.artistLinkId,
+                    descriptionLinkMediaId = playback.albumLinkId
+                )?.let { b.setExtras(it) }
             }
             .build()
 
@@ -440,6 +467,8 @@ class RemoteControlPlayer(
             durationMs != other.durationMs ||
             currentIndex != other.currentIndex ||
             chapters != other.chapters ||
+            albumLinkId != other.albumLinkId ||
+            artistLinkId != other.artistLinkId ||
             !artworkData.sameContentAs(other.artworkData)
     }
 

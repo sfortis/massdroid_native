@@ -3,6 +3,7 @@ package net.asksakis.massdroidv2.service
 import net.asksakis.massdroidv2.playback.SendspinAudioController
 import net.asksakis.massdroidv2.playback.LocalPlayingPolicy
 import net.asksakis.massdroidv2.playback.MediaKeyRoutePolicy
+import net.asksakis.massdroidv2.domain.car.CarNowPlayingLinks
 
 import android.app.PendingIntent
 import android.graphics.Bitmap
@@ -592,6 +593,7 @@ class AndroidAutoController(
         // MediaSession/AA device-volume reads and the rocker base off the right value.
         val volumeLevel = effectiveVolume(player.groupVolume ?: player.volumeLevel, volumeOv)
         val imageUrl = currentTrack?.imageUrl ?: queue?.currentItem?.imageUrl ?: player.currentMedia?.imageUrl
+        val links = CarNowPlayingLinks.forTrack(currentTrack)
         val playback = AutoPlaybackSnapshot(
             // A pause made here that MA has not confirmed yet: the server still says
             // PLAYING, but the phone is paused, which is not buffering.
@@ -626,6 +628,8 @@ class AndroidAutoController(
             isMuted = player.volumeMuted,
             isRemotePlayback = !isSendspinSelected,
             chapters = if (currentTrack?.mediaType == MediaType.AUDIOBOOK) currentTrack.chapters else emptyList(),
+            albumLinkId = links.albumMediaId,
+            artistLinkId = links.artistMediaId,
         )
         return AaCompleteState(
             playback = playback,

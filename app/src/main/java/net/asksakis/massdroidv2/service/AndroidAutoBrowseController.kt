@@ -27,8 +27,10 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.guava.future
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import net.asksakis.massdroidv2.auto.AutoBrowseExtras
 import net.asksakis.massdroidv2.auto.PackageValidator
+import net.asksakis.massdroidv2.domain.car.CarNowPlayingLinks
 import net.asksakis.massdroidv2.domain.model.Album
 import net.asksakis.massdroidv2.domain.model.Artist
 import net.asksakis.massdroidv2.domain.model.BrowseItem
@@ -235,6 +237,36 @@ class AndroidAutoBrowseController(
                     .setExtras(AutoBrowseExtras.rootExtras())
                     .build()
                 return Futures.immediateFuture(LibraryResult.ofItem(root, rootParams))
+            }
+
+            /**
+             * The item behind a browse id. The car's playing screen asks for it when the album or
+             * the artist line is tapped (#86, see CarNowPlayingLinks), so only those ids answer.
+             */
+            override fun onGetItem(
+                session: MediaLibraryService.MediaLibrarySession,
+                browser: MediaSession.ControllerInfo,
+                mediaId: String
+            ): ListenableFuture<LibraryResult<MediaItem>> {
+                val target = CarNowPlayingLinks.parse(mediaId)
+                    ?: return Futures.immediateFuture(LibraryResult.ofError(SessionError.ERROR_NOT_SUPPORTED))
+                return scope.future(Dispatchers.IO) {
+                    try {
+                        val item = withTimeoutOrNull(GET_ITEM_TIMEOUT_MS) {
+                            when (target.kind) {
+                                CarNowPlayingLinks.Kind.ARTIST ->
+                                    musicRepository.getArtist(target.itemId, target.provider)?.toBrowsableMediaItem()
+                                CarNowPlayingLinks.Kind.ALBUM ->
+                                    musicRepository.getAlbum(target.itemId, target.provider)?.toBrowsableMediaItem()
+                            }
+                        }
+                        Log.i(TAG, "onGetItem($mediaId): ${if (item != null) "found" else "not found"}")
+                        item?.let { LibraryResult.ofItem(it, null) } ?: LibraryResult.ofError(SessionError.ERROR_IO)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "onGetItem($mediaId) failed", e)
+                        LibraryResult.ofError(SessionError.ERROR_IO)
+                    }
+                }
             }
 
             override fun onGetChildren(
@@ -659,7 +691,7 @@ class AndroidAutoBrowseController(
     private suspend fun loadGenreArtists(genre: String): List<MediaItem> {
         return genreRepository.libraryArtistsForGenre(genre).map { artist ->
             browseFolder(
-                "artist|${artist.provider}|${artist.itemId}",
+                CarNowPlayingLinks.artistMediaId(artist.provider, artist.itemId),
                 artist.name,
                 MediaMetadata.MEDIA_TYPE_ARTIST,
                 listItem = true
@@ -830,7 +862,7 @@ class AndroidAutoBrowseController(
             .build()
 
     private fun Artist.toBrowsableMediaItem(groupTitle: String? = null): MediaItem = MediaItem.Builder()
-        .setMediaId("artist|$provider|$itemId")
+        .setMediaId(CarNowPlayingLinks.artistMediaId(provider, itemId))
         .setMediaMetadata(
             MediaMetadata.Builder()
                 .setTitle(name)
@@ -844,7 +876,7 @@ class AndroidAutoBrowseController(
         .build()
 
     private fun Album.toBrowsableMediaItem(groupTitle: String? = null): MediaItem = MediaItem.Builder()
-        .setMediaId("album|$provider|$itemId")
+        .setMediaId(CarNowPlayingLinks.albumMediaId(provider, itemId))
         .setMediaMetadata(
             MediaMetadata.Builder()
                 .setTitle(name)
@@ -899,6 +931,8 @@ class AndroidAutoBrowseController(
 
     private companion object {
         private const val TAG = "AndroidAutoBrowse"
+        /** The wait for the item behind a playing-screen link, so a slow server cannot hold the car. */
+        private const val GET_ITEM_TIMEOUT_MS = 10_000L
         private const val ROOT = "root"
         private const val PAGE_SIZE_DEFAULT = 50
         /** The most items one browse page asks MA for; the library screens page by 500 too. */
