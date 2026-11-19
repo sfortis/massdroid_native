@@ -15,6 +15,7 @@ import net.asksakis.massdroidv2.domain.info.AboutText
 import net.asksakis.massdroidv2.ui.shared.FadingAutoScrollText
 import net.asksakis.massdroidv2.ui.shared.fadingAutoScrollTextHeight
 import net.asksakis.massdroidv2.ui.screens.nowplaying.components.AboutSheet
+import net.asksakis.massdroidv2.ui.screens.nowplaying.components.NowPlayingSize
 import net.asksakis.massdroidv2.ui.screens.nowplaying.components.artworkBottomInsetPx
 import net.asksakis.massdroidv2.ui.screens.nowplaying.components.artworkEdgePx
 import net.asksakis.massdroidv2.ui.components.MdIconButton
@@ -29,8 +30,10 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.displayCutout
 import androidx.compose.foundation.layout.systemBars
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material.icons.Icons
@@ -65,7 +68,7 @@ import kotlinx.coroutines.Dispatchers
 import androidx.compose.animation.core.FastOutSlowInEasing
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.withContext
-import net.asksakis.massdroidv2.ui.screens.nowplaying.components.landscapeArtSurfaceWidth
+import net.asksakis.massdroidv2.ui.screens.nowplaying.components.landscapeArtSurfaceHeight
 import net.asksakis.massdroidv2.ui.screens.nowplaying.components.KeepScreenOn
 import net.asksakis.massdroidv2.ui.screens.nowplaying.components.PlayerOptionsSheet
 import net.asksakis.massdroidv2.ui.screens.party.PartyOverlay
@@ -303,6 +306,9 @@ fun NowPlayingScreen(
     val hasArtwork = !settledArtwork.isNullOrBlank()
 
     val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
+    // On a tablet every control takes the large size; on a phone each keeps its own (#89).
+    val tabletSize = NowPlayingSize.Large
+        .takeIf { LocalConfiguration.current.smallestScreenWidthDp >= TABLET_MIN_SMALLEST_WIDTH_DP }
 
     Scaffold(
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
@@ -374,6 +380,7 @@ fun NowPlayingScreen(
             if (isLandscape) {
                 NowPlayingLandscape(
                     paddingValues = paddingValues,
+                    tabletSize = tabletSize,
                     imageUrl = imageUrl,
                     previousImageUrl = adjacentArtwork.previousImageUrl,
                     nextImageUrl = adjacentArtwork.nextImageUrl,
@@ -413,6 +420,7 @@ fun NowPlayingScreen(
             } else {
                 NowPlayingPortrait(
                     paddingValues = paddingValues,
+                    tabletSize = tabletSize,
                     imageUrl = imageUrl,
                     previousImageUrl = adjacentArtwork.previousImageUrl,
                     nextImageUrl = adjacentArtwork.nextImageUrl,
@@ -725,6 +733,7 @@ private fun SendspinStatusSheetHost(
 @Composable
 private fun NowPlayingPortrait(
     paddingValues: PaddingValues,
+    tabletSize: NowPlayingSize?,
     imageUrl: String?,
     previousImageUrl: String?,
     nextImageUrl: String?,
@@ -852,7 +861,8 @@ private fun NowPlayingPortrait(
                 onNavigateToQueue = onNavigateToQueue,
                 onShowSendspinStatus = onShowSendspinStatus,
                 isSendspinPlayer = isSendspinPlayer,
-                enabled = controlsEnabled
+                enabled = controlsEnabled,
+                size = tabletSize ?: NowPlayingSize.Regular
             )
 
             Spacer(modifier = Modifier.height(28.dp))
@@ -863,7 +873,8 @@ private fun NowPlayingPortrait(
                 album = album,
                 currentTrack = currentTrack,
                 onNavigateToArtist = onNavigateToArtist,
-                onNavigateToAlbum = onNavigateToAlbum
+                onNavigateToAlbum = onNavigateToAlbum,
+                size = tabletSize ?: NowPlayingSize.Regular
             )
 
             Spacer(modifier = Modifier.height(28.dp))
@@ -873,7 +884,7 @@ private fun NowPlayingPortrait(
                 duration = duration,
                 onSeek = { if (controlsEnabled) viewModel.seek(it) },
                 enabled = controlsEnabled,
-                compact = true
+                size = tabletSize ?: NowPlayingSize.Compact
             )
 
             Spacer(modifier = Modifier.height(8.dp))
@@ -883,6 +894,7 @@ private fun NowPlayingPortrait(
                 queueState = queueState,
                 viewModel = viewModel,
                 enabled = controlsEnabled,
+                size = tabletSize ?: NowPlayingSize.Regular,
                 onHaptic = { haptic.performHapticFeedback(HapticFeedbackType.LongPress) }
             )
         }
@@ -988,6 +1000,7 @@ private const val ABOUT_RESIZE_MS = 600
 @Composable
 private fun NowPlayingLandscape(
     paddingValues: PaddingValues,
+    tabletSize: NowPlayingSize?,
     imageUrl: String?,
     previousImageUrl: String?,
     nextImageUrl: String?,
@@ -1015,33 +1028,41 @@ private fun NowPlayingLandscape(
     onNavigateToAlbum: (String, String, String) -> Unit
 ) {
     val haptic = LocalHapticFeedback.current
-    val infoColumnWidth = (LocalConfiguration.current.screenWidthDp.dp * INFO_COLUMN_SHARE)
-        .coerceIn(INFO_COLUMN_MIN, INFO_COLUMN_MAX)
     BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
             .padding(paddingValues)
-            .windowInsetsPadding(WindowInsets.systemBars.union(WindowInsets.displayCutout))
+            // The camera cutout is not taken off the sides here: it would push the whole row
+            // away from that edge and move both halves off the screen's middle (#89). Each side
+            // takes it where it matters instead: the right half for the controls and the menu,
+            // the close row for itself. The cover is centred on the physical half and clears it.
+            .windowInsetsPadding(
+                WindowInsets.systemBars.union(WindowInsets.displayCutout.only(WindowInsetsSides.Vertical))
+            )
             .padding(horizontal = 16.dp, vertical = 4.dp)
     ) {
-    // Each column takes what it needs and the pair is centred, rather than the two sharing
-    // the row out between them. The cover's column is the width its surface will use at this
-    // height, so no leftover sits inside it pushing the controls towards the edge.
-    val coverColumnWidth = landscapeArtSurfaceWidth(maxHeight - COVER_COLUMN_VERTICAL_INSET) +
-        COVER_COLUMN_HORIZONTAL_INSET
+    // The row is split into two equal halves, the cover centred in the left one and the
+    // controls in the right one (#89). Only a screen too narrow for the controls' floor gives
+    // the right half more and the cover less. The surface is as tall as the row allows, unless
+    // the width of its half runs out first, so it always fits and never spills over the controls.
+    val rightHalfWidth = (maxWidth / 2).coerceAtLeast(
+        if (tabletSize != null) INFO_COLUMN_MIN_TABLET else INFO_COLUMN_MIN
+    )
+    val infoColumnWidth = rightHalfWidth.coerceAtMost(
+        if (tabletSize != null) INFO_COLUMN_MAX_TABLET else INFO_COLUMN_MAX
+    )
+    val surfaceHeight = landscapeArtSurfaceHeight(
+        availableHeight = maxHeight - COVER_COLUMN_VERTICAL_INSET,
+        availableWidth = maxWidth - rightHalfWidth - COVER_COLUMN_HORIZONTAL_INSET
+    )
     Row(
         modifier = Modifier.fillMaxSize(),
-        horizontalArrangement = Arrangement.Center,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        // Left: close/name overlay + centered album art.
-        // The cover is sized by the width this column gets, so the split is what decides how
-        // big it is. The right hand column holds the track, the seek bar and the transport,
-        // which need a fixed amount of room rather than a share of it, so widening this one
-        // takes from slack rather than from anything that has to fit.
+        // Left half: close/name overlay + the album art centred in it.
         Box(
             modifier = Modifier
-                .width(coverColumnWidth)
+                .weight(1f)
                 .fillMaxHeight()
                 // No inset at the top: the close button and the player name are the first
                 // thing under the status bar, and the row's own 40dp button already centres
@@ -1049,9 +1070,36 @@ private fun NowPlayingLandscape(
                 // the status bar and read as hanging in the middle of nothing.
                 .padding(start = 8.dp, end = 8.dp, bottom = 8.dp)
         ) {
-            // Close + player name (overlay, doesn't affect art centering)
+            // Album art (true center). The inset is what is left for the close button and
+            // the player name above it, so it stays only as deep as that row needs.
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(vertical = 6.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                SwipeableAlbumArt(
+                    imageUrl = imageUrl,
+                    previousImageUrl = previousImageUrl,
+                    nextImageUrl = nextImageUrl,
+                    onNext = { if (controlsEnabled) viewModel.next() },
+                    onPrevious = { if (controlsEnabled) viewModel.previousTrack() },
+                    canSwipePrevious = controlsEnabled && (queueState?.currentIndex ?: 0) > 0,
+                    canSwipeNext = controlsEnabled && queueState.skipAvailability().next,
+                    onHaptic = { haptic.performHapticFeedback(HapticFeedbackType.LongPress) },
+                    landscapeHeight = surfaceHeight
+                )
+            }
+
+            // Close + player name (overlay, doesn't affect art centering). Declared after the
+            // art so that it is on top for touch as well: the swipe surface reaches up beside
+            // this row, and a tap on the lower half of the close button went to the surface
+            // and did nothing (#89).
             Row(
-                modifier = Modifier.fillMaxWidth().align(Alignment.TopStart),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .align(Alignment.TopStart)
+                    .windowInsetsPadding(WindowInsets.displayCutout.only(WindowInsetsSides.Left)),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 MdIconButton(onClick = onBack, modifier = Modifier.size(40.dp)) {
@@ -1073,134 +1121,126 @@ private fun NowPlayingLandscape(
                     )
                 }
             }
-
-            // Album art (true center). The inset is what is left for the close button and
-            // the player name above it, so it stays only as deep as that row needs.
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(horizontal = 8.dp, vertical = 6.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                SwipeableAlbumArt(
-                    imageUrl = imageUrl,
-                    previousImageUrl = previousImageUrl,
-                    nextImageUrl = nextImageUrl,
-                    onNext = { if (controlsEnabled) viewModel.next() },
-                    onPrevious = { if (controlsEnabled) viewModel.previousTrack() },
-                    canSwipePrevious = controlsEnabled && (queueState?.currentIndex ?: 0) > 0,
-                    canSwipeNext = controlsEnabled && queueState.skipAvailability().next,
-                    onHaptic = { haptic.performHapticFeedback(HapticFeedbackType.LongPress) },
-                    fillMaxWidth = false
-                )
-            }
         }
 
-        // Right: track info + controls, sized to what they need rather than to a share of
-        // the screen. A fixed share is the wrong tool here: this column holds a fixed set of
-        // controls while the cover beside it can use any width at all, so a share that leaves
-        // the cover room on a wide phone squeezes the controls on a narrow one. At the split
-        // this replaced, a 640dp landscape screen gave this column 266dp against the 280 its
-        // icon row needs. It now takes its share up to a ceiling and never below that floor,
-        // and the cover column takes whatever is left.
+        // Right half: the track info and controls in a column centred in it, never narrower
+        // than its icon row needs and never wider than the controls can use, and the menu at
+        // its top right. The half keeps clear of a camera cutout on its own edge, which on a
+        // narrow phone in reverse landscape would otherwise sit over the seek bar's times.
         Box(
             modifier = Modifier
-                .width(infoColumnWidth)
+                .width(rightHalfWidth)
                 .fillMaxHeight()
-                .padding(start = 16.dp, end = 8.dp)
+                .windowInsetsPadding(WindowInsets.displayCutout.only(WindowInsetsSides.Right))
         ) {
-            // Menu overlay top-right (doesn't affect centering). The same 40dp as the close
-            // button opposite it, so the two sit on one line: at 36dp its centre landed 3dp
-            // above the player name beside it, which reads as a misalignment across the top
-            // of the screen. The portrait top bar uses 40dp for both as well.
+            Box(
+                modifier = Modifier
+                    .width(infoColumnWidth)
+                    .fillMaxHeight()
+                    .align(Alignment.Center)
+                    .padding(start = 16.dp, end = 8.dp)
+            ) {
+                Column(
+                    modifier = Modifier.fillMaxSize(),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    // Keep metadata, seekbar, actions, and transport controls on the same
+                    // visual centerline in landscape.
+                    Column(
+                        modifier = Modifier.fillMaxWidth(0.94f),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        TrackInfoSection(
+                            title = title,
+                            artist = artist,
+                            album = album,
+                            currentTrack = currentTrack,
+                            onNavigateToArtist = onNavigateToArtist,
+                            onNavigateToAlbum = onNavigateToAlbum,
+                            size = tabletSize ?: NowPlayingSize.Compact
+                        )
+
+                        Spacer(modifier = Modifier.height(28.dp))
+
+                        SeekBar(
+                            elapsedProvider = elapsedTime,
+                            duration = duration,
+                            onSeek = { if (controlsEnabled) viewModel.seek(it) },
+                            enabled = controlsEnabled,
+                            size = tabletSize ?: NowPlayingSize.Regular
+                        )
+
+                        // Action row (playlist, lyrics, badges, queue) below seekbar
+                        QualityActionRow(
+                            audioFormat = audioFormat,
+                            currentTrack = currentTrack,
+                            viewModel = viewModel,
+                            onShowPlaylistDialog = onShowPlaylistDialog,
+                            onShowLyrics = onShowLyrics,
+                            onNavigateToQueue = onNavigateToQueue,
+                            onShowSendspinStatus = onShowSendspinStatus,
+                            isSendspinPlayer = isSendspinPlayer,
+                            enabled = controlsEnabled,
+                            size = tabletSize ?: NowPlayingSize.Regular
+                        )
+
+                        Spacer(modifier = Modifier.height(20.dp))
+
+                        TransportControls(
+                            isPlaying = isPlaying,
+                            queueState = queueState,
+                            viewModel = viewModel,
+                            enabled = controlsEnabled,
+                            size = tabletSize ?: NowPlayingSize.Regular,
+                            onHaptic = { haptic.performHapticFeedback(HapticFeedbackType.LongPress) }
+                        )
+                    }
+                }
+            }
+
+            // Menu overlay at the top right of the half (doesn't affect centering), declared
+            // after the controls so it stays on top for touch where the two meet. The same
+            // 40dp as the close button opposite it, so the two sit on one line: at 36dp its
+            // centre landed 3dp above the player name beside it, which reads as a misalignment
+            // across the top of the screen. The portrait top bar uses 40dp for both as well.
             MdIconButton(
                 onClick = onShowPlayerMenu,
-                modifier = Modifier.size(40.dp).align(Alignment.TopEnd)
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(end = 8.dp)
+                    .size(40.dp)
             ) {
                 Icon(Icons.Default.MoreVert, contentDescription = "Player options", modifier = Modifier.size(22.dp))
-            }
-
-            Column(
-                modifier = Modifier.fillMaxSize(),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center
-            ) {
-            // Keep metadata, seekbar, actions, and transport controls on the same
-            // visual centerline in landscape.
-            Column(
-                modifier = Modifier.fillMaxWidth(0.94f),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                TrackInfoSection(
-                    title = title,
-                    artist = artist,
-                    album = album,
-                    currentTrack = currentTrack,
-                    onNavigateToArtist = onNavigateToArtist,
-                    onNavigateToAlbum = onNavigateToAlbum,
-                    compact = true
-                )
-
-                Spacer(modifier = Modifier.height(28.dp))
-
-                SeekBar(
-                    elapsedProvider = elapsedTime,
-                    duration = duration,
-                    onSeek = { if (controlsEnabled) viewModel.seek(it) },
-                    enabled = controlsEnabled,
-                    compact = false
-                )
-
-                // Action row (playlist, lyrics, badges, queue) below seekbar
-                QualityActionRow(
-                    audioFormat = audioFormat,
-                    currentTrack = currentTrack,
-                    viewModel = viewModel,
-                    onShowPlaylistDialog = onShowPlaylistDialog,
-                    onShowLyrics = onShowLyrics,
-                    onNavigateToQueue = onNavigateToQueue,
-                    onShowSendspinStatus = onShowSendspinStatus,
-                    isSendspinPlayer = isSendspinPlayer,
-                    enabled = controlsEnabled,
-                    compact = false
-                )
-
-                Spacer(modifier = Modifier.height(20.dp))
-
-                TransportControls(
-                    isPlaying = isPlaying,
-                    queueState = queueState,
-                    viewModel = viewModel,
-                    enabled = controlsEnabled,
-                    compact = false,
-                    onHaptic = { haptic.performHapticFeedback(HapticFeedbackType.LongPress) }
-                )
-
-            }
             }
         }
     }
     }
 }
 
-/**
- * The landscape split between the cover and the controls beside it.
- *
- * [INFO_COLUMN_SHARE] is what the controls take on a screen wide enough for both.
- * [INFO_COLUMN_MIN] is the width its icon row needs, measured at 275dp on the device with a
- * little over for the padding, below which the icons crowd. [INFO_COLUMN_MAX] stops a tablet
- * from spreading the controls across half a metre when the cover could use that width, where
- * the cover stops growing at the height of the screen anyway.
- */
-/** What the cover's column spends on padding, so its width can be worked out in advance. */
+/** What the cover's column spends on padding at its sides, so the surface's size can be worked out in advance. */
 private val COVER_COLUMN_HORIZONTAL_INSET = 16.dp
 
 /** What the cover's column spends above and below the surface, for the same reason. */
 private val COVER_COLUMN_VERTICAL_INSET = 20.dp
 
-private const val INFO_COLUMN_SHARE = 0.45f
+/**
+ * The width of the controls' column in landscape, which sits centred in the right half.
+ *
+ * [INFO_COLUMN_MIN] is the width its icon row needs, measured at 275dp on the device with a
+ * little over for the padding, below which the icons crowd; a half narrower than that is
+ * widened to it. [INFO_COLUMN_MAX] stops the controls spreading across a wide half.
+ * [INFO_COLUMN_MIN_TABLET] and [INFO_COLUMN_MAX_TABLET] are the same for the tablet's larger
+ * controls (#89): their icon row measured about 340dp across at 440dp, which with the row's
+ * margins and the column's padding needs about 400dp.
+ */
 private val INFO_COLUMN_MIN = 280.dp
 private val INFO_COLUMN_MAX = 360.dp
+private val INFO_COLUMN_MIN_TABLET = 400.dp
+private val INFO_COLUMN_MAX_TABLET = 440.dp
+
+/** The smallest width of a screen that gets the tablet's control size, in dp. */
+private const val TABLET_MIN_SMALLEST_WIDTH_DP = 600
 
 @Composable
 private fun extractDominantColor(imageUrl: String?, isDark: Boolean): State<Color> {

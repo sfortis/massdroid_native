@@ -13,12 +13,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import net.asksakis.massdroidv2.domain.model.Track
 
 /**
- * Now-Playing title / artist / album block. In compact (landscape) mode,
+ * Now-Playing title / artist / album block. At [NowPlayingSize.Compact] (phone landscape),
  * album and artist are inline on a single marquee line; in portrait they
  * stack. Tapping artist or album navigates to their detail screens
  * provided the queue track exposes an item id + provider.
@@ -31,24 +30,42 @@ internal fun TrackInfoSection(
     currentTrack: Track?,
     onNavigateToArtist: (String, String, String) -> Unit,
     onNavigateToAlbum: (String, String, String) -> Unit,
-    compact: Boolean = false
+    size: NowPlayingSize = NowPlayingSize.Regular
 ) {
-    val titleStyle = if (compact) MaterialTheme.typography.titleLarge else MaterialTheme.typography.headlineSmall
-    val artistStyle = MaterialTheme.typography.titleMedium
-    val albumStyle = if (compact) MaterialTheme.typography.bodyMedium else MaterialTheme.typography.titleSmall
+    val compact = size == NowPlayingSize.Compact
+    val titleStyle = when (size) {
+        NowPlayingSize.Compact -> MaterialTheme.typography.titleLarge
+        NowPlayingSize.Regular -> MaterialTheme.typography.headlineSmall
+        NowPlayingSize.Large -> MaterialTheme.typography.headlineMedium
+    }
+    val artistStyle = when (size) {
+        NowPlayingSize.Large -> MaterialTheme.typography.titleLarge
+        else -> MaterialTheme.typography.titleMedium
+    }
+    val albumStyle = when (size) {
+        NowPlayingSize.Compact -> MaterialTheme.typography.bodyMedium
+        NowPlayingSize.Regular -> MaterialTheme.typography.titleSmall
+        NowPlayingSize.Large -> MaterialTheme.typography.titleMedium
+    }
     val artistClickable = currentTrack?.artistItemId != null && currentTrack.artistProvider != null
     val albumClickable = currentTrack?.albumItemId != null && currentTrack.albumProvider != null
 
-    Text(
-        text = title,
-        style = titleStyle,
-        fontWeight = FontWeight.Bold,
-        maxLines = 1,
-        textAlign = TextAlign.Center,
+    // Centred by the Row, like the artist line below. Inside the marquee the text is laid out
+    // without a width limit, and TextAlign.Center then left the large title 75dp off centre
+    // on a tablet (#89).
+    Row(
         modifier = Modifier
             .fillMaxWidth()
-            .basicMarquee(iterations = Int.MAX_VALUE, velocity = 60.dp)
-    )
+            .basicMarquee(iterations = Int.MAX_VALUE, velocity = 60.dp),
+        horizontalArrangement = Arrangement.Center
+    ) {
+        Text(
+            text = title,
+            style = titleStyle,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1
+        )
+    }
     Spacer(modifier = Modifier.height(if (compact) 10.dp else 8.dp))
 
     if (compact && album.isNotBlank() && artist.isNotBlank()) {

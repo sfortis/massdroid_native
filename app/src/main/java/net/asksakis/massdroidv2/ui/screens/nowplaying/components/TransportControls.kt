@@ -41,7 +41,7 @@ internal fun TransportControls(
     queueState: QueueState?,
     viewModel: NowPlayingViewModel,
     enabled: Boolean = true,
-    compact: Boolean = false,
+    size: NowPlayingSize = NowPlayingSize.Regular,
     onHaptic: () -> Unit = {}
 ) {
     val isAudiobook by viewModel.isAudiobook.collectAsStateWithLifecycle()
@@ -54,10 +54,26 @@ internal fun TransportControls(
     val skip = queueState.skipAvailability()
     val previousEnabled = enabled && (isAudiobook || skip.previous)
     val nextEnabled = enabled && (isAudiobook || skip.next)
-    val buttonSize = if (compact) 40.dp else 48.dp
-    val playSize = if (compact) 52.dp else 64.dp
-    val iconSize = if (compact) 26.dp else 32.dp
-    val playIconSize = if (compact) 30.dp else 36.dp
+    val buttonSize = when (size) {
+        NowPlayingSize.Compact -> 40.dp
+        NowPlayingSize.Regular -> 48.dp
+        NowPlayingSize.Large -> 60.dp
+    }
+    val playSize = when (size) {
+        NowPlayingSize.Compact -> 52.dp
+        NowPlayingSize.Regular -> 64.dp
+        NowPlayingSize.Large -> 80.dp
+    }
+    val iconSize = when (size) {
+        NowPlayingSize.Compact -> 26.dp
+        NowPlayingSize.Regular -> 32.dp
+        NowPlayingSize.Large -> 40.dp
+    }
+    val playIconSize = when (size) {
+        NowPlayingSize.Compact -> 30.dp
+        NowPlayingSize.Regular -> 36.dp
+        NowPlayingSize.Large -> 45.dp
+    }
 
     Row(
         modifier = Modifier.fillMaxWidth(),

@@ -9,7 +9,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material3.MaterialTheme
@@ -77,7 +77,7 @@ internal fun SwipeableAlbumArt(
     canSwipePrevious: Boolean = true,
     canSwipeNext: Boolean = true,
     onHaptic: () -> Unit = {},
-    fillMaxWidth: Boolean = true,
+    landscapeHeight: Dp? = null,
     modifier: Modifier = Modifier
 ) {
     val scope = rememberCoroutineScope()
@@ -130,20 +130,18 @@ internal fun SwipeableAlbumArt(
 
     val shape = MaterialTheme.shapes.medium
 
-    // Portrait is driven by the width it is given; landscape by the height, because there the
-    // column is usually wider than the surface wants and a width-driven surface then keeps the
-    // width while the height is capped, which silently widens the real aspect ratio. The travel
-    // below is computed from that ratio, so a surface wider than it claims to be uncovers the
-    // art either side: at 1.38 instead of 1.23 the next cover sat in plain view beside the
-    // current one.
-    val aspect = if (fillMaxWidth) SURFACE_ASPECT else SURFACE_ASPECT_COMPACT
-    val outerModifier = if (fillMaxWidth) {
+    // Portrait is driven by the width it is given. Landscape gets an exact size, worked out
+    // by the caller with landscapeArtSurfaceHeight from the room its column has, so the
+    // surface always fits that column: a surface that sized itself came out twice the
+    // column's width on a tablet and covered the controls (#89). The size keeps the aspect
+    // ratio exact too. The travel below is computed from that ratio, so a
+    // surface wider than it claims to be uncovers the art either side: at 1.38 instead of 1.23
+    // the next cover sat in plain view beside the current one.
+    val aspect = if (landscapeHeight == null) SURFACE_ASPECT else SURFACE_ASPECT_COMPACT
+    val outerModifier = if (landscapeHeight == null) {
         Modifier.fillMaxWidth().aspectRatio(aspect)
     } else {
-        Modifier
-            .fillMaxHeight()
-            .heightIn(max = SURFACE_MAX_COMPACT)
-            .aspectRatio(aspect, matchHeightConstraintsFirst = true)
+        Modifier.size(width = landscapeArtSurfaceWidth(landscapeHeight), height = landscapeHeight)
     }
     val travelFactor = travelFactorFor(aspect)
     // Sized off the surface's height, not its width. The surface is wider than it is tall
@@ -396,16 +394,18 @@ internal fun SwipeableAlbumArt(
 }
 
 /**
- * The width the landscape surface takes when the row gives it [availableHeight].
+ * The height of the landscape surface: all of [availableHeight], unless [availableWidth] runs
+ * out first at the surface's aspect ratio. There is no other ceiling, so the cover grows with
+ * the screen, on a tablet as well as on a phone (#89).
  *
- * The caller needs this because the surface is driven by its height there, so its width is
- * not known until the height is. A column laid out with a share of the screen instead ends
- * up holding more than the surface uses, and that leftover pushes everything beside it
- * outwards: measured at 137dp of empty space to the left of the cover against 24dp to the
- * right of the controls.
+ * The caller passes the result to [SwipeableAlbumArt], which takes exactly that height and
+ * the matching width, so the surface fits the room it was worked out for.
  */
-fun landscapeArtSurfaceWidth(availableHeight: Dp): Dp =
-    availableHeight.coerceAtMost(SURFACE_MAX_COMPACT) * SURFACE_ASPECT_COMPACT
+fun landscapeArtSurfaceHeight(availableHeight: Dp, availableWidth: Dp): Dp =
+    minOf(availableHeight, availableWidth / SURFACE_ASPECT_COMPACT).coerceAtLeast(0.dp)
+
+/** The width of the landscape surface at [surfaceHeight]. */
+private fun landscapeArtSurfaceWidth(surfaceHeight: Dp): Dp = surfaceHeight * SURFACE_ASPECT_COMPACT
 
 private enum class SlotRole { PREVIOUS, CURRENT, NEXT }
 
@@ -502,17 +502,6 @@ private const val SWIPE_COMMIT_FRACTION = 0.20f
  * covers travel.
  */
 private const val SURFACE_ASPECT = 1.23f
-
-/**
- * The surface's ceiling where the screen is short, which is the landscape layout.
- *
- * It is a ceiling, not the size: in landscape the surface is usually narrower than this
- * allows, so the width decides and this only stops the cover eating the row when there is
- * an unusual amount of height. Raised from 220dp together with the column's width. At 220 the two met almost exactly,
- * so the cover could not grow at all; measured after the first raise, the width was still
- * what decided, and the cover came out at 185dp against 167 before.
- */
-private val SURFACE_MAX_COMPACT = 300.dp
 
 /**
  * How much of the surface's height the cover takes, leaving the rest for its shadow.
