@@ -209,3 +209,26 @@ jobs:
           status: ${{ env.PLAY_STATUS }}
           releaseName: ${{ steps.stage.outputs.version }}
           whatsNewDirectory: ${{ steps.stage.outputs.whatsnew_atv }}
+
+  PLAY_PRODUCTION:
+    # Production in the countries set in the Play Console, on all three form factors. It reuses
+    # the closed releases PLAY_AABS uploaded, with their versionCodes and notes, and uploads
+    # nothing. When only this job failed, "Re-run failed jobs" repeats it alone. When
+    # PLAY_AABS failed, a re-run uploads again and Play refuses the versionCodes it already has.
+    # Every production track changes in one edit: either all three get the release or none does.
+    name: Google Play production
+    needs: PLAY_AABS
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+    steps:
+      - uses: actions/checkout@v6
+        if: env.PLAY_SERVICE_ACCOUNT_JSON != ''
+        with:
+          persist-credentials: false
+
+      - name: Release the closed test release to production
+        if: env.PLAY_SERVICE_ACCOUNT_JSON != ''
+        run: bash .github/scripts/play-promote.sh "${GITHUB_REF_NAME}"
