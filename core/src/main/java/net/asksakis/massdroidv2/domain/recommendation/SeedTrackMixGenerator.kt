@@ -680,6 +680,34 @@ internal fun recentArtistPenalty(count: Int, perMix: Double): Double =
     count.coerceIn(0, RECENT_ARTIST_PENALTY_MAX_COUNT) * perMix
 
 /**
+ * The keys an artist is recorded under in the artist cooldown: the canonical
+ * artist key (a URI such as library://artist/59) and the lowercased name, each
+ * when present.
+ *
+ * Both are needed. The window used to hold only the URI key while the seed-track
+ * engine looked candidates up by name, so its artist penalty never applied. A URI
+ * key alone also misses the same artist under another provider (deezer:// in a
+ * delivered mix, library:// in the play history); the name key catches that.
+ */
+internal fun artistCooldownKeys(itemId: String?, uri: String?, name: String?): Set<String> =
+    setOfNotNull(
+        MediaIdentity.canonicalArtistKey(itemId, uri),
+        name?.trim()?.lowercase()?.takeIf { it.isNotBlank() }
+    )
+
+/** [artistCooldownKeys] of a track's first artist. */
+internal fun trackArtistCooldownKeys(track: Track): Set<String> =
+    artistCooldownKeys(track.artistItemId, track.artistUri, track.artistNames.substringBefore(","))
+
+/**
+ * How many recent mixes an artist appeared in, given its [keys]: the largest
+ * count over the keys. Each mix records an artist once per key, so the largest
+ * count is the number of mixes, and summing would count one appearance twice.
+ */
+internal fun recentArtistCount(keys: Set<String>, counts: Map<String, Int>): Int =
+    keys.maxOfOrNull { counts[it] ?: 0 } ?: 0
+
+/**
  * The genre families a family hop moves away from: those of the
  * [HOP_FAMILY_AVOID_DEPTH] newest clusters in [recentClusters], which is ordered
  * oldest first. Older clusters still count for the exact-genre rotation.
@@ -934,6 +962,8 @@ class SeedTrackMixGenerator @Inject constructor(
         coherentGenres: Set<String>,
         coreFamilies: Set<String>
     ): List<Track> {
+        var penalizedArtists = 0
+        var maxArtistCount = 0
         val candidates = resolved
             .filterNot { it.track.uri in recency.excludedTrackUris }
             // Same rejection, matched on the recording rather than on one uri for it.
@@ -943,11 +973,12 @@ class SeedTrackMixGenerator @Inject constructor(
                         .takeIf { it.isNotBlank() } in recency.excludedTrackKeys
             }
             .map { c ->
-                val artistKey = c.track.artistNames.split(",").firstOrNull()?.trim()?.lowercase().orEmpty()
-                val artistPenalty = recentArtistPenalty(
-                    recency.recentArtistCounts[artistKey] ?: 0,
-                    SEED_RECENT_ARTIST_PENALTY
-                )
+                val artistCount = recentArtistCount(trackArtistCooldownKeys(c.track), recency.recentArtistCounts)
+                if (artistCount > 0) {
+                    penalizedArtists++
+                    maxArtistCount = maxOf(maxArtistCount, artistCount)
+                }
+                val artistPenalty = recentArtistPenalty(artistCount, SEED_RECENT_ARTIST_PENALTY)
                 val trackPenalty = if (c.track.uri in recency.recentMixTrackUris) SEED_RECENT_TRACK_PENALTY else 0.0
                 CandidateTrack(
                     track = c.track,
@@ -955,6 +986,11 @@ class SeedTrackMixGenerator @Inject constructor(
                     verified = c.verified
                 )
             }
+        Log.d(
+            TAG,
+            "artist cooldown: $penalizedArtists/${candidates.size} candidates penalized, " +
+                "max count $maxArtistCount"
+        )
         if (candidates.isEmpty()) return emptyList()
 
         // Loved-track injection (comfort anchor): low Discovery reserves a slice
@@ -1696,8 +1732,9 @@ class SeedTrackMixGenerator @Inject constructor(
         // Genre movement. exactFresh always rotates the sub-genre (avoid the
         // exact genres of recent mixes) so we never lock onto one thing; on top
         // of that, Variety is the probability that this mix leaves the families
-        // of the last two mixes altogether (see hopAvoidedFamilies). The preference is honoured only while it still
-        // leaves a real choice: with fewer than PRIMARY_PREFERENCE_MIN options
+        // of the last two seed-track mixes that reached the queue with a cluster
+        // (see hopAvoidedFamilies). The preference is honoured only while it
+        // still leaves a real choice: with fewer than PRIMARY_PREFERENCE_MIN options
         // the two rules have narrowed the field to a near-deterministic pick, so
         // we drop the family preference (then exact freshness, then the whole
         // window) rather than hand back the same cluster as last time.

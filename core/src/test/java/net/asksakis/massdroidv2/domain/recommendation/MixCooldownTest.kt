@@ -41,7 +41,8 @@ class MixCooldownTest {
         val consumed = cooldownFor(mix, Result(mix.map { it.uri }))
 
         assertThat(consumed.trackUris).hasSize(3)
-        assertThat(consumed.artistKeys).hasSize(3)
+        // Each artist is recorded under its URI key and its name.
+        assertThat(consumed.artistKeys).hasSize(6)
     }
 
     @Test
@@ -56,7 +57,7 @@ class MixCooldownTest {
 
         assertThat(consumed.trackUris).containsExactly("deezer://track/1")
         // Hammock and Alcest never reached the queue, so they stay eligible.
-        assertThat(consumed.artistKeys).containsExactly("library://artist/1")
+        assertThat(consumed.artistKeys).containsExactly("library://artist/1", "caspian")
     }
 
     @Test
@@ -79,7 +80,7 @@ class MixCooldownTest {
         )
 
         assertThat(consumed.trackUris).containsExactly("deezer://track/10")
-        assertThat(consumed.artistKeys).containsExactly("library://artist/1")
+        assertThat(consumed.artistKeys).containsExactly("library://artist/1", "caspian")
     }
 
     @Test
@@ -97,5 +98,41 @@ class MixCooldownTest {
         val consumed = cooldownFor(mix, Result(listOf("deezer://track/1", "deezer://track/999")))
 
         assertThat(consumed.trackUris).containsExactly("deezer://track/1")
+    }
+
+    @Test
+    fun `a consumed artist is penalized in the next seed-track mix`() {
+        // The window used to hold only URI keys while the seed-track engine looked
+        // artists up by name, so this penalty was always zero.
+        val consumed = cooldownFor(mix, Result(mix.map { it.uri }))
+        val recency = SeedTrackMixGenerator.Recency(
+            excludedTrackUris = emptySet(),
+            recentArtistCounts = listOf(consumed.artistKeys).flatten().groupingBy { it }.eachCount(),
+            recentMixTrackUris = emptySet()
+        )
+        fun penaltyOf(candidate: Track) = recentArtistPenalty(
+            recentArtistCount(trackArtistCooldownKeys(candidate), recency.recentArtistCounts),
+            perMix = 1.0
+        )
+
+        // The same artist URI.
+        assertThat(penaltyOf(track("30", "Caspian", "library://artist/1"))).isEqualTo(1.0)
+        // The same name under another provider's URI.
+        assertThat(penaltyOf(track("31", "Caspian", "deezer://artist/777"))).isEqualTo(1.0)
+        // An artist who was not in the mix.
+        assertThat(penaltyOf(track("32", "Mogwai", "library://artist/9"))).isEqualTo(0.0)
+    }
+
+    @Test
+    fun `an artist counts once per mix even though it has two keys`() {
+        val first = cooldownFor(mix, Result(mix.map { it.uri }))
+        val second = cooldownFor(
+            listOf(track("40", "Caspian", "deezer://artist/777")),
+            Result(listOf("deezer://track/40"))
+        )
+        val counts = listOf(first.artistKeys, second.artistKeys).flatten().groupingBy { it }.eachCount()
+
+        val keys = trackArtistCooldownKeys(track("41", "Caspian", "library://artist/1"))
+        assertThat(recentArtistCount(keys, counts)).isEqualTo(2)
     }
 }

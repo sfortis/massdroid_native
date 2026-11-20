@@ -179,10 +179,7 @@ internal fun cooldownFor(tracks: List<Track>, result: QueueLoadResultView): MixC
     val accepted = result.acceptedUris.toSet()
     if (accepted.isEmpty()) return MixCooldown(emptySet(), emptySet())
     val acceptedTracks = tracks.filter { it.uri in accepted }
-    val artistKeys = acceptedTracks.mapNotNullTo(mutableSetOf()) { track ->
-        MediaIdentity.canonicalArtistKey(track.artistItemId, track.artistUri)
-            ?: track.artistNames.split(",").firstOrNull()?.trim()?.lowercase()?.takeIf { it.isNotBlank() }
-    }
+    val artistKeys = acceptedTracks.flatMapTo(mutableSetOf()) { trackArtistCooldownKeys(it) }
     return MixCooldown(acceptedTracks.mapTo(mutableSetOf()) { it.uri }, artistKeys)
 }
 
@@ -975,28 +972,33 @@ class MixPlaybackOrchestrator @Inject constructor(
         val recentArtistAppearances = recentSmartMixArtists.flatten()
             .groupingBy { it }
             .eachCount()
-        val recencyPenaltyByKey: Map<String, Double> = recentArtistAppearances
-            .mapValues { (_, count) -> recentArtistPenalty(count, RECENT_ARTIST_APPEARANCE_PENALTY) }
         val rawArtistScores = try {
             playHistoryRepository.getScoredArtists(days = 120, limit = 40)
         } catch (_: Exception) {
             emptyList()
         }
-        val artistScores = if (recencyPenaltyByKey.isEmpty()) {
+        val artistScores = if (recentArtistAppearances.isEmpty()) {
             rawArtistScores
         } else {
             rawArtistScores.map { score ->
-                val key = MediaIdentity.artistKeyFromUri(score.artistUri) ?: score.artistUri
-                val penalty = recencyPenaltyByKey[key] ?: 0.0
+                val keys = artistCooldownKeys(null, score.artistUri, score.artistName) + score.artistUri
+                val penalty = recentArtistPenalty(
+                    recentArtistCount(keys, recentArtistAppearances),
+                    RECENT_ARTIST_APPEARANCE_PENALTY
+                )
                 if (penalty == 0.0) score else score.copy(score = score.score - penalty)
             }
         }
-        val bllForMix: Map<String, Double> = if (recencyPenaltyByKey.isEmpty()) {
+        val bllForMix: Map<String, Double> = if (recentArtistAppearances.isEmpty()) {
             bllArtistScoreMap
         } else {
+            // The BLL map carries only the URI, so the name key cannot match here.
             bllArtistScoreMap.mapValues { (uri, score) ->
-                val key = MediaIdentity.artistKeyFromUri(uri) ?: uri
-                score - (recencyPenaltyByKey[key] ?: 0.0)
+                val keys = artistCooldownKeys(null, uri, null) + uri
+                score - recentArtistPenalty(
+                    recentArtistCount(keys, recentArtistAppearances),
+                    RECENT_ARTIST_APPEARANCE_PENALTY
+                )
             }
         }
         val genreScores = try {
