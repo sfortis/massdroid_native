@@ -28,8 +28,10 @@ import net.asksakis.massdroidv2.data.proximity.ProximityScanner
 import net.asksakis.massdroidv2.data.proximity.RoomDetector
 import net.asksakis.massdroidv2.data.sendspin.CarAudioPresence
 import net.asksakis.massdroidv2.data.sendspin.SendspinManager
+import net.asksakis.massdroidv2.data.websocket.ConnectionState
 import net.asksakis.massdroidv2.data.websocket.MaCommands
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
+import net.asksakis.massdroidv2.data.websocket.SavedCredentialsConnector
 import net.asksakis.massdroidv2.data.websocket.VolumeSetArgs
 import net.asksakis.massdroidv2.domain.repository.MusicRepository
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
@@ -120,6 +122,7 @@ class FollowMeService : Service() {
     @Inject lateinit var sendspinManager: SendspinManager
     @Inject lateinit var carAudioPresence: CarAudioPresence
     @Inject lateinit var wsClient: MaWebSocketClient
+    @Inject lateinit var savedCredentialsConnector: SavedCredentialsConnector
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var proximityController: ProximityController? = null
@@ -144,6 +147,8 @@ class FollowMeService : Service() {
             shouldBlockProximitySelectionForBt = { shouldBlockProximitySelectionForBt() },
             sendVolumeCommand = { playerId, volume -> sendVolumeCommand(playerId, volume) },
             carAudioConnected = carAudioPresence.connected,
+            isMaConnected = { wsClient.connectionState.value is ConnectionState.Connected },
+            connectToMa = { savedCredentialsConnector.connectIfNeeded() },
         ).also { it.start() }
 
         // Getting out of the car is the moment the hold above stops applying,
