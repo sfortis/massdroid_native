@@ -1,0 +1,2 @@
+Party: choose the party player and see which player Auto picks. Tablets get a better Now Playing layout and larger controls.
+A watch's play and pause control the selected player, Follow Me selects the room's player after Android restarts the app, and genres are more accurate.

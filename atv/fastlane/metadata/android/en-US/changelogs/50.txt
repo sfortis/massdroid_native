@@ -1,0 +1,1 @@
+Genres are more accurate for artists who share their name with another artist, and artist pages on Music Assistant before 2.9 no longer list an album twice.
