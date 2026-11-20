@@ -194,6 +194,7 @@ object AppModule {
             },
             carAudioDevicesFlow = settingsRepository.carAudioBtDevices,
             recordKnownBtDevice = { settingsRepository.recordKnownBtDevice(it) },
+            reportLocalVolume = sendspinManager::reportLocalVolume,
         )
     }
 

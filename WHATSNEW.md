@@ -10,6 +10,7 @@
 - Follow Me recognizes a room even when one of its beacons is silent.
 
 ### Fixed
+- Android TV: the volume no longer jumps between levels when the player's Volume Control in Music Assistant is set to another entity, such as an AV receiver.
 - A watch's play and pause buttons now control the selected player. (#88)
 - The car's instrument cluster no longer shows the previous track's cover. (#84)
 - The artist page no longer crashes on Music Assistant servers older than 2.9. (#87)
