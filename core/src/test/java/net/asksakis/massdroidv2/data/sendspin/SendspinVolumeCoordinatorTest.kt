@@ -54,6 +54,7 @@ class SendspinVolumeCoordinatorTest {
         val carDevicesFlow = MutableStateFlow<Set<String>>(emptySet())
         val persisted = mutableListOf<Int>()
         val recordedBt = mutableListOf<String>()
+        val reportedStatus = mutableListOf<Int>()
 
         // Mutable route view the injected lambdas read; tests flip these.
         @Volatile var routeType: Int? = AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
@@ -84,6 +85,7 @@ class SendspinVolumeCoordinatorTest {
             currentBtRouteKey = { btRouteKey },
             carAudioDevicesFlow = carDevicesFlow,
             recordKnownBtDevice = { recordedBt += it },
+            reportLocalVolume = { reportedStatus += it },
         )
 
         fun btSink(name: String): AudioDeviceInfo = mockk {
@@ -517,17 +519,41 @@ class SendspinVolumeCoordinatorTest {
     // region STREAM_MUSIC observer dedup + echo suppression
 
     @Test
-    fun phoneStreamChanged_genuineUserChange_pushedToMa() = runTest(UnconfinedTestDispatcher()) {
+    fun phoneStreamChanged_deviceChange_reportedAsStatusNotCommand() = runTest(UnconfinedTestDispatcher()) {
         val f = Fixture().apply { onPhoneRoute(); streamIndex = 10 }
         val c = f.build()
         c.start(backgroundScope)
         advanceUntilIdle()
 
-        c.onPhoneStreamVolumeChanged() // index 10, not our write, so genuine
+        c.onPhoneStreamVolumeChanged() // index 10, not our write
         advanceUntilIdle()
 
         val pct = (10 * 100 / MAX_INDEX.toFloat() + 0.5f).toInt()
-        coVerify { f.playerRepository.setVolume(PLAYER, pct) }
+        assertThat(f.reportedStatus).containsExactly(pct)
+        verify { f.playerRepository.applyVolumeOptimistic(PLAYER, pct) }
+        coVerify(exactly = 0) { f.playerRepository.setVolume(any(), any()) }
+    }
+
+    @Test
+    fun phoneStreamChanged_cecEchoOfReceiver_neverSentAsCommand() = runTest(UnconfinedTestDispatcher()) {
+        // A TV on HDMI-CEC: Android writes each level the AV receiver reports into
+        // STREAM_MUSIC. Replay the 20 -> 26 -> 28 sequence of the loop this fixes.
+        val f = Fixture().apply { onPhoneRoute() }
+        val c = f.build()
+        c.start(backgroundScope)
+        advanceUntilIdle()
+
+        val echoed = listOf(3, 4, 5, 3, 4, 5, 3)
+        for (index in echoed) {
+            f.streamIndex = index
+            c.onPhoneStreamVolumeChanged()
+            advanceUntilIdle()
+        }
+
+        coVerify(exactly = 0) { f.playerRepository.setVolume(any(), any()) }
+        assertThat(f.reportedStatus)
+            .containsExactlyElementsIn(echoed.map { (it * 100 / MAX_INDEX.toFloat() + 0.5f).toInt() })
+            .inOrder()
     }
 
     @Test
@@ -541,12 +567,13 @@ class SendspinVolumeCoordinatorTest {
         c.onUiSliderChanged(60)
         advanceUntilIdle()
         // The broadcast that write triggers lands on the same index, recognised as
-        // our own and dropped (no second, bounced push).
+        // our own and dropped (no second, bounced push and no status report).
         f.streamIndex = idx(60)
         c.onPhoneStreamVolumeChanged()
         advanceUntilIdle()
 
         coVerify(exactly = 1) { f.playerRepository.setVolume(PLAYER, any()) }
+        assertThat(f.reportedStatus).isEmpty()
     }
 
     @Test

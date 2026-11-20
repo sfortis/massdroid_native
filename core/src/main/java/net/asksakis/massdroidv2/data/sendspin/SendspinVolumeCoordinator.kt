@@ -71,6 +71,8 @@ class SendspinVolumeCoordinator(
     private val carAudioDevicesFlow: Flow<Set<String>>,
     /** Record a BT route key as seen (for the car-audio picker). */
     private val recordKnownBtDevice: suspend (String) -> Unit,
+    /** Report an observed STREAM_MUSIC level to MA as Sendspin status (`client/state`). */
+    private val reportLocalVolume: (Int) -> Unit = {},
 ) {
     companion object {
         private const val TAG = "SsVolCoord"
@@ -543,7 +545,16 @@ class SendspinVolumeCoordinator(
      * other Settings.System noise). The broadcast ALSO fires for our own mirror
      * writes, so we still read the index and drop it when it equals the one we set
      * (plus the self-write settle / recent-write windows). A different index is a
-     * genuine user change (HW keys, system bar), mirrored to MA when sync is effective.
+     * change of the device volume (HW keys, system bar), reported to MA when sync is
+     * effective.
+     *
+     * It is reported as STATUS (Sendspin `client/state`), not as a `volume_set`
+     * command: the broadcast does not say who changed the stream, and on a TV with
+     * HDMI-CEC system audio Android itself writes every level the AV receiver reports
+     * into STREAM_MUSIC. As a command, that echo went back to MA, which sent it to the
+     * player's Volume Control (e.g. the receiver through Home Assistant), whose next
+     * CEC report came back again: an endless loop. As status, MA shows the level when
+     * the Volume Control is native and ignores it otherwise.
      */
     fun onPhoneStreamVolumeChanged() {
         val max = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
@@ -573,10 +584,9 @@ class SendspinVolumeCoordinator(
             return
         }
         val id = cachedSendspinPlayerId ?: return
-        Log.d(TAG, "stream_music ->$pct% (index $index) -> push MA")
-        recordLocalPush(pct)
+        Log.d(TAG, "stream_music ->$pct% (index $index) -> report status")
         playerRepository.applyVolumeOptimistic(id, pct)
-        launchPushToServer(id, pct, reason = "phone_observer")
+        reportLocalVolume(pct)
     }
 
     /**

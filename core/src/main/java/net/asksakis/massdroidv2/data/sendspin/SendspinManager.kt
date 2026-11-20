@@ -905,6 +905,18 @@ class SendspinManager(
     }
 
     /**
+     * Report a level the device's own volume changed to (hardware keys, system UI, or Android
+     * writing an HDMI-CEC receiver's level into STREAM_MUSIC) as this player's status in
+     * `client/state`. Status, not a command: MA shows it when the player's Volume Control is
+     * native and ignores it when something else (e.g. a Home Assistant entity) owns the level.
+     */
+    fun reportLocalVolume(volume: Int) {
+        if (currentVolume == volume) return
+        currentVolume = volume
+        if (client.state.value in STATE_REPORTING_STATES) sendCurrentState()
+    }
+
+    /**
      * Output dynamic-range compressor level (0 off, 1 soft, 2 medium, 3 hard).
      * Applied to BOTH engines so it persists across a group join/leave swap (each
      * engine owns its native output, which caches the level across reopens).
