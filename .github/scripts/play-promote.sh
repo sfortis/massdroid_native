@@ -14,8 +14,9 @@
 #   The release name is the tag, as release.yml names the closed releases, for example v2.44.0.
 #   --dry-run reads and prepares everything, then deletes the edit instead of committing it.
 #
-# The service account key is read from PLAY_SERVICE_ACCOUNT_JSON. Neither the key nor the
-# access token is ever printed. Needs curl, jq and openssl.
+# The service account key is read from PLAY_PRODUCTION_SERVICE_ACCOUNT_JSON: the play-prod
+# account, which may release to production, not the testing-only key of the closed uploads.
+# Neither the key nor the access token is ever printed. Needs curl, jq and openssl.
 
 set -euo pipefail
 
@@ -32,7 +33,7 @@ die() { echo "play-promote: $*" >&2; exit 1; }
 RELEASE_NAME="$1"
 DRY_RUN=false
 [ "${2:-}" = "--dry-run" ] && DRY_RUN=true
-[ -n "${PLAY_SERVICE_ACCOUNT_JSON:-}" ] || die "PLAY_SERVICE_ACCOUNT_JSON is empty"
+[ -n "${PLAY_PRODUCTION_SERVICE_ACCOUNT_JSON:-}" ] || die "PLAY_PRODUCTION_SERVICE_ACCOUNT_JSON is empty"
 
 WORK_DIR="$(mktemp -d)"
 EDIT_ID=""
@@ -70,9 +71,9 @@ b64url() { openssl base64 -e -A | tr '+/' '-_' | tr -d '='; }
 
 # A service account signs its own token request (a JWT, RS256) and trades it for an access token.
 umask 077
-jq -r '.private_key' <<< "$PLAY_SERVICE_ACCOUNT_JSON" > "${WORK_DIR}/key.pem"
-CLIENT_EMAIL="$(jq -r '.client_email' <<< "$PLAY_SERVICE_ACCOUNT_JSON")"
-TOKEN_URI="$(jq -r '.token_uri // "https://oauth2.googleapis.com/token"' <<< "$PLAY_SERVICE_ACCOUNT_JSON")"
+jq -r '.private_key' <<< "$PLAY_PRODUCTION_SERVICE_ACCOUNT_JSON" > "${WORK_DIR}/key.pem"
+CLIENT_EMAIL="$(jq -r '.client_email' <<< "$PLAY_PRODUCTION_SERVICE_ACCOUNT_JSON")"
+TOKEN_URI="$(jq -r '.token_uri // "https://oauth2.googleapis.com/token"' <<< "$PLAY_PRODUCTION_SERVICE_ACCOUNT_JSON")"
 NOW="$(date +%s)"
 HEADER="$(printf '{"alg":"RS256","typ":"JWT"}' | b64url)"
 CLAIMS="$(jq -nc --arg iss "$CLIENT_EMAIL" --arg scope "$SCOPE" --arg aud "$TOKEN_URI" \
@@ -90,6 +91,13 @@ rm -f "${WORK_DIR}/assertion"
 ACCESS_TOKEN="$(jq -r '.access_token // empty' <<< "$TOKEN_RESPONSE")"
 unset TOKEN_RESPONSE
 [ -n "$ACCESS_TOKEN" ] || die "no access token from ${TOKEN_URI}"
+# In GitHub Actions the token is registered as a secret, so it is masked if anything ever
+# prints it. Outside Actions this line would print the token itself, so it only runs there.
+# Never run this script with set -x: the trace of this echo would show the token before the
+# mask is registered.
+if [ "${GITHUB_ACTIONS:-}" = "true" ]; then
+    echo "::add-mask::${ACCESS_TOKEN}"
+fi
 # The token goes to curl through a file, so it never appears on a command line.
 printf 'Authorization: Bearer %s\n' "$ACCESS_TOKEN" > "${WORK_DIR}/auth-header"
 unset ACCESS_TOKEN
