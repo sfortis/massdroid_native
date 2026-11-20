@@ -230,6 +230,13 @@ private const val MIN_SEEDS = 1
 // at first, it threw away valid hops: a mix asking for a different family had
 // four candidates, lost them to the net, and landed on the recent family again.
 private const val PRIMARY_PREFERENCE_MIN = 2
+// How many of the newest clusters a family hop moves away from. It was the whole
+// six-mix rotation window, which nearly always held every large family (rock,
+// electronic), so a hop could only land on the one or two small families left.
+// Measured on the S25 on 2026-11-20: 5 of 7 mixes anchored on goth, chill or
+// metal, with "preferred=1" out of a pool of 276. The exact-genre rotation still
+// uses the whole window.
+private const val HOP_FAMILY_AVOID_DEPTH = 2
 // Strictness knob -> minimum effective (time-faded) track score a seed must
 // have. At 1.0 only "loved" tracks (score > 0.5) qualify; at 0.0 any track
 // whose score is not negative (score >= 0).
@@ -660,6 +667,15 @@ internal fun shouldHopFamily(variety: Double, random: kotlin.random.Random): Boo
     random.nextDouble() < variety.coerceIn(0.0, 1.0)
 
 /**
+ * The genre families a family hop moves away from: those of the
+ * [HOP_FAMILY_AVOID_DEPTH] newest clusters in [recentClusters], which is ordered
+ * oldest first. Older clusters still count for the exact-genre rotation.
+ */
+@VisibleForTesting
+internal fun hopAvoidedFamilies(recentClusters: List<Set<String>>): Set<String> =
+    genreFamilies(recentClusters.takeLast(HOP_FAMILY_AVOID_DEPTH).flatten())
+
+/**
  * Is this candidate primary what the mix is looking for?
  *
  * Only ever asked with [hop] true, i.e. "give me a different family than the
@@ -731,12 +747,12 @@ class SeedTrackMixGenerator @Inject constructor(
         /** Blocked artists, excluded from seeds, candidates and injection. */
         val blockedArtists: BlockedArtists = BlockedArtists.NONE,
         /**
-         * Normalized cluster genres of the last few smart mixes. The next
-         * primary seed prefers a genre family OUTSIDE this set, so consecutive
-         * mixes rotate across everything the user listens to instead of
-         * re-anchoring on the dominant genre every time.
+         * Normalized cluster genres of the last few smart mixes, oldest first.
+         * The next primary seed avoids every exact genre in the whole window, so
+         * consecutive mixes rotate the sub-genre. A family hop avoids only the
+         * families of the newest clusters (see [hopAvoidedFamilies]).
          */
-        val recentClusterGenres: Set<String> = emptySet(),
+        val recentClusters: List<Set<String>> = emptyList(),
         /**
          * Families allowed to anchor a mix (see [anchorFamilies]). Empty means the
          * history was too thin to judge and no restriction applies.
@@ -1663,8 +1679,8 @@ class SeedTrackMixGenerator @Inject constructor(
         val primaryPool = anchorable.take(varietyWindow(tuning.variety, anchorable.size))
         // Genre movement. exactFresh always rotates the sub-genre (avoid the
         // exact genres of recent mixes) so we never lock onto one thing; on top
-        // of that, Variety is the probability that this mix leaves the recent
-        // FAMILY altogether. The preference is honoured only while it still
+        // of that, Variety is the probability that this mix leaves the families
+        // of the last two mixes altogether (see hopAvoidedFamilies). The preference is honoured only while it still
         // leaves a real choice: with fewer than PRIMARY_PREFERENCE_MIN options
         // the two rules have narrowed the field to a near-deterministic pick, so
         // we drop the family preference (then exact freshness, then the whole
@@ -1679,11 +1695,11 @@ class SeedTrackMixGenerator @Inject constructor(
         // the variety dice said "no hop", which was half the time. Measured over
         // 23 mixes: 11 landed in rock and the listener saw "alternative" again
         // and again. Variety now only ever pushes AWAY, never back.
-        val recentFamilies = genreFamilies(recency.recentClusterGenres)
+        val recentFamilies = hopAvoidedFamilies(recency.recentClusters)
         val hop = shouldHopFamily(tuning.variety, random)
         // The recent clusters are persisted and the seed genres may come from
         // MusicBrainz, so the two are compared by key, not by spelling.
-        val recentClusterKeys = genreKeys(recency.recentClusterGenres)
+        val recentClusterKeys = genreKeys(recency.recentClusters.flatten())
         val exactFresh = primaryPool.filter { seed ->
             coherenceGenres(seed).none { genreKey(it) in recentClusterKeys }
         }

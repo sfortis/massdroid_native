@@ -131,4 +131,33 @@ class SeedTrackInjectCountTest {
         val high = (1..400).count { shouldHopFamily(0.8, kotlin.random.Random(7 + it)) }
         assertThat(low).isLessThan(high)
     }
+
+    @Test
+    fun `a hop avoids only the families of the two newest clusters`() {
+        // Six clusters, oldest first, each in its own family.
+        val recentClusters = listOf(
+            setOf("shoegaze"), // rock
+            setOf("deep house"), // electronic
+            setOf("swing"), // jazz
+            setOf("folk"), // folk
+            setOf("darkwave"), // goth
+            setOf("ambient"), // chill
+        )
+        val avoided = hopAvoidedFamilies(recentClusters)
+        assertThat(avoided).containsExactly("goth", "chill")
+        // The families of clusters 1 to 4 may anchor a hopping mix again.
+        listOf("rock", "electronic", "jazz", "folk").forEach { family ->
+            assertThat(prefersCandidateFamily(setOf(family), avoided, hop = true)).isTrue()
+        }
+        // The families of the two newest clusters may not.
+        listOf("goth", "chill").forEach { family ->
+            assertThat(prefersCandidateFamily(setOf(family), avoided, hop = true)).isFalse()
+        }
+    }
+
+    @Test
+    fun `a hop with fewer than two recent clusters avoids what there is`() {
+        assertThat(hopAvoidedFamilies(emptyList())).isEmpty()
+        assertThat(hopAvoidedFamilies(listOf(setOf("deep house")))).containsExactly("electronic")
+    }
 }

@@ -112,13 +112,18 @@ private const val SMART_MIX_EXPANSION_SEED_LIMIT = 5
 private const val SMART_MIX_SIMILARS_PER_SEED = 20
 private const val LIBRARY_ARTIST_PREFIX = "library://artist/"
 private const val RECENT_ARTIST_APPEARANCE_PENALTY = 1.0
-private const val RECENT_ARTIST_HISTORY_DEPTH = 4
+// Raised 4 -> 8 on 2026-11-20. A small genre family comes back after five to
+// eight mixes, and at depth 4 its artists were free again by then: two darkwave
+// mixes eight mixes apart shared 22 of 40 artists.
+private const val RECENT_ARTIST_HISTORY_DEPTH = 8
 private const val RECENT_GENRE_EXCLUSION_DEPTH = 3
 // Seed-track clusters rotate deeper than the genre engine's picked genre: the
 // seed pool now spans ~37 distinct anchor genres on a real library, so keeping
 // six mixes of history spreads consecutive mixes across it instead of cycling
 // three clusters. Falls back gracefully (the generator drops to the full window
 // when nothing outside the history is left), so a thin library is unaffected.
+// The whole window drives the exact-genre rotation; a family hop avoids only the
+// families of the newest two clusters (HOP_FAMILY_AVOID_DEPTH in the generator).
 private const val SEED_CLUSTER_ROTATION_DEPTH = 6
 private const val SMART_MIX_FAVORITES_QUERY_LIMIT = 500
 private const val ARTIST_TRACK_CACHE_TTL_MS = 12 * 60 * 60 * 1000L
@@ -294,8 +299,9 @@ class MixPlaybackOrchestrator @Inject constructor(
     private val recentSmartMixHistory: ArrayDeque<Set<String>> = ArrayDeque()
     private val recentSmartMixArtists: ArrayDeque<Set<String>> = ArrayDeque()
     private val recentSmartMixGenres: ArrayDeque<String> = ArrayDeque()
-    // Cluster genres of the last few SEED-TRACK smart mixes: the generator's
-    // primary-seed pick avoids these so consecutive mixes rotate genre families.
+    // Cluster genres of the last few SEED-TRACK smart mixes, oldest first: the
+    // generator's primary-seed pick avoids their exact genres, and a family hop
+    // avoids the families of the newest ones, so consecutive mixes rotate.
     private val recentSeedClusterGenres: ArrayDeque<Set<String>> = ArrayDeque()
     // The cluster rotation is the one cool-down that must outlive the process:
     // Android kills a backgrounded app routinely, and an empty window let the next
@@ -918,7 +924,7 @@ class MixPlaybackOrchestrator @Inject constructor(
         recentArtistCounts = recentSmartMixArtists.flatten().groupingBy { it }.eachCount(),
         recentMixTrackUris = recentSmartMixHistory.flatten().toSet(),
         blockedArtists = blockedArtists,
-        recentClusterGenres = recentSeedClusterGenres.flatten().toSet()
+        recentClusters = recentSeedClusterGenres.toList()
     )
 
     private suspend fun buildSmartMixTracks(): SmartMixResult {
