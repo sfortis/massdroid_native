@@ -143,6 +143,14 @@ class ProximityController(
     // because the MA connection was not up yet. Applied when the player shows up (see
     // DeferredRoomSelection); cleared once the room is selected or has changed.
     private var roomDeferredForPlayerId: String? = null
+    // The player selected while the selection waits; another one selected meanwhile drops it.
+    // Before MA connects nothing is selected yet, so the first player that shows up, the
+    // selection the repository restores on connect, becomes this baseline rather than counting
+    // as a choice made by hand.
+    private var selectedWhenDeferredId: String? = null
+    // The room a connect was last started for, so a room gets one attempt, from its
+    // confirmation or, when doze blocked that, from the next doze exit.
+    private var connectAttemptedForRoomId: String? = null
     private var lastConfirmedWifiRoomId: String? = null
     private var lastConfirmedWifiBssid: String? = null
     private var lastConfirmedWifiSsid: String? = null
@@ -355,6 +363,13 @@ class ProximityController(
                 // until the room changed. It is applied when the player list brings the
                 // player, and only for a selection that was really put off.
                 playerRepository.players.collect { reapplyRoomDeferredForPlayer() }
+            }
+
+            launch {
+                // A room confirmed in doze could not connect, and the room is not confirmed
+                // again, so its selection would wait until the app was opened. The doze exit
+                // makes up that one attempt.
+                dozeChanged.collect { if (!isDeviceInDoze()) connectForDeferredRoomAfterDoze() }
             }
 
             launch {
@@ -1165,8 +1180,12 @@ class ProximityController(
         if (suppressNextProximityRoomAction) {
             suppressNextProximityRoomAction = false
             roomSkippedByBtHoldId = detected.roomId.takeIf { shouldBlockProximitySelectionForBt.invoke() }
-            if (!shouldBlockProximitySelectionForBt.invoke() && !playbackController.isPlayerAvailable(detected.playerId)) {
-                deferSelectionForPlayer(detected, "resume-sync")
+            if (!shouldBlockProximitySelectionForBt.invoke()) {
+                if (playbackController.isPlayerAvailable(detected.playerId)) {
+                    roomDeferredForPlayerId = null
+                } else {
+                    deferSelectionForPlayer(detected, "resume-sync")
+                }
             }
             if (
                 !shouldBlockProximitySelectionForBt.invoke() &&
@@ -1260,19 +1279,43 @@ class ProximityController(
     private fun connectForRoomIfNeeded(room: DetectedRoom) {
         if (isMaConnected() || !radioAllowed()) return
         Log.d(TAG, "Follow Me: connecting for room ${room.roomName} (no MA connection)")
+        connectAttemptedForRoomId = room.roomId
         scope.launch { connectToMa() }
     }
 
+    private fun connectForDeferredRoomAfterDoze() {
+        val deferredRoomId = roomDeferredForPlayerId ?: return
+        val room = roomDetector.currentRoom.value?.takeIf { it.roomId == deferredRoomId } ?: return
+        if (connectAttemptedForRoomId == room.roomId || isMaConnected() || !radioAllowed()) return
+        Log.d(TAG, "Follow Me: connecting for room ${room.roomName} after doze (no MA connection)")
+        connectAttemptedForRoomId = room.roomId
+        scope.launch { connectToMa() }
+    }
+
+    /**
+     * Puts the room's selection off until its player is there, but only while the MA
+     * connection is down, which is what empties the player list. A player that is merely
+     * switched off while MA is connected is skipped as before: deferring it would select the
+     * room hours later when the speaker is switched on, over a choice made by hand meanwhile.
+     */
     private fun deferSelectionForPlayer(room: DetectedRoom, reason: String) {
+        if (isMaConnected()) {
+            Log.d(TAG, "Proximity select skipped ($reason): ${room.playerName} not available")
+            return
+        }
         roomDeferredForPlayerId = room.roomId
-        Log.d(TAG, "Proximity select deferred ($reason): ${room.playerName} not available")
+        selectedWhenDeferredId = playerRepository.selectedPlayer.value?.playerId
+        Log.d(TAG, "Proximity select deferred ($reason): ${room.playerName} not available (no MA connection)")
     }
 
     private fun reapplyRoomDeferredForPlayer() {
         val deferredRoomId = roomDeferredForPlayerId ?: return
         val room = roomDetector.currentRoom.value
         val available = room != null && playbackController.isPlayerAvailable(room.playerId)
-        when (DeferredRoomSelection.decide(deferredRoomId, room?.roomId, available)) {
+        val selectedNow = playerRepository.selectedPlayer.value?.playerId
+        if (selectedWhenDeferredId == null) selectedWhenDeferredId = selectedNow
+        val selectionChanged = selectedNow != selectedWhenDeferredId
+        when (DeferredRoomSelection.decide(deferredRoomId, room?.roomId, available, selectionChanged)) {
             DeferredRoomSelection.Action.WAIT -> Unit
             DeferredRoomSelection.Action.DROP -> roomDeferredForPlayerId = null
             DeferredRoomSelection.Action.APPLY -> {
@@ -1307,6 +1350,8 @@ class ProximityController(
         lastConfirmedWifiSsid = null
         lastConfirmedWifiAtMs = 0L
         roomDeferredForPlayerId = null
+        selectedWhenDeferredId = null
+        connectAttemptedForRoomId = null
         getSystemService(NotificationManager::class.java)?.cancel(PROXIMITY_NOTIFICATION_ID)
     }
 
