@@ -1,6 +1,9 @@
 package net.asksakis.massdroidv2.ui.screens.library
 
 import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
+import net.asksakis.massdroidv2.ui.components.TABLET_DETAIL_ART_FRACTION
+import net.asksakis.massdroidv2.ui.components.TabletDetailArtMaxWidth
+import net.asksakis.massdroidv2.ui.components.isTablet
 import net.asksakis.massdroidv2.ui.components.MdIconButton
 import net.asksakis.massdroidv2.ui.components.MdTextButton
 
@@ -318,7 +321,9 @@ private fun ArtistHeader(
         ?: tracks.firstOrNull()?.imageUrl
 
     if (imageUrl != null) {
-        val artModifier = if (isLandscape) {
+        val artModifier = if (isLandscape && isTablet()) {
+            Modifier.fillMaxWidth(TABLET_DETAIL_ART_FRACTION).widthIn(max = TabletDetailArtMaxWidth).aspectRatio(1f)
+        } else if (isLandscape) {
             Modifier.widthIn(max = 120.dp).aspectRatio(1f)
         } else {
             Modifier.fillMaxWidth().padding(horizontal = 24.dp).aspectRatio(16f / 9f)

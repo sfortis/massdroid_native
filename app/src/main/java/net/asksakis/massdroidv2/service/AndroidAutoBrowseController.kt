@@ -27,8 +27,10 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.guava.future
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import net.asksakis.massdroidv2.auto.AutoBrowseExtras
 import net.asksakis.massdroidv2.auto.PackageValidator
+import net.asksakis.massdroidv2.domain.car.CarNowPlayingLinks
 import net.asksakis.massdroidv2.domain.model.Album
 import net.asksakis.massdroidv2.domain.model.Artist
 import net.asksakis.massdroidv2.domain.model.BrowseItem
@@ -36,9 +38,11 @@ import net.asksakis.massdroidv2.domain.model.Playlist
 import net.asksakis.massdroidv2.domain.model.Track
 import net.asksakis.massdroidv2.domain.recommendation.DiscoverSection
 import net.asksakis.massdroidv2.domain.repository.MusicRepository
+import net.asksakis.massdroidv2.domain.repository.PlaybackIntentCause
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 import net.asksakis.massdroidv2.domain.repository.SearchResult
 import net.asksakis.massdroidv2.domain.shortcut.ShortcutAction
+import net.asksakis.massdroidv2.playback.MediaKeyRoutePolicy
 
 /**
  * Opted in for the whole class. Nearly everything Media3 offers a media library session is
@@ -58,7 +62,14 @@ class AndroidAutoBrowseController(
     private val activeQueueId: () -> String?,
     private val isSendspinActive: () -> Boolean,
     private val sendspinController: () -> SendspinAudioController?,
+    /** The coordinator's rule for sending a command to Sendspin instead of the selected player. */
+    private val shouldRouteToSendspin: () -> Boolean,
     private val onCustomCommand: (String) -> Boolean,
+    /**
+     * Called with a key's sender before Media3 runs the key on the session player, which it does
+     * as the media notification controller.
+     */
+    private val onKeyToSessionPlayer: (sourcePackage: String) -> Unit,
     /** Called once a controller has connected; the car shows its Sign in prompt from here. */
     private val onControllerConnected: (MediaSession, MediaSession.ControllerInfo) -> Unit = { _, _ -> },
     /** Car only: true while there are no saved credentials; see onGetChildren. */
@@ -157,30 +168,48 @@ class AndroidAutoBrowseController(
                     @Suppress("DEPRECATION")
                     intent.getParcelableExtra(Intent.EXTRA_KEY_EVENT)
                 }
-                // Logged before any branch, so a key that arrives and is dropped (Sendspin not
-                // active) can be told apart from one that never reached the app.
-                if (keyEvent?.action != KeyEvent.ACTION_UP && (keyEvent?.repeatCount ?: 0) == 0) {
+                val fromMediaNotification = MediaKeyRoutePolicy.isNotificationKey(
+                    isNotificationController = session.isMediaNotificationController(controllerInfo),
+                    hasIntentData = intent.data != null
+                )
+                val ctrl = sendspinController()
+                val route = MediaKeyRoutePolicy.route(
+                    sourcePackage = controllerInfo.packageName,
+                    appPackage = context.packageName,
+                    fromMediaNotification = fromMediaNotification,
+                    sendspinActive = ctrl != null && isSendspinActive(),
+                    sendspinPlayerId = ctrl?.sendspinPlayerId,
+                    selectedPlayerId = playerRepository.selectedPlayer.value?.playerId,
+                    shouldRouteToSendspin = shouldRouteToSendspin()
+                )
+                // Media3 hands this callback key-down events only. Logged before acting, so a key
+                // that arrives and is dropped can be told apart from one that never reached the app.
+                if ((keyEvent?.repeatCount ?: 0) == 0) {
                     val key = keyEvent?.let { KeyEvent.keyCodeToString(it.keyCode) } ?: "with no key"
-                    Log.i(TAG, "Media button $key from ${controllerInfo.packageName}")
+                    Log.i(TAG, "Media button $key from ${controllerInfo.packageName}: ${route.logLabel()}")
                 }
-                if (session.isMediaNotificationController(controllerInfo)) return false
-
-                val ctrl = sendspinController() ?: return true
-                if (!isSendspinActive()) return true
-                ctrl.sendspinPlayerId ?: return true
+                if (MediaKeyRoutePolicy.recordsKeySource(route, fromMediaNotification)) {
+                    onKeyToSessionPlayer(controllerInfo.packageName)
+                }
+                val sendspin = when (route) {
+                    MediaKeyRoutePolicy.Route.SESSION_PLAYER -> return false
+                    MediaKeyRoutePolicy.Route.DROPPED -> return true
+                    // Sendspin is the target only while its controller is up.
+                    MediaKeyRoutePolicy.Route.SENDSPIN -> checkNotNull(ctrl)
+                }
 
                 keyEvent ?: return false
-                if (keyEvent.action != KeyEvent.ACTION_DOWN) return true
+                // A held key repeats; only its first press toggles Sendspin.
+                if (keyEvent.repeatCount > 0) return true
 
                 when (keyEvent.keyCode) {
-                    KeyEvent.KEYCODE_MEDIA_PLAY -> ctrl.handlePlay()
-                    KeyEvent.KEYCODE_MEDIA_PAUSE -> ctrl.handlePause()
-                    KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, KeyEvent.KEYCODE_HEADSETHOOK -> ctrl.handlePlayPause()
-                    KeyEvent.KEYCODE_MEDIA_NEXT -> ctrl.handleNext()
-                    KeyEvent.KEYCODE_MEDIA_PREVIOUS -> ctrl.handlePrev()
+                    KeyEvent.KEYCODE_MEDIA_PLAY -> sendspin.handlePlay()
+                    KeyEvent.KEYCODE_MEDIA_PAUSE -> sendspin.handlePause(PlaybackIntentCause.EXTERNAL_CONTROL)
+                    KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, KeyEvent.KEYCODE_HEADSETHOOK -> sendspin.handlePlayPause()
+                    KeyEvent.KEYCODE_MEDIA_NEXT -> sendspin.handleNext()
+                    KeyEvent.KEYCODE_MEDIA_PREVIOUS -> sendspin.handlePrev()
                     else -> return false
                 }
-                Log.i(TAG, "Media button ${KeyEvent.keyCodeToString(keyEvent.keyCode)} routed to Sendspin")
                 return true
             }
 
@@ -208,6 +237,36 @@ class AndroidAutoBrowseController(
                     .setExtras(AutoBrowseExtras.rootExtras())
                     .build()
                 return Futures.immediateFuture(LibraryResult.ofItem(root, rootParams))
+            }
+
+            /**
+             * The item behind a browse id. The car's playing screen asks for it when the album or
+             * the artist line is tapped (#86, see CarNowPlayingLinks), so only those ids answer.
+             */
+            override fun onGetItem(
+                session: MediaLibraryService.MediaLibrarySession,
+                browser: MediaSession.ControllerInfo,
+                mediaId: String
+            ): ListenableFuture<LibraryResult<MediaItem>> {
+                val target = CarNowPlayingLinks.parse(mediaId)
+                    ?: return Futures.immediateFuture(LibraryResult.ofError(SessionError.ERROR_NOT_SUPPORTED))
+                return scope.future(Dispatchers.IO) {
+                    try {
+                        val item = withTimeoutOrNull(GET_ITEM_TIMEOUT_MS) {
+                            when (target.kind) {
+                                CarNowPlayingLinks.Kind.ARTIST ->
+                                    musicRepository.getArtist(target.itemId, target.provider)?.toBrowsableMediaItem()
+                                CarNowPlayingLinks.Kind.ALBUM ->
+                                    musicRepository.getAlbum(target.itemId, target.provider)?.toBrowsableMediaItem()
+                            }
+                        }
+                        Log.i(TAG, "onGetItem($mediaId): ${if (item != null) "found" else "not found"}")
+                        item?.let { LibraryResult.ofItem(it, null) } ?: LibraryResult.ofError(SessionError.ERROR_IO)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "onGetItem($mediaId) failed", e)
+                        LibraryResult.ofError(SessionError.ERROR_IO)
+                    }
+                }
             }
 
             override fun onGetChildren(
@@ -632,7 +691,7 @@ class AndroidAutoBrowseController(
     private suspend fun loadGenreArtists(genre: String): List<MediaItem> {
         return genreRepository.libraryArtistsForGenre(genre).map { artist ->
             browseFolder(
-                "artist|${artist.provider}|${artist.itemId}",
+                CarNowPlayingLinks.artistMediaId(artist.provider, artist.itemId),
                 artist.name,
                 MediaMetadata.MEDIA_TYPE_ARTIST,
                 listItem = true
@@ -803,7 +862,7 @@ class AndroidAutoBrowseController(
             .build()
 
     private fun Artist.toBrowsableMediaItem(groupTitle: String? = null): MediaItem = MediaItem.Builder()
-        .setMediaId("artist|$provider|$itemId")
+        .setMediaId(CarNowPlayingLinks.artistMediaId(provider, itemId))
         .setMediaMetadata(
             MediaMetadata.Builder()
                 .setTitle(name)
@@ -817,7 +876,7 @@ class AndroidAutoBrowseController(
         .build()
 
     private fun Album.toBrowsableMediaItem(groupTitle: String? = null): MediaItem = MediaItem.Builder()
-        .setMediaId("album|$provider|$itemId")
+        .setMediaId(CarNowPlayingLinks.albumMediaId(provider, itemId))
         .setMediaMetadata(
             MediaMetadata.Builder()
                 .setTitle(name)
@@ -864,8 +923,16 @@ class AndroidAutoBrowseController(
         .setRequestMetadata(MediaItem.RequestMetadata.Builder().setMediaUri(android.net.Uri.parse(uri)).build())
         .build()
 
+    private fun MediaKeyRoutePolicy.Route.logLabel(): String = when (this) {
+        MediaKeyRoutePolicy.Route.SENDSPIN -> "to Sendspin"
+        MediaKeyRoutePolicy.Route.SESSION_PLAYER -> "to the selected player"
+        MediaKeyRoutePolicy.Route.DROPPED -> "dropped, Sendspin is not the target"
+    }
+
     private companion object {
         private const val TAG = "AndroidAutoBrowse"
+        /** The wait for the item behind a playing-screen link, so a slow server cannot hold the car. */
+        private const val GET_ITEM_TIMEOUT_MS = 10_000L
         private const val ROOT = "root"
         private const val PAGE_SIZE_DEFAULT = 50
         /** The most items one browse page asks MA for; the library screens page by 500 too. */

@@ -2,11 +2,14 @@ package net.asksakis.massdroidv2.service
 
 import net.asksakis.massdroidv2.playback.SendspinAudioController
 import net.asksakis.massdroidv2.playback.LocalPlayingPolicy
+import net.asksakis.massdroidv2.playback.MediaKeyRoutePolicy
+import net.asksakis.massdroidv2.domain.car.CarNowPlayingLinks
 
 import android.app.PendingIntent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
+import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import androidx.annotation.OptIn
@@ -14,6 +17,7 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.session.MediaLibraryService
 import androidx.media3.session.MediaSession
 import java.io.ByteArrayOutputStream
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
@@ -26,6 +30,7 @@ import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import net.asksakis.massdroidv2.auto.AaMetrics
 import net.asksakis.massdroidv2.auto.AaProjectionObserver
 import net.asksakis.massdroidv2.data.sendspin.SendspinManager
@@ -36,6 +41,7 @@ import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
 import net.asksakis.massdroidv2.domain.model.MediaType
 import net.asksakis.massdroidv2.domain.model.PlaybackState
 import net.asksakis.massdroidv2.domain.repository.MusicRepository
+import net.asksakis.massdroidv2.domain.repository.PlaybackIntentCause
 import net.asksakis.massdroidv2.domain.repository.PlaybackPosition
 import net.asksakis.massdroidv2.domain.repository.PlayerSelectionLock
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
@@ -75,6 +81,8 @@ class AndroidAutoController(
     private val carSignInPrompt = if (net.asksakis.massdroidv2.BuildConfig.IS_AUTOMOTIVE) CarSignInPrompt(service) else null
     private var session: MediaLibraryService.MediaLibrarySession? = null
     private var remotePlayer: RemoteControlPlayer? = null
+    /** The session's application thread: the session player is built on the main looper. */
+    private val mainHandler = Handler(Looper.getMainLooper())
     private var aaProjectionObserver: AaProjectionObserver? = null
     private val isAaProjecting = MutableStateFlow(false)
 
@@ -82,7 +90,7 @@ class AndroidAutoController(
     // updates (artwork download, queue fetch, AA-initiated volume tap) write
     // into these instead of pushing to remotePlayer directly. The single
     // master observer in observeAaState() consumes them coherently.
-    private val artworkData = MutableStateFlow<ByteArray?>(null)
+    private val artworkData = MutableStateFlow<LoadedArtwork?>(null)
     private val queueSnapshot = MutableStateFlow(AutoQueueSnapshot.Empty)
     /**
      * AA-originated optimistic volume bump: (volume, expiresAtMs). The
@@ -100,7 +108,6 @@ class AndroidAutoController(
      */
     private val shownSignedOut = MutableStateFlow(false)
 
-    private var cachedArtworkUrl: String? = null
     private var cachedArtworkKey: String? = null
     // The last AaCompleteState we applied, so the master observer can diff
     // and dispatch only the channel that actually changed (playback / queue /
@@ -310,7 +317,7 @@ class AndroidAutoController(
     }
 
     private fun requestFromCarHost(): Boolean =
-        session?.controllerForCurrentRequest?.packageName in CAR_HOST_PACKAGES
+        session?.controllerForCurrentRequest?.packageName in MediaKeyRoutePolicy.CAR_HOST_PACKAGES
 
     fun dispatchTransport(command: TransportCommand) {
         val sendspin = if (routeToSendspin()) sendspinController() else null
@@ -345,11 +352,12 @@ class AndroidAutoController(
                 }
             },
             onPause = {
+                val cause = sessionPauseCause()
                 if (routeToSendspin()) {
-                    sendspinController()?.handlePause()
+                    sendspinController()?.handlePause(cause)
                 } else {
                     val id = activePlayerId() ?: return@RemoteControlPlayer
-                    transport("pause") { playerRepository.pause(id) }
+                    transport("pause") { playerRepository.pause(id, cause) }
                 }
             },
             onNext = { dispatchTransport(TransportCommand.NEXT) },
@@ -378,13 +386,30 @@ class AndroidAutoController(
     }
 
     /**
-     * Who sent the session command being handled. Media3's own notification controller runs in
-     * this process, so its package alone would read like an in-app control.
+     * The sender of a media key that Media3 is running on the session player. Media3 runs such a
+     * key as its media notification controller, so without this a watch's pause would read as
+     * the notification's. Set before the key's command runs, in the same main-thread message, and
+     * cleared by a message posted behind it, so it cannot reach a later request.
      */
+    private var mediaKeySource: String? = null
+
+    fun noteMediaKeySource(sourcePackage: String) {
+        mediaKeySource = sourcePackage
+        mainHandler.post { mediaKeySource = null }
+    }
+
+    /** The cause a session pause carries, see [MediaKeyRoutePolicy.pauseCause]. */
+    private fun sessionPauseCause(): PlaybackIntentCause = MediaKeyRoutePolicy.pauseCause(currentCommandSource())
+
+    /** Who sent the session command being handled, see [MediaKeyRoutePolicy.commandSource]. */
     private fun currentCommandSource(): String? {
         val session = session ?: return null
         val controller = session.controllerForCurrentRequest ?: return null
-        return if (session.isMediaNotificationController(controller)) "the media notification" else controller.packageName
+        return MediaKeyRoutePolicy.commandSource(
+            isNotificationController = session.isMediaNotificationController(controller),
+            controllerPackage = controller.packageName,
+            mediaKeySource = mediaKeySource
+        )
     }
 
     /**
@@ -511,7 +536,7 @@ class AndroidAutoController(
                     queue = values[1] as net.asksakis.massdroidv2.domain.model.QueueState?,
                     ssConn = values[2] as SendspinState,
                     ssSync = values[3] as SyncState,
-                    artwork = values[4] as ByteArray?,
+                    artwork = values[4] as LoadedArtwork?,
                     queueEntries = values[5] as AutoQueueSnapshot,
                     volumeOv = values[6] as Pair<Int, Long>?,
                     ssStreamActive = values[7] as Boolean,
@@ -539,7 +564,7 @@ class AndroidAutoController(
         queue: net.asksakis.massdroidv2.domain.model.QueueState?,
         ssConn: SendspinState,
         ssSync: SyncState,
-        artwork: ByteArray?,
+        artwork: LoadedArtwork?,
         queueEntries: AutoQueueSnapshot,
         volumeOv: Pair<Int, Long>?,
         ssStreamActive: Boolean,
@@ -568,6 +593,7 @@ class AndroidAutoController(
         // MediaSession/AA device-volume reads and the rocker base off the right value.
         val volumeLevel = effectiveVolume(player.groupVolume ?: player.volumeLevel, volumeOv)
         val imageUrl = currentTrack?.imageUrl ?: queue?.currentItem?.imageUrl ?: player.currentMedia?.imageUrl
+        val links = CarNowPlayingLinks.forTrack(currentTrack)
         val playback = AutoPlaybackSnapshot(
             // A pause made here that MA has not confirmed yet: the server still says
             // PLAYING, but the phone is paused, which is not buffering.
@@ -587,7 +613,10 @@ class AndroidAutoController(
                 ?: player.currentMedia?.duration
                 ?: 0.0) * 1000).toLong(),
             currentIndex = currentIndex,
-            artworkData = artwork,
+            // Only bytes fetched for the current image are used. The collector starts the next
+            // download after this state is built, so on a track change the bytes still belong to
+            // the previous track, and the car showed that cover under the new title (#84).
+            artworkData = artwork?.takeIf { it.key == imageUrl?.toArtworkKey() }?.bytes,
             // Car only: give the AAOS media center a content:// artworkUri it can load
             // itself (it ignores artworkData). Phone/TV/AA stay on artworkData (null here).
             artworkUri = if (net.asksakis.massdroidv2.BuildConfig.IS_AUTOMOTIVE) {
@@ -599,6 +628,8 @@ class AndroidAutoController(
             isMuted = player.volumeMuted,
             isRemotePlayback = !isSendspinSelected,
             chapters = if (currentTrack?.mediaType == MediaType.AUDIOBOOK) currentTrack.chapters else emptyList(),
+            albumLinkId = links.albumMediaId,
+            artistLinkId = links.artistMediaId,
         )
         return AaCompleteState(
             playback = playback,
@@ -779,19 +810,17 @@ class AndroidAutoController(
 
     private fun updateArtwork(imageUrl: String?) {
         val artworkKey = imageUrl?.toArtworkKey()
-        if (imageUrl != null && artworkKey != cachedArtworkKey) {
-            cachedArtworkUrl = imageUrl
+        if (imageUrl != null && artworkKey != null && artworkKey != cachedArtworkKey) {
             cachedArtworkKey = artworkKey
             artworkData.value = null
-            scope.launch(Dispatchers.IO) { downloadArtwork(imageUrl) }
+            scope.launch(Dispatchers.IO) { downloadArtwork(imageUrl, artworkKey) }
         } else if (imageUrl == null && cachedArtworkKey != null) {
-            cachedArtworkUrl = null
             cachedArtworkKey = null
             artworkData.value = null
         }
     }
 
-    private fun downloadArtwork(url: String) {
+    private suspend fun downloadArtwork(url: String, artworkKey: String) {
         try {
             val request = Request.Builder().url(url).build()
             val call = wsClient.getImageClient().newCall(request).apply {
@@ -817,15 +846,21 @@ class AndroidAutoController(
                     null
                 }
             }
-            if (url != cachedArtworkUrl || rawBytes == null || rawBytes.isEmpty()) return
+            if (rawBytes == null || rawBytes.isEmpty()) return
             val resized = resizeArtwork(rawBytes)
-            val currentData = artworkData.value
-            if (currentData != null && resized.contentEquals(currentData)) return
-            if (url != cachedArtworkUrl) return
             // Feed artwork into the master combine. It re-emits with the new
             // bytes in AutoPlaybackSnapshot, applyAaState detects the change
             // (only the artwork differs) and calls updatePlayback once.
-            artworkData.value = resized
+            // The check runs on Main with updateArtwork, so a download that finishes after a
+            // newer track change cannot write, and a second download of the same image is
+            // dropped.
+            withContext(Dispatchers.Main) {
+                if (artworkKey == cachedArtworkKey && artworkData.value?.key != artworkKey) {
+                    artworkData.value = LoadedArtwork(artworkKey, resized)
+                }
+            }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             // Name the exception in the message, not only in the stack trace. Shared
             // logs are routinely trimmed to the single matching line, and without the
@@ -882,11 +917,6 @@ class AndroidAutoController(
         // the device-volume mapping (now 1:1 with MA), so it can be tuned freely.
         private const val VOLUME_OVERRIDE_MS = 15_000L
         private const val ARTWORK_FETCH_TIMEOUT_S = 8L
-        /** The Android Auto host on the phone, and its embedded variant. */
-        private val CAR_HOST_PACKAGES = setOf(
-            "com.google.android.projection.gearhead",
-            "com.google.android.embedded.projection",
-        )
     }
 
     /**
@@ -912,4 +942,7 @@ class AndroidAutoController(
             )
         }
     }
+
+    /** Downloaded artwork, with the key of the image it was fetched for. */
+    private class LoadedArtwork(val key: String, val bytes: ByteArray)
 }

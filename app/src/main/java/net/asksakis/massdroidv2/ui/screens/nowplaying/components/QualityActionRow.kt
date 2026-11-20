@@ -59,11 +59,20 @@ internal fun QualityActionRow(
     onShowSendspinStatus: () -> Unit,
     isSendspinPlayer: Boolean = false,
     enabled: Boolean = true,
-    compact: Boolean = false
+    size: NowPlayingSize = NowPlayingSize.Regular
 ) {
     val haptic = LocalHapticFeedback.current
-    val actionButtonSize = if (compact) 36.dp else 44.dp
-    val actionIconSize = if (compact) 18.dp else 24.dp
+    val compact = size == NowPlayingSize.Compact
+    val actionButtonSize = when (size) {
+        NowPlayingSize.Compact -> 36.dp
+        NowPlayingSize.Regular -> 44.dp
+        NowPlayingSize.Large -> 52.dp
+    }
+    val actionIconSize = when (size) {
+        NowPlayingSize.Compact -> 18.dp
+        NowPlayingSize.Regular -> 24.dp
+        NowPlayingSize.Large -> 28.dp
+    }
 
     Box(
         modifier = Modifier.fillMaxWidth(),

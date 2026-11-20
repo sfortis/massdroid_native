@@ -5,10 +5,18 @@ import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import net.asksakis.massdroidv2.data.provider.ProviderManifestCache
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
 import net.asksakis.massdroidv2.domain.model.PartyInfo
@@ -22,16 +30,28 @@ import org.junit.Test
 class PartyRepositoryImplTest {
 
     private val domains = MutableStateFlow(setOf("spotify"))
+    private val instancesRead = MutableStateFlow(0)
+    private var readsStarted = 0
+    private val sent = mutableListOf<Pair<String, JsonObject?>>()
 
     private fun repository(replies: Map<String, String> = emptyMap()): PartyRepositoryImpl {
         val ws = mockk<MaWebSocketClient>()
         coEvery { ws.sendCommand(any(), any(), any(), any(), any()) } answers {
+            sent += firstArg<String>() to secondArg<JsonObject?>()
             replies[firstArg<String>()]?.let { Json.parseToJsonElement(it) } as JsonElement?
         }
         val cache = mockk<ProviderManifestCache>()
         every { cache.loadedDomains } returns domains
+        every { cache.instancesRead } returns instancesRead
+        every { cache.instanceReadsStarted } answers { readsStarted }
+        every { cache.instanceIdOf("party") } answers { "party--abc".takeIf { "party" in domains.value } }
         return PartyRepositoryImpl(ws, cache)
     }
+
+    private val playerConfig = """
+        {"values": {"player": {"value": "kitchen", "default_value": "__auto__",
+          "options": [{"value": "__auto__", "title": "Auto"}, {"value": "kitchen", "title": "Kitchen"}]}}}
+    """
 
     @Test
     fun `party is available only while the plugin is loaded`() = runTest {
@@ -92,6 +112,153 @@ class PartyRepositoryImplTest {
         val info = repository(mapOf("party/config" to """{"party_name": null, "qr_text": "", "mode": "arena"}""")).info()
 
         assertThat(info).isEqualTo(PartyInfo(name = null, qrText = null, mode = PartyMode.UNKNOWN))
+    }
+
+    @Test
+    fun `an admin reads the party player setting of the loaded plugin instance`() = runTest {
+        domains.value = setOf("party")
+        val repository = repository(
+            mapOf("auth/me" to """{"role": "admin"}""", "config/providers/get" to playerConfig)
+        )
+
+        val setting = repository.playerSetting()!!
+
+        assertThat(setting.value).isEqualTo("kitchen")
+        assertThat(sent.last()).isEqualTo(
+            "config/providers/get" to buildJsonObject { put("instance_id", "party--abc") }
+        )
+    }
+
+    @Test
+    fun `an account that is not an admin gets no setting to change`() = runTest {
+        domains.value = setOf("party")
+        val repository = repository(
+            mapOf("auth/me" to """{"role": "user"}""", "config/providers/get" to playerConfig)
+        )
+
+        assertThat(repository.playerSetting()).isNull()
+        assertThat(sent.map { it.first }).doesNotContain("config/providers/get")
+    }
+
+    @Test
+    fun `saving the party player sends only that key to the plugin instance`() = runTest {
+        domains.value = setOf("party")
+        val repository = repository(mapOf("config/providers/save" to "{}"))
+        val done = async { repository.setPlayer("car-id") }
+        runCurrent()
+
+        instancesRead.value = 1
+        done.await()
+
+        assertThat(sent.last()).isEqualTo(
+            "config/providers/save" to buildJsonObject {
+                put("provider_domain", "party")
+                put("instance_id", "party--abc")
+                put("values", buildJsonObject { put("player", "car-id") })
+            }
+        )
+    }
+
+    @Test
+    fun `party stays available while the save waits for the plugin's reload`() = runTest {
+        domains.value = setOf("party")
+        val repository = repository(mapOf("config/providers/save" to "{}"))
+        val seen = mutableListOf<Boolean>()
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { repository.available.collect { seen += it } }
+
+        val done = async { repository.setPlayer("car-id") }
+        runCurrent()
+        // A read of the plugin list in the middle of the reload misses the plugin.
+        domains.value = emptySet()
+        instancesRead.value = 1
+        runCurrent()
+        assertThat(done.isCompleted).isFalse()
+        domains.value = setOf("party")
+        instancesRead.value = 2
+        done.await()
+
+        assertThat(seen).doesNotContain(false)
+    }
+
+    @Test
+    fun `a reload that is never seen releases the hold after the bound`() = runTest {
+        domains.value = setOf("party")
+        val repository = repository(mapOf("config/providers/save" to "{}"))
+        val done = async { repository.setPlayer("car-id") }
+        runCurrent()
+        domains.value = emptySet()
+
+        advanceUntilIdle()
+
+        assertThat(done.isCompleted).isTrue()
+        assertThat(repository.available.first()).isFalse()
+    }
+
+    @Test
+    fun `saving the value the server already stores sends no save and holds nothing`() = runTest {
+        domains.value = setOf("party")
+        val repository = repository(mapOf("config/providers/get" to playerConfig, "config/providers/save" to "{}"))
+
+        // Completes without a read of the plugin list: the server would not reload the plugin.
+        repository.setPlayer("kitchen")
+
+        assertThat(sent.map { it.first }).doesNotContain("config/providers/save")
+        domains.value = emptySet()
+        assertThat(repository.available.first()).isFalse()
+    }
+
+    @Test
+    fun `a read of the plugin list that started before the save was answered does not end the wait`() = runTest {
+        domains.value = setOf("party")
+        val repository = repository(mapOf("config/providers/save" to "{}"))
+        readsStarted = 1
+        val done = async { repository.setPlayer("car-id") }
+        runCurrent()
+
+        // The read in flight during the save lists the plugin as it was before the reload.
+        instancesRead.value = 1
+        runCurrent()
+        assertThat(done.isCompleted).isFalse()
+
+        readsStarted = 2
+        instancesRead.value = 2
+        done.await()
+    }
+
+    @Test
+    fun `party stays available until the last of two overlapping saves has seen the reload`() = runTest {
+        domains.value = setOf("party")
+        val repository = repository(mapOf("config/providers/save" to "{}"))
+        val first = async { repository.setPlayer("car-id") }
+        runCurrent()
+        readsStarted = 1
+        val second = async { repository.setPlayer("kitchen") }
+        runCurrent()
+
+        // A read started between the two saves ends the first wait only.
+        instancesRead.value = 1
+        runCurrent()
+        assertThat(first.isCompleted).isTrue()
+        assertThat(second.isCompleted).isFalse()
+        domains.value = emptySet()
+        assertThat(repository.available.first()).isTrue()
+
+        readsStarted = 2
+        domains.value = setOf("party")
+        instancesRead.value = 2
+        second.await()
+    }
+
+    @Test
+    fun `a refused save is an error and does not hold party`() = runTest {
+        domains.value = setOf("party")
+        val repository = repository()
+
+        val result = runCatching { repository.setPlayer("car-id") }
+
+        assertThat(result.isFailure).isTrue()
+        domains.value = emptySet()
+        assertThat(repository.available.first()).isFalse()
     }
 
     @Test

@@ -171,7 +171,9 @@ class PlaybackService : MediaLibraryService() {
             activeQueueId = { activePlayerId() ?: playerRepository.queueState.value?.queueId },
             isSendspinActive = { sendspinCoordinator.isActive },
             sendspinController = { sendspinCoordinator.controller },
+            shouldRouteToSendspin = { sendspinCoordinator.shouldRouteToSendspin() },
             onCustomCommand = { action -> androidAutoController.handleCustomCommand(action) },
+            onKeyToSessionPlayer = { source -> androidAutoController.noteMediaKeySource(source) },
             onControllerConnected = { session, controller ->
                 androidAutoController.onControllerConnected(session, controller)
             },

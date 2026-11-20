@@ -20,7 +20,10 @@ import kotlinx.coroutines.launch
 import net.asksakis.massdroidv2.domain.model.PartyInfo
 import net.asksakis.massdroidv2.domain.model.PartyJoinLink
 import net.asksakis.massdroidv2.domain.model.PartyMode
+import net.asksakis.massdroidv2.domain.model.PartyPlayerSetting
 import net.asksakis.massdroidv2.domain.model.QueueState
+import net.asksakis.massdroidv2.domain.party.PartyPlayerChoices
+import net.asksakis.massdroidv2.domain.party.PartyPlayerSaved
 import net.asksakis.massdroidv2.domain.party.PartyTarget
 import net.asksakis.massdroidv2.domain.party.PartyTargetFollower
 import net.asksakis.massdroidv2.domain.party.PartyTargetSnapshot
@@ -43,9 +46,21 @@ sealed interface PartyUiState {
         val link: PartyJoinLink,
         val title: String,
         val qrText: String?,
-        val target: PartyTarget
+        val target: PartyTarget,
+        /** The player setting an admin can change; null for other accounts and in remote mode. */
+        val playerControl: PartyPlayerControl? = null
     ) : PartyUiState
 }
+
+/**
+ * The plugin's player setting with the state of a change: [saving] while the server saves it and
+ * reloads the plugin, [error] after a change the server refused.
+ */
+data class PartyPlayerControl(
+    val setting: PartyPlayerSetting,
+    val saving: Boolean = false,
+    val error: String? = null
+)
 
 @HiltViewModel
 class PartyViewModel @Inject constructor(
@@ -59,11 +74,22 @@ class PartyViewModel @Inject constructor(
         data object Loading : Loaded
         data object GuestAccessOff : Loaded
         data class Failed(val message: String) : Loaded
-        data class Party(val link: PartyJoinLink, val target: PartyTargetSnapshot, val info: PartyInfo) : Loaded
+        data class Party(
+            val link: PartyJoinLink,
+            val target: PartyTargetSnapshot,
+            val info: PartyInfo,
+            val setting: PartyPlayerSetting?
+        ) : Loaded
     }
 
     private val loaded = MutableStateFlow<Loaded>(Loaded.Loading)
     private var loadJob: Job? = null
+
+    /** A change of the party player being saved, or the error of the last one. */
+    private data class PlayerChange(val saving: Boolean = false, val error: String? = null)
+
+    private val playerChange = MutableStateFlow(PlayerChange())
+    private var changeJob: Job? = null
 
     /**
      * The target is resolved from the last snapshot the server answered, read on each load and
@@ -76,8 +102,9 @@ class PartyViewModel @Inject constructor(
         loaded,
         playerRepository.selectedPlayer,
         playerRepository.queueState,
-        settingsRepository.sendspinClientId
-    ) { loaded, selected, queue, thisPhone ->
+        settingsRepository.sendspinClientId,
+        playerChange
+    ) { loaded, selected, queue, thisPhone, change ->
         when (loaded) {
             Loaded.Loading -> PartyUiState.Loading
             Loaded.GuestAccessOff -> PartyUiState.GuestAccessOff
@@ -91,7 +118,8 @@ class PartyViewModel @Inject constructor(
                     // The queue the Queue screen shows for the selected player.
                     selectedQueueId = queue?.queueId ?: selected?.playerId,
                     thisPhonePlayerId = thisPhone
-                )
+                ),
+                playerControl = loaded.setting?.let { PartyPlayerControl(it, change.saving, change.error) }
             )
         }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MS), PartyUiState.Loading)
@@ -126,19 +154,40 @@ class PartyViewModel @Inject constructor(
         }
     }
 
+    /** This device's own player id, which the selector marks among the players. */
+    val thisDevicePlayerId: StateFlow<String?> = settingsRepository.sendspinClientId
+        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    /**
+     * Loads the party again. A change of the party player being saved is not cancelled: the save
+     * may already be on the server, and only its wait knows when the reloaded plugin answers
+     * again (see [setPlayer]), so a load started at once could read the plugin in the middle of
+     * the reload. The load waits for the change instead, then clears its outcome, so the error of
+     * a change that failed does not stand over what the load reads. The screen offers no Refresh
+     * while a change is saved; this covers the load after a reconnect.
+     */
     fun refresh() {
         loadJob?.cancel()
         loaded.value = Loaded.Loading
+        val change = changeJob
         loadJob = viewModelScope.launch {
+            change?.join()
+            playerChange.value = PlayerChange()
             loaded.value = try {
                 coroutineScope {
                     // Only the link is required. The target and the settings fall back, so a
                     // valid QR still shows when one of them fails.
                     val target = async { orNull("party player") { partyRepository.targetQueueId() } }
                     val info = async { orNull("party settings") { partyRepository.info() } ?: DEFAULT_INFO }
+                    val setting = async { orNull("party player setting") { partyRepository.playerSetting() } }
                     partyRepository.joinLink()?.let { link ->
                         val snapshot = PartyTargetSnapshot(target.await(), playerRepository.players.value)
-                        Loaded.Party(link, snapshot, info.await())
+                        val partyInfo = info.await()
+                        // The silent disco plays on each guest's own device, so it has no player to choose.
+                        val control = setting.await()
+                            ?.takeIf { partyInfo.mode == PartyMode.VENUE }
+                            ?.let { PartyPlayerChoices.withCurrent(it, snapshot.players) }
+                        Loaded.Party(link, snapshot, partyInfo, control)
                     }
                         ?: Loaded.GuestAccessOff
                 }
@@ -165,15 +214,64 @@ class PartyViewModel @Inject constructor(
             }
     }
 
+    /**
+     * Saves [value] as the plugin's party player. The screen keeps showing the party while the
+     * server reloads the plugin (see [PartyRepository.setPlayer]), and the target and the setting
+     * are then read again in place, without the loading state, so the code does not blink. A read
+     * that fails after the server acknowledged the save keeps what is shown (see [PartyPlayerSaved]).
+     *
+     * A configuration change during a save clears this ViewModel, whose store lives only as long
+     * as the screen's composition (see [rememberPartyViewModelStoreOwner]). That cancels the wait,
+     * not the save: the server still stores the choice and reloads the plugin. The new screen
+     * reads the party again, and while the reload runs the plugin can be missing from the plugin
+     * list for a moment. The phone's Party screen then closes, and the car's Guest access section
+     * shows that party mode isn't available until the plugin is listed again and the code returns
+     * with the new player.
+     */
+    fun setPlayer(value: String) {
+        val current = (loaded.value as? Loaded.Party)?.setting ?: return
+        if (current.value == value || changeJob?.isActive == true) return
+        playerChange.value = PlayerChange(saving = true)
+        changeJob = viewModelScope.launch {
+            playerChange.value = try {
+                partyRepository.setPlayer(value)
+                val (target, setting) = coroutineScope {
+                    val target = async { readResult("party player") { partyRepository.targetQueueId() } }
+                    val setting = async { readResult("party player setting") { partyRepository.playerSetting() } }
+                    target.await() to setting.await()
+                }
+                val players = playerRepository.players.value
+                // Only the party shown when the change started is updated; a load since then
+                // reads the party itself.
+                loaded.update { state ->
+                    (state as? Loaded.Party)?.copy(
+                        target = PartyPlayerSaved.target(state.target, target, players),
+                        setting = state.setting?.let { shown ->
+                            PartyPlayerChoices.withCurrent(PartyPlayerSaved.setting(shown, setting, value), players)
+                        }
+                    ) ?: state
+                }
+                PlayerChange()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "Party player change failed: ${e.message}")
+                PlayerChange(error = "Couldn't change the party player.")
+            }
+        }
+    }
+
     private fun QueueState?.artworkUrl(): String? = this?.currentItem?.let { it.track?.imageUrl ?: it.imageUrl }
 
-    private suspend fun <T> orNull(what: String, read: suspend () -> T): T? = try {
-        read()
+    private suspend fun <T> orNull(what: String, read: suspend () -> T): T? = readResult(what, read).getOrNull()
+
+    private suspend fun <T> readResult(what: String, read: suspend () -> T): Result<T> = try {
+        Result.success(read())
     } catch (e: CancellationException) {
         throw e
     } catch (e: Exception) {
         Log.w(TAG, "Could not read the $what: ${e.message}")
-        null
+        Result.failure(e)
     }
 
     private companion object {

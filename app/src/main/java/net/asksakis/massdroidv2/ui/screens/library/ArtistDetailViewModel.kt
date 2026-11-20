@@ -102,14 +102,31 @@ class ArtistDetailViewModel @Inject constructor(
         try {
             val artist = musicRepository.getArtist(itemId, provider, lazy = lazy)
             _artist.value = artist
-            _albums.value = musicRepository.getArtistAlbums(itemId, provider)
-            _tracks.value = musicRepository.getArtistTracks(itemId, provider).take(ARTIST_TOP_TRACKS_LIMIT)
+            // The page keys its lists by uri, and MA before 2.9 can repeat a uri in one answer.
+            val libraryAlbums = musicRepository.getArtistAlbums(itemId, provider).distinctBy { it.uri }
             // For a library artist the list above is only the in-library albums (often empty on
             // MA 2.9+); load the full provider discography as a separate "Discography" section.
             // A provider artist's list above is already its full catalogue, so skip the dup.
-            if (provider.equals("library", ignoreCase = true)) {
-                _discographyAlbums.value = musicRepository.getArtistDiscography(itemId, provider)
+            // Both sections share one uri-keyed list, so they are set together, and a failed
+            // load keeps the previous discography without the albums the library now shows.
+            val discography = if (provider.equals("library", ignoreCase = true)) {
+                val loaded = try {
+                    musicRepository.getArtistDiscography(itemId, provider)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.w(TAG, "Load artist discography failed: ${e.message}")
+                    null
+                }
+                discographyBeyondLibrary(libraryAlbums, loaded ?: _discographyAlbums.value)
+            } else {
+                null
             }
+            _albums.value = libraryAlbums
+            discography?.let { _discographyAlbums.value = it }
+            _tracks.value = musicRepository.getArtistTracks(itemId, provider)
+                .distinctBy { it.uri }
+                .take(ARTIST_TOP_TRACKS_LIMIT)
 
             _artist.value?.let { a ->
                 if (a.name.isNotBlank()) _artistName.value = a.name

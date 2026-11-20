@@ -1243,12 +1243,15 @@ class SendspinAudioController(
                     // controller issues when another app takes focus, so the two
                     // can only be told apart by the cause the command carried. A
                     // pause the listener asked for cancels the resume that the
-                    // interruption was holding; the focus pause has to keep it.
+                    // interruption was holding; the focus pause has to keep it, and so
+                    // does a car's own pause while the interruption lasts.
                     // Now Playing calls the repository directly rather than
                     // handlePause(), so this is the only place that sees it.
-                    if (intent.cause == PlaybackIntentCause.LISTENER) {
+                    if (AudioFocusPolicy.pauseIsListenerDecision(intent.cause, owedResume, hasAudioFocus)) {
                         cancelOwedResume()
                         listenerPauseGeneration++
+                    } else if (intent.cause == PlaybackIntentCause.EXTERNAL_CONTROL) {
+                        Log.i(TAG, "External pause during an interruption: the resume stays owed")
                     }
                     if (!isReady) {
                         // During a dropped connection the transport is down while the
@@ -1774,16 +1777,28 @@ class SendspinAudioController(
         return false
     }
 
-    fun handlePause() {
+    /**
+     * Pause from outside the app's own screens. [cause] is
+     * [PlaybackIntentCause.EXTERNAL_CONTROL] for a car, a watch, a media key or a TV
+     * remote, and [PlaybackIntentCause.LISTENER] for the media notification and the
+     * sleep timer, which always mean "stay stopped".
+     */
+    fun handlePause(cause: PlaybackIntentCause = PlaybackIntentCause.LISTENER) {
         val id = sendspinPlayerId ?: return
 
         // Logged because a pause reaches the server from five places and the log
         // could not say which: an interruption that produced several commands
         // was indistinguishable from one handler firing repeatedly.
-        Log.i(TAG, "Pause from an external control (session, car or watch)")
+        Log.i(TAG, "Pause from an external control (session, car or watch), cause=$cause")
+        if (!AudioFocusPolicy.pauseIsListenerDecision(cause, owedResume, hasAudioFocus)) {
+            // The interruption already paused the output and the server, so there is
+            // nothing to stop, and its resume stays owed.
+            Log.i(TAG, "External pause during an interruption: the resume stays owed")
+            return
+        }
         abandonPlaybackIntent()
         sendspinManager.pauseAudio()
-        pauseOnServer(id, PlaybackIntentCause.LISTENER)
+        pauseOnServer(id, cause)
     }
 
     fun handlePlayPause() {

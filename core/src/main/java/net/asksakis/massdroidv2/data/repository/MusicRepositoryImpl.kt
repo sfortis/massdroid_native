@@ -1211,12 +1211,16 @@ class MusicRepositoryImpl @Inject constructor(
         null
     }
 
-    private fun toRecommendationItems(serverItems: List<ServerMediaItem>) = RecommendationItems(
-        artists = serverItems.filter { it.mediaType == "artist" }.mapNotNull { it.toArtist() },
-        albums = serverItems.filter { it.mediaType == "album" }.mapNotNull { it.toAlbum() },
-        tracks = serverItems.filter { it.mediaType == "track" }.mapNotNull { it.toTrack() },
-        playlists = serverItems.filter { it.mediaType == "playlist" }.mapNotNull { it.toPlaylist() }
-    )
+    private fun toRecommendationItems(items: List<ServerMediaItem>): RecommendationItems {
+        // Each row is a list keyed by uri, so a uri the server repeats would crash Home.
+        val serverItems = items.distinctBy { it.uri }
+        return RecommendationItems(
+            artists = serverItems.filter { it.mediaType == "artist" }.mapNotNull { it.toArtist() },
+            albums = serverItems.filter { it.mediaType == "album" }.mapNotNull { it.toAlbum() },
+            tracks = serverItems.filter { it.mediaType == "track" }.mapNotNull { it.toTrack() },
+            playlists = serverItems.filter { it.mediaType == "playlist" }.mapNotNull { it.toPlaylist() }
+        )
+    }
 
     /** Items of one recommendation row, which MA 2.10 serves on request. */
     private suspend fun fetchRecommendationItems(provider: String, itemId: String): List<ServerMediaItem> = try {

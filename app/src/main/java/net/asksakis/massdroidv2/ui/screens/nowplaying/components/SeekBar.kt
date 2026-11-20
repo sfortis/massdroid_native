@@ -39,7 +39,7 @@ internal fun SeekBar(
     duration: Double,
     onSeek: (Double) -> Unit,
     enabled: Boolean = true,
-    compact: Boolean = false
+    size: NowPlayingSize = NowPlayingSize.Regular
 ) {
     val elapsed = elapsedProvider()
     val haptic = LocalHapticFeedback.current
@@ -60,9 +60,22 @@ internal fun SeekBar(
         seekTarget >= 0f -> seekTarget
         else -> elapsed.toFloat()
     }
-    val thumbWidth = if (compact) 5.dp else 5.dp
-    val thumbHeight = if (compact) 14.dp else 16.dp
-    val trackHeight = if (compact) 6.dp else 8.dp
+    val thumbWidth = 5.dp
+    val thumbHeight = when (size) {
+        NowPlayingSize.Compact -> 14.dp
+        NowPlayingSize.Regular -> 16.dp
+        NowPlayingSize.Large -> 20.dp
+    }
+    val trackHeight = when (size) {
+        NowPlayingSize.Compact -> 6.dp
+        NowPlayingSize.Regular -> 8.dp
+        NowPlayingSize.Large -> 10.dp
+    }
+    val sliderHeight = when (size) {
+        NowPlayingSize.Compact -> 30.dp
+        NowPlayingSize.Regular -> 34.dp
+        NowPlayingSize.Large -> 40.dp
+    }
 
     Column(modifier = Modifier.fillMaxWidth()) {
         Slider(
@@ -79,7 +92,7 @@ internal fun SeekBar(
             },
             valueRange = 0f..duration.toFloat().coerceAtLeast(1f),
             enabled = enabled,
-            modifier = if (compact) Modifier.height(30.dp) else Modifier.height(34.dp),
+            modifier = Modifier.height(sliderHeight),
             interactionSource = interactionSource,
             thumb = {
                 SliderDefaults.Thumb(
@@ -100,7 +113,11 @@ internal fun SeekBar(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            val timeStyle = if (compact) MaterialTheme.typography.labelSmall else MaterialTheme.typography.bodySmall
+            val timeStyle = when (size) {
+                NowPlayingSize.Compact -> MaterialTheme.typography.labelSmall
+                NowPlayingSize.Regular -> MaterialTheme.typography.bodySmall
+                NowPlayingSize.Large -> MaterialTheme.typography.bodyMedium
+            }
             val longForm = isLongFormDuration(duration)
             Text(formatPlaybackTime(displayValue.toDouble(), padToHours = longForm), style = timeStyle)
             Text(formatPlaybackTime(duration, padToHours = longForm), style = timeStyle)

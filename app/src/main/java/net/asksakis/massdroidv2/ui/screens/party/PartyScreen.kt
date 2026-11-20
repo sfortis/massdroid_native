@@ -2,6 +2,7 @@ package net.asksakis.massdroidv2.ui.screens.party
 
 import android.os.SystemClock
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -12,6 +13,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
@@ -19,7 +21,9 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Celebration
+import androidx.compose.material.icons.filled.DirectionsCar
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Speaker
@@ -28,6 +32,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -44,6 +49,7 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -51,22 +57,29 @@ import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.repeatOnLifecycle
+import net.asksakis.massdroidv2.domain.model.PartyJoinLink
 import net.asksakis.massdroidv2.domain.model.PlaybackState
 import net.asksakis.massdroidv2.domain.party.PartyFit
 import net.asksakis.massdroidv2.domain.party.PartyIdleTimer
+import net.asksakis.massdroidv2.domain.party.PartyPlayerChoices
 import net.asksakis.massdroidv2.domain.party.PartyPlayerName
 import net.asksakis.massdroidv2.domain.party.PartyTarget
+import net.asksakis.massdroidv2.ui.components.centeredMaxWidth
+import net.asksakis.massdroidv2.ui.components.contentMaxWidth
 import net.asksakis.massdroidv2.ui.components.MdIconButton
 import net.asksakis.massdroidv2.ui.components.QrCode
+import net.asksakis.massdroidv2.ui.components.SettingsChoiceDialog
 import net.asksakis.massdroidv2.ui.components.dropShadow
 import net.asksakis.massdroidv2.ui.screens.nowplaying.components.KeepScreenOn
 
@@ -86,6 +99,7 @@ fun PartyScreen(
     val state by viewModel.state.collectAsStateWithLifecycle()
     val artworkUrl by viewModel.artworkUrl.collectAsStateWithLifecycle()
     val available by viewModel.available.collectAsStateWithLifecycle()
+    val thisDevicePlayerId by viewModel.thisDevicePlayerId.collectAsStateWithLifecycle()
     // From the app's own theme, which can differ from the system's.
     val isDark = MaterialTheme.colorScheme.surface.luminance() < DARK_SURFACE_LUMINANCE
     // The room the content leaves for the mirror ball above it, set by the content's fit.
@@ -141,7 +155,9 @@ fun PartyScreen(
                         }
                     },
                     actions = {
-                        MdIconButton(onClick = viewModel::refresh) {
+                        // A load during a change would only wait for it (see PartyViewModel.refresh).
+                        val saving = (state as? PartyUiState.Ready)?.playerControl?.saving == true
+                        MdIconButton(onClick = viewModel::refresh, enabled = !saving) {
                             Icon(Icons.Default.Refresh, contentDescription = "Refresh")
                         }
                     }
@@ -156,15 +172,13 @@ fun PartyScreen(
                 when (val current = state) {
                     PartyUiState.Loading -> CircularProgressIndicator(Modifier.align(Alignment.Center))
                     PartyUiState.GuestAccessOff -> PartyNotice(
-                        title = "Guest access is off",
-                        text = "Turn it on in Music Assistant, under Settings, Plugins, Party. Then come back here.",
+                        notice = GUEST_ACCESS_OFF_NOTICE,
                         isDark = isDark,
                         ballRoom = ballRoom,
                         onRefresh = viewModel::refresh
                     )
                     is PartyUiState.Failed -> PartyNotice(
-                        title = "Party unavailable",
-                        text = current.message,
+                        notice = current.notice(),
                         isDark = isDark,
                         ballRoom = ballRoom,
                         onRefresh = viewModel::refresh
@@ -172,7 +186,7 @@ fun PartyScreen(
                     is PartyUiState.Ready -> {
                         // Guests scan from across the room, so the screen must not go dark under them.
                         KeepScreenOn()
-                        PartyReady(current, isDark, ballRoom)
+                        PartyReady(current, isDark, ballRoom, thisDevicePlayerId, viewModel::setPlayer)
                     }
                 }
             }
@@ -188,7 +202,27 @@ fun PartyScreen(
  * scrolls.
  */
 @Composable
-private fun PartyReady(state: PartyUiState.Ready, isDark: Boolean, ballRoom: MutableState<Dp?>) {
+private fun PartyReady(
+    state: PartyUiState.Ready,
+    isDark: Boolean,
+    ballRoom: MutableState<Dp?>,
+    ownPlayerId: String?,
+    onSetPlayer: (String) -> Unit
+) {
+    var choosing by remember { mutableStateOf(false) }
+    val control = state.playerControl
+    if (choosing && control != null) {
+        SettingsChoiceDialog(
+            title = "Party player",
+            options = control.choices(ownPlayerId, PartyDevice.Phone),
+            selectedValue = control.setting.value,
+            onSelect = { value ->
+                choosing = false
+                onSetPlayer(value)
+            },
+            onDismiss = { choosing = false }
+        )
+    }
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
         val density = LocalDensity.current
         // Seeded with a typical height, so the first frame is close to the measured fit.
@@ -211,7 +245,7 @@ private fun PartyReady(state: PartyUiState.Ready, isDark: Boolean, ballRoom: Mut
             Spacer(Modifier.height(QR_GAP + extraGap))
             Column(
                 modifier = Modifier
-                    .fillMaxWidth()
+                    .centeredMaxWidth(contentMaxWidth())
                     // Measured without the extra gaps inside it, so the fit never feeds itself.
                     .onSizeChanged { below = with(density) { it.height.toDp() } - extraGap * INNER_GAPS },
                 horizontalAlignment = Alignment.CenterHorizontally,
@@ -228,38 +262,45 @@ private fun PartyReady(state: PartyUiState.Ready, isDark: Boolean, ballRoom: Mut
                         textAlign = TextAlign.Center
                     )
                     Text(
-                        text = state.qrText ?: "Scan to add songs",
+                        text = state.phoneSubtitle,
                         style = MaterialTheme.typography.bodyLarge,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         textAlign = TextAlign.Center
                     )
                 }
-                PartyPlayerCard(state.target, isDark)
-                // The hint replaces the footer, because a guest on mobile data cannot open the
-                // link at all, and the two together do not fit a small phone.
-                if (state.link.homeNetworkOnly) {
-                    PartyCard(isDark) {
-                        Text(
-                            text = "This link works only on your home network. Set an External URL or " +
-                                "Remote Access in Music Assistant so guests on mobile data can join.",
-                            style = MaterialTheme.typography.bodySmall
-                        )
-                    }
-                } else {
-                    Text(
-                        text = "Guests open the link on their own phone. No app needed.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        textAlign = TextAlign.Center
-                    )
-                }
+                PartyPlayerCard(state.target, isDark, control = control, onChange = { choosing = true })
+                PartyJoinFooter(state.link, isDark)
             }
         }
     }
 }
 
+/**
+ * How guests join. The hint replaces the footer, because a guest on mobile data cannot open the
+ * link at all, and the two together do not fit a small phone.
+ */
 @Composable
-private fun QrCard(url: String, title: String, isDark: Boolean, size: Dp) {
+internal fun PartyJoinFooter(link: PartyJoinLink, isDark: Boolean) {
+    if (link.homeNetworkOnly) {
+        PartyCard(isDark) {
+            Text(
+                text = "This link works only on your home network. Set an External URL or " +
+                    "Remote Access in Music Assistant so guests on mobile data can join.",
+                style = MaterialTheme.typography.bodySmall
+            )
+        }
+    } else {
+        Text(
+            text = "Guests open the link on their own phone. No app needed.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center
+        )
+    }
+}
+
+@Composable
+internal fun QrCard(url: String, title: String, isDark: Boolean, size: Dp) {
     val shape = MaterialTheme.shapes.extraLarge
     // Opaque, still and white in both themes, because a scanner needs the contrast. The
     // shadow is drawn, so the card itself never needs an alpha below one.
@@ -282,41 +323,62 @@ private fun QrCard(url: String, title: String, isDark: Boolean, size: Dp) {
 /**
  * The player guest songs go to. While nothing plays there is no player worth naming, so the
  * card says so instead, and the name comes back once the server names a player that plays.
+ *
+ * With [control], which only an admin gets, the card also says whether the plugin picks the
+ * player itself and offers [onChange]. In the car Auto reads with what it picks now; on the phone
+ * it reads Auto alone, and the line under the party's name says the player (see [phoneSubtitle]).
+ * On the phone the player row itself opens the choices, marked by a drop-down arrow, and the car
+ * shows a large button under the card's text. Neither takes a tap while a change is saved. While
+ * nothing plays it reads Auto, or names a fixed player, because the plugin sends the guests' songs
+ * to that player regardless.
  */
 @Composable
-private fun PartyPlayerCard(target: PartyTarget, isDark: Boolean) {
-    if (target == PartyTarget.Idle) {
+internal fun PartyPlayerCard(
+    target: PartyTarget,
+    isDark: Boolean,
+    device: PartyDevice = PartyDevice.Phone,
+    control: PartyPlayerControl? = null,
+    onChange: () -> Unit = {}
+) {
+    val fixedTitle = control?.setting?.takeUnless { it.isAuto }?.let { setting ->
+        setting.options.firstOrNull { it.value == setting.value }?.title ?: setting.value
+    }
+    if (target == PartyTarget.Idle && control == null) {
         PartyCard(isDark) {
             PartyCardRow(icon = Icons.Default.Speaker) {
-                Text(
-                    text = "Nothing is playing yet. Start music on the speaker you want, and guest songs " +
-                        "will play there.",
-                    style = MaterialTheme.typography.bodyMedium
-                )
+                Text(text = IDLE_AUTO_TEXT, style = MaterialTheme.typography.bodyMedium)
             }
         }
         return
     }
-    val name = when (target) {
-        PartyTarget.GuestSession -> "Each guest's own phone"
-        PartyTarget.GuestSessionUnavailable -> "Not available"
-        is PartyTarget.SelectedPlayer -> target.name.label()
-        is PartyTarget.OtherPlayer -> target.name.label()
-        PartyTarget.Idle -> return
+    val resolvedName = target.playerName(device)
+    val name = when {
+        target == PartyTarget.GuestSession -> "Each guest's own phone"
+        target == PartyTarget.GuestSessionUnavailable -> "Not available"
+        control?.setting?.isAuto == true ->
+            if (device.largeTargets) PartyPlayerChoices.autoTitle(resolvedName) else PartyPlayerChoices.AUTO_TITLE
+        else -> resolvedName ?: fixedTitle ?: return
     }
-    val onPhone = target == PartyTarget.GuestSession || target == PartyTarget.GuestSessionUnavailable ||
-        (target as? PartyTarget.SelectedPlayer)?.name == PartyPlayerName.ThisPhone ||
+    val onGuestPhones = target == PartyTarget.GuestSession || target == PartyTarget.GuestSessionUnavailable
+    val onThisDevice = (target as? PartyTarget.SelectedPlayer)?.name == PartyPlayerName.ThisPhone ||
         (target as? PartyTarget.OtherPlayer)?.name == PartyPlayerName.ThisPhone
+    val icon = when {
+        onGuestPhones -> Icons.Default.PhoneAndroid
+        onThisDevice -> device.icon
+        else -> Icons.Default.Speaker
+    }
     val warning = when (target) {
         is PartyTarget.OtherPlayer -> "This is not the player you selected. Guest songs will play on " +
-            "${target.name.inSentence()}." +
+            "${target.name.inSentence(device)}." +
             if (target.state == PlaybackState.IDLE) " The first guest song starts it." else ""
         PartyTarget.GuestSessionUnavailable -> "Music Assistant could not start the silent disco player. " +
             "Check the Party settings in Music Assistant, then refresh."
+        PartyTarget.Idle -> if (fixedTitle == null) IDLE_AUTO_TEXT else "Nothing is playing yet. The first guest song starts it."
         else -> null
     }
+    val changeOnRow = control != null && !device.largeTargets
     PartyCard(isDark) {
-        PartyCardRow(icon = if (onPhone) Icons.Default.PhoneAndroid else Icons.Default.Speaker) {
+        PartyCardRow(icon = icon, onClick = onChange.takeIf { changeOnRow }, enabled = control?.saving != true) {
             Text(
                 text = "Party Player",
                 style = MaterialTheme.typography.labelMedium,
@@ -328,12 +390,83 @@ private fun PartyPlayerCard(target: PartyTarget, isDark: Boolean) {
             Spacer(Modifier.height(8.dp))
             Text(text = it, style = MaterialTheme.typography.bodyMedium)
         }
+        control?.let { PartyPlayerChange(it, device, onChange) }
     }
 }
 
+/** The card's line while nothing plays and the plugin picks the player itself. */
+private const val IDLE_AUTO_TEXT =
+    "Nothing is playing yet. Start music on the speaker you want, and guest songs will play there."
+
+/**
+ * The change part of the player card: a line while the server saves the choice and reloads the
+ * plugin, the error of a refused change, and in the car the button that opens the choices. On
+ * the phone the player row opens them instead.
+ */
 @Composable
-private fun PartyCardRow(icon: ImageVector, content: @Composable ColumnScope.() -> Unit) {
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+private fun PartyPlayerChange(control: PartyPlayerControl, device: PartyDevice, onChange: () -> Unit) {
+    if (control.saving) {
+        Spacer(Modifier.height(8.dp))
+        Text(
+            text = "Changing the party player...",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        return
+    }
+    control.error?.let {
+        Spacer(Modifier.height(8.dp))
+        Text(text = it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
+    }
+    if (device.largeTargets) {
+        Spacer(Modifier.height(if (control.error == null) 8.dp else 4.dp))
+        OutlinedButton(onClick = onChange, modifier = Modifier.heightIn(min = 56.dp)) {
+            Text("Change party player", fontSize = 18.sp)
+        }
+    }
+}
+
+/** The name of the player the plugin sends the guests' songs to now, when it names one. */
+internal fun PartyTarget.playerName(device: PartyDevice): String? = player?.label(device)
+
+private val PartyTarget.player: PartyPlayerName?
+    get() = when (this) {
+        is PartyTarget.SelectedPlayer -> name
+        is PartyTarget.OtherPlayer -> name
+        else -> null
+    }
+
+/** The choices of the party player, for the dialog or list each screen shows them in. */
+internal fun PartyPlayerControl.choices(ownPlayerId: String?, device: PartyDevice) =
+    PartyPlayerChoices.options(setting, ownPlayerId, device.inSentence)
+
+/** The Material 3 opacity of disabled content. */
+private const val DISABLED_CONTENT_ALPHA = 0.38f
+
+/**
+ * A row of a party card. With [onClick] the whole row is a button across the card, with a ripple
+ * in the card's shape and a drop-down arrow at its end. While not [enabled] it takes no taps and
+ * draws the arrow in the disabled tint, so the row keeps its size while a change is saved.
+ */
+@Composable
+private fun PartyCardRow(
+    icon: ImageVector,
+    onClick: (() -> Unit)? = null,
+    enabled: Boolean = true,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    val clickable = onClick?.let {
+        Modifier
+            .fillMaxWidth()
+            .heightIn(min = 48.dp)
+            .clip(MaterialTheme.shapes.medium)
+            .clickable(enabled = enabled, onClickLabel = "Change party player", role = Role.Button, onClick = it)
+    } ?: Modifier
+    Row(
+        modifier = clickable,
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
         Box(
             modifier = Modifier
                 .size(36.dp)
@@ -342,17 +475,45 @@ private fun PartyCardRow(icon: ImageVector, content: @Composable ColumnScope.() 
         ) {
             Icon(imageVector = icon, contentDescription = null, modifier = Modifier.size(20.dp))
         }
-        Column(content = content)
+        if (onClick == null) {
+            Column(content = content)
+        } else {
+            Column(modifier = Modifier.weight(1f), content = content)
+            Icon(
+                imageVector = Icons.Default.ArrowDropDown,
+                contentDescription = null,
+                tint = if (enabled) {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                } else {
+                    MaterialTheme.colorScheme.onSurface.copy(alpha = DISABLED_CONTENT_ALPHA)
+                }
+            )
+        }
     }
 }
 
-private fun PartyPlayerName.label(): String = when (this) {
-    PartyPlayerName.ThisPhone -> "This phone"
+/**
+ * The device the app runs on, as the player card names it when that device's own player is the
+ * party player ([PartyPlayerName.ThisPhone]).
+ */
+internal enum class PartyDevice(
+    val label: String,
+    val inSentence: String,
+    val icon: ImageVector,
+    /** True in the car, whose controls follow the car's larger touch targets. */
+    val largeTargets: Boolean
+) {
+    Phone("This phone", "this phone", Icons.Default.PhoneAndroid, largeTargets = false),
+    Car("This car", "this car", Icons.Default.DirectionsCar, largeTargets = true)
+}
+
+private fun PartyPlayerName.label(device: PartyDevice): String = when (this) {
+    PartyPlayerName.ThisPhone -> device.label
     is PartyPlayerName.Named -> name
 }
 
-private fun PartyPlayerName.inSentence(): String = when (this) {
-    PartyPlayerName.ThisPhone -> "this phone"
+private fun PartyPlayerName.inSentence(device: PartyDevice): String = when (this) {
+    PartyPlayerName.ThisPhone -> device.inSentence
     is PartyPlayerName.Named -> name
 }
 
@@ -372,11 +533,40 @@ private fun PartyCard(isDark: Boolean, content: @Composable ColumnScope.() -> Un
     }
 }
 
+/**
+ * The line under the party's name in the car, and on the phone when no Auto pick is named: the
+ * plugin's own QR text, or a plain default.
+ */
+internal val PartyUiState.Ready.subtitle: String get() = qrText ?: DEFAULT_SUBTITLE
+
+/**
+ * The line under the party's name on the phone. While the plugin picks the player itself, the
+ * player row reads only Auto, so this line names the player it picks now: "Scan to add songs to
+ * Kitchen", or the plugin's own text followed by the player's name.
+ */
+internal val PartyUiState.Ready.phoneSubtitle: String
+    get() {
+        val player = target.player?.takeIf { playerControl?.setting?.isAuto == true } ?: return subtitle
+        return qrText?.let { "$it · ${player.label(PartyDevice.Phone)}" }
+            ?: "$DEFAULT_SUBTITLE to ${player.inSentence(PartyDevice.Phone)}"
+    }
+
+private const val DEFAULT_SUBTITLE = "Scan to add songs"
+
+/** What a notice in place of the QR code says. */
+internal data class PartyNoticeText(val title: String, val text: String)
+
+internal val GUEST_ACCESS_OFF_NOTICE = PartyNoticeText(
+    title = "Guest access is off",
+    text = "Turn it on in Music Assistant, under Settings, Plugins, Party. Then come back here."
+)
+
+internal fun PartyUiState.Failed.notice() = PartyNoticeText(title = "Party unavailable", text = message)
+
 /** A notice in place of the QR code, in one compact card under the ball when it fits. */
 @Composable
 private fun PartyNotice(
-    title: String,
-    text: String,
+    notice: PartyNoticeText,
     isDark: Boolean,
     ballRoom: MutableState<Dp?>,
     onRefresh: () -> Unit
@@ -392,14 +582,18 @@ private fun PartyNotice(
                 .verticalScroll(rememberScrollState())
                 .padding(start = SIDE_PADDING, end = SIDE_PADDING, top = fit.topDp.dp, bottom = BOTTOM_PADDING)
         ) {
-            Box(modifier = Modifier.onSizeChanged { content = with(density) { it.height.toDp() } }) {
+            Box(
+                modifier = Modifier
+                    .centeredMaxWidth(contentMaxWidth())
+                    .onSizeChanged { content = with(density) { it.height.toDp() } }
+            ) {
                 PartyCard(isDark) {
                     PartyCardRow(icon = Icons.Default.Celebration) {
-                        Text(text = title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                        Text(text = notice.title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                     }
                     Spacer(Modifier.height(8.dp))
                     Text(
-                        text = text,
+                        text = notice.text,
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

@@ -92,6 +92,23 @@ class DiscoverFeedStoreTest {
     }
 
     @Test
+    fun `a cached row that repeats a uri shows each item once`() = runBlocking {
+        val album = cachedSection.albums.single()
+        val other = album.copy(itemId = "2", uri = "library://album/other")
+        coEvery { cache.load() } returns DiscoverCache.CacheData(
+            sections = listOf(cachedSection.copy(albums = listOf(album, other, album)))
+        )
+        every { cache.isStale(any()) } returns false
+        val store = store()
+
+        store.activate()
+        val shown = withTimeout(WAIT_MS) { store.state.first { it.sections.isNotEmpty() } }
+
+        val albums = (shown.sections.single() as DiscoverSection.AlbumSection).albums
+        assertThat(albums).containsExactly(album, other).inOrder()
+    }
+
+    @Test
     fun `a consumer asking while the connect build runs waits for it instead of building again`() = runBlocking {
         coEvery { cache.load() } returns null
         val release = CompletableDeferred<Unit>()

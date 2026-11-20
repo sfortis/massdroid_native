@@ -105,15 +105,23 @@ jobs:
   PLAY_AABS:
     name: Google Play bundles
     runs-on: ubuntu-latest
+    # It uploads to Google Play and keeps a workflow artifact, and writes nothing to the
+    # repository, so the Gradle build runs with a read-only token that is not left on disk.
+    permissions:
+      contents: read
     env:
       # The closed test, so every release reaches the testers group once Google has reviewed it.
       # The phone's closed track is "alpha"; the TV and AAOS closed tracks are named "closed".
       PLAY_PHONE_TRACK: alpha
       PLAY_FORM_FACTOR_TRACK: closed
       PLAY_STATUS: completed
-      PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+      # Only whether the testing key exists, so the build step and its dependencies never see
+      # the key itself. The upload steps get it through their own input.
+      HAS_PLAY_KEY: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON != '' }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
       - uses: actions/setup-java@v5
         with:
           java-version: 21
@@ -169,8 +177,8 @@ jobs:
           path: build-output/play/*.aab
 
       - name: Upload phone bundle to Google Play
-        if: env.PLAY_SERVICE_ACCOUNT_JSON != ''
-        uses: r0adkll/upload-google-play@v1
+        if: env.HAS_PLAY_KEY == 'true'
+        uses: r0adkll/upload-google-play@e738b9dd8f2476ea806d921b64aacd24f34515a5 # v1.1.5
         with:
           serviceAccountJsonPlainText: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
           packageName: net.asksakis.massdroidv2
@@ -183,8 +191,8 @@ jobs:
           whatsNewDirectory: ${{ steps.stage.outputs.whatsnew_app }}
 
       - name: Upload Android Automotive OS bundle to Google Play
-        if: env.PLAY_SERVICE_ACCOUNT_JSON != ''
-        uses: r0adkll/upload-google-play@v1
+        if: env.HAS_PLAY_KEY == 'true'
+        uses: r0adkll/upload-google-play@e738b9dd8f2476ea806d921b64aacd24f34515a5 # v1.1.5
         with:
           serviceAccountJsonPlainText: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
           packageName: net.asksakis.massdroidv2
@@ -197,8 +205,8 @@ jobs:
           whatsNewDirectory: ${{ steps.stage.outputs.whatsnew_app }}
 
       - name: Upload Android TV bundle to Google Play
-        if: env.PLAY_SERVICE_ACCOUNT_JSON != ''
-        uses: r0adkll/upload-google-play@v1
+        if: env.HAS_PLAY_KEY == 'true'
+        uses: r0adkll/upload-google-play@e738b9dd8f2476ea806d921b64aacd24f34515a5 # v1.1.5
         with:
           serviceAccountJsonPlainText: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
           packageName: net.asksakis.massdroidv2
@@ -209,3 +217,39 @@ jobs:
           status: ${{ env.PLAY_STATUS }}
           releaseName: ${{ steps.stage.outputs.version }}
           whatsNewDirectory: ${{ steps.stage.outputs.whatsnew_atv }}
+
+  PLAY_PRODUCTION:
+    # Production in the countries set in the Play Console, on all three form factors. It reuses
+    # the closed releases PLAY_AABS uploaded, with their versionCodes and notes, and uploads
+    # nothing. When only this job failed, "Re-run failed jobs" repeats it alone. When
+    # PLAY_AABS failed, a re-run uploads again and Play refuses the versionCodes it already has.
+    # Every production track changes in one edit: either all three get the release or none does.
+    #
+    # It runs in the play-production environment, which waits for the owner's approval and
+    # admits v* tags only. The production key is that environment's secret and belongs to its
+    # own service account: the repository's PLAY_SERVICE_ACCOUNT_JSON can release to testing
+    # tracks only.
+    name: Google Play production
+    needs: PLAY_AABS
+    runs-on: ubuntu-latest
+    environment: play-production
+    permissions:
+      contents: read
+    env:
+      HAS_PLAY_PRODUCTION_KEY: ${{ secrets.PLAY_PRODUCTION_SERVICE_ACCOUNT_JSON != '' }}
+    steps:
+      - uses: actions/checkout@v6
+        if: env.HAS_PLAY_PRODUCTION_KEY == 'true'
+        with:
+          persist-credentials: false
+
+      - name: Release the closed test release to production
+        if: env.HAS_PLAY_PRODUCTION_KEY == 'true'
+        env:
+          PLAY_PRODUCTION_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_PRODUCTION_SERVICE_ACCOUNT_JSON }}
+        run: bash .github/scripts/play-promote.sh "${GITHUB_REF_NAME}"
+
+      - name: Report a missing production key
+        # Without the key the job would end green with nothing released, so it says so.
+        if: env.HAS_PLAY_PRODUCTION_KEY != 'true'
+        run: echo "::warning::PLAY_PRODUCTION_SERVICE_ACCOUNT_JSON is not set on the play-production environment, so nothing was released to production."

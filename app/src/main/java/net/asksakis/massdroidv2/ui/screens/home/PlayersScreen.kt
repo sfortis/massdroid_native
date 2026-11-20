@@ -1,5 +1,7 @@
 package net.asksakis.massdroidv2.ui.screens.home
 
+import net.asksakis.massdroidv2.ui.components.centeredMaxWidth
+import net.asksakis.massdroidv2.ui.components.contentMaxWidth
 import net.asksakis.massdroidv2.ui.components.MdButton
 import net.asksakis.massdroidv2.ui.components.MdIconButton
 import net.asksakis.massdroidv2.ui.components.MdTextButton
@@ -165,6 +167,7 @@ fun PlayersScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues)
+                .centeredMaxWidth(contentMaxWidth())
         ) {
             if (isInitializing || connectionState is ConnectionState.Connecting || suppressConnectionPrompt) {
                 ConnectingIndicator()

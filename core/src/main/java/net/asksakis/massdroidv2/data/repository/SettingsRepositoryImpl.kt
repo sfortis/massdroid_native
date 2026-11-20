@@ -145,6 +145,9 @@ class SettingsRepositoryImpl @Inject constructor(
         private val KEY_SEARCH_GRID_MODE = booleanPreferencesKey("search_grid_mode")
         private val KEY_RECENT_SEARCHES = stringPreferencesKey("recent_searches")
         private val KEY_MB_IDENTITY_REVISION = intPreferencesKey("mb_identity_revision")
+        private val KEY_MB_REPAIR_CURSOR = stringPreferencesKey("mb_repair_cursor")
+        private val KEY_MB_REPAIR_FAILURES = intPreferencesKey("mb_repair_failures")
+        private val KEY_MB_REPAIR_FAILED_ROW = stringPreferencesKey("mb_repair_failed_row")
         private val KEY_LAST_SEEN_WHATS_NEW = intPreferencesKey("last_seen_whats_new")
         private val KEY_SMART_MIX_VARIETY = floatPreferencesKey("smart_mix_variety")
         private val KEY_SMART_MIX_DISCOVERY = floatPreferencesKey("smart_mix_discovery")
@@ -376,6 +379,30 @@ class SettingsRepositoryImpl @Inject constructor(
 
     override suspend fun setMusicBrainzIdentityRevision(revision: Int) {
         context.dataStore.edit { it[KEY_MB_IDENTITY_REVISION] = revision }
+    }
+
+    override val musicBrainzRepairCursor: Flow<String> = safeData.map { prefs ->
+        prefs[KEY_MB_REPAIR_CURSOR].orEmpty()
+    }
+
+    override suspend fun setMusicBrainzRepairCursor(cacheKey: String) {
+        context.dataStore.edit { it[KEY_MB_REPAIR_CURSOR] = cacheKey }
+    }
+
+    override val musicBrainzRepairFailures: Flow<Int> = safeData.map { prefs ->
+        prefs[KEY_MB_REPAIR_FAILURES] ?: 0
+    }
+
+    override suspend fun setMusicBrainzRepairFailures(count: Int) {
+        context.dataStore.edit { it[KEY_MB_REPAIR_FAILURES] = count }
+    }
+
+    override val musicBrainzRepairFailedRow: Flow<String> = safeData.map { prefs ->
+        prefs[KEY_MB_REPAIR_FAILED_ROW].orEmpty()
+    }
+
+    override suspend fun setMusicBrainzRepairFailedRow(cacheKey: String) {
+        context.dataStore.edit { it[KEY_MB_REPAIR_FAILED_ROW] = cacheKey }
     }
 
     override val lastSeenWhatsNewVersion: Flow<Int> = safeData.map { prefs ->

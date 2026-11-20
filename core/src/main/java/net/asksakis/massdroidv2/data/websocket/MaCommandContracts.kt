@@ -105,6 +105,12 @@ object MaCommands {
         /** The queue that receives the guests' songs, or null when there is none. */
         const val PLAYER = "party/player"
         const val CONFIG = "party/config"
+
+        /**
+         * The plugin's config key for the player that receives the guests' songs: a player id,
+         * or [net.asksakis.massdroidv2.domain.model.PartyPlayerSetting.AUTO].
+         */
+        const val PLAYER_KEY = "player"
     }
 
     object PlayerQueues {
@@ -194,6 +200,18 @@ object MaCommands {
     object ConfigPlayerQueues {
         const val GET = "config/player_queues/get"
         const val SAVE = "config/player_queues/save"
+    }
+
+    /**
+     * The configuration of one provider instance, plugins included. Both commands take the same
+     * arguments from MA 2.8 to 2.10 at least; saving needs an admin account.
+     */
+    object ConfigProviders {
+        /** The instance's config entries, with their options and their current values. */
+        const val GET = "config/providers/get"
+
+        /** Merges the given values into the instance's config; the server then reloads it. */
+        const val SAVE = "config/providers/save"
     }
 
     /** Server-wide core settings, which is where a per-queue "global" choice points. */
@@ -775,6 +793,30 @@ data class ConfigQueueSaveArgs(
 ) : MaCommandArgs {
     override fun toJson(): JsonObject = buildJsonObject {
         put("queue_id", queueId)
+        put("values", values)
+    }
+}
+
+data class ConfigProviderGetArgs(
+    val instanceId: String
+) : MaCommandArgs {
+    override fun toJson(): JsonObject = buildJsonObject {
+        put("instance_id", instanceId)
+    }
+}
+
+/**
+ * Partial save of a provider instance's configuration: the server merges [values] into the
+ * existing config, so only the keys being changed are sent.
+ */
+data class ConfigProviderSaveArgs(
+    val providerDomain: String,
+    val instanceId: String,
+    val values: JsonObject
+) : MaCommandArgs {
+    override fun toJson(): JsonObject = buildJsonObject {
+        put("provider_domain", providerDomain)
+        put("instance_id", instanceId)
         put("values", values)
     }
 }

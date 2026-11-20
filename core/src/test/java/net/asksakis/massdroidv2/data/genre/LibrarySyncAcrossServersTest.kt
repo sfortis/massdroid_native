@@ -50,6 +50,7 @@ class LibrarySyncAcrossServersTest {
         transactions = transactions,
         genreSpellings = GenreSpellingResolver(dao),
         wsClient = client,
+        namesakeGenreRepair = mockk(relaxed = true),
     )
 
     private fun connectTo(serverId: String) {

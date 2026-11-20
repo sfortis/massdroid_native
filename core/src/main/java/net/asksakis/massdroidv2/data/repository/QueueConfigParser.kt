@@ -78,6 +78,9 @@ object QueueConfigParser {
         (this["depends_on_value"] as? JsonPrimitive)?.contentOrNull
             ?.takeIf { (this["depends_on"] as? JsonPrimitive)?.contentOrNull == key }
 
+    /** The options of one config entry, in the order the server gives them. */
+    fun entryOptions(entry: JsonObject): List<QueueConfigOption> = entry.options()
+
     private fun JsonObject.options(): List<QueueConfigOption> =
         (this["options"] as? kotlinx.serialization.json.JsonArray)?.mapNotNull { opt ->
             when (opt) {

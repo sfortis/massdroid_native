@@ -96,6 +96,10 @@ dependencies {
     testImplementation("io.mockk:mockk:1.13.12")
     // A real WebSocket server for the client's sign-in tests; the version of the okhttp above.
     testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
+    // An Android SQLite for Room DAO tests on an in-memory database, the only use. Test scope
+    // only, so nothing reaches the app, fdroid or release dependency graphs.
+    testImplementation("org.robolectric:robolectric:4.14.1")
+    testImplementation("androidx.test:core:1.6.1")
 }
 
 kapt {

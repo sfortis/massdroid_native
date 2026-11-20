@@ -2,6 +2,7 @@ package net.asksakis.massdroidv2.playback
 
 import com.google.common.truth.Truth.assertThat
 import net.asksakis.massdroidv2.domain.model.PlaybackState
+import net.asksakis.massdroidv2.domain.repository.PlaybackIntentCause
 import net.asksakis.massdroidv2.playback.AudioFocusPolicy.OwedResume
 import org.junit.Test
 
@@ -512,5 +513,68 @@ class AudioFocusPolicyTest {
             listenerPausedWithMaDown = true,
         ) { never() }
         assertThat(outcome).isEqualTo(AudioFocusPolicy.StreamStart.HOLD_FOR_SERVER_PAUSE)
+    }
+
+    /**
+     * The MINI case of 2026-11-11. The assistant took the focus, the phone paused and owed a
+     * resume, and AAIdrive sent its own pause 360 ms later. That pause must not cancel the
+     * resume, because AAIdrive never sent play again.
+     */
+    @Test
+    fun `a car pause during an interruption keeps the owed resume`() {
+        val decides = AudioFocusPolicy.pauseIsListenerDecision(
+            cause = PlaybackIntentCause.EXTERNAL_CONTROL,
+            owed = OwedResume.INTERRUPTION,
+            holdsFocus = false,
+        )
+        assertThat(decides).isFalse()
+    }
+
+    /** The listener's own pause during the same interruption still means "stay stopped". */
+    @Test
+    fun `a listener pause during an interruption cancels the owed resume`() {
+        val decides = AudioFocusPolicy.pauseIsListenerDecision(
+            cause = PlaybackIntentCause.LISTENER,
+            owed = OwedResume.INTERRUPTION,
+            holdsFocus = false,
+        )
+        assertThat(decides).isTrue()
+    }
+
+    /** With the focus back, a car pause is a decision again, for example while the sink is awaited. */
+    @Test
+    fun `a car pause after the focus returned is a decision`() {
+        val decides = AudioFocusPolicy.pauseIsListenerDecision(
+            cause = PlaybackIntentCause.EXTERNAL_CONTROL,
+            owed = OwedResume.INTERRUPTION,
+            holdsFocus = true,
+        )
+        assertThat(decides).isTrue()
+    }
+
+    /** Without an interruption, or with a delayed play pending, a car pause stops playback as before. */
+    @Test
+    fun `a car pause with no interruption resume owed is a decision`() {
+        listOf(null, OwedResume.DEFERRED_PLAY, OwedResume.INTERRUPTION_SINK_LOST).forEach { owed ->
+            val decides = AudioFocusPolicy.pauseIsListenerDecision(
+                cause = PlaybackIntentCause.EXTERNAL_CONTROL,
+                owed = owed,
+                holdsFocus = false,
+            )
+            assertThat(decides).isTrue()
+        }
+    }
+
+    /** The phone's own focus pause and a repeated pause never cancel the resume. */
+    @Test
+    fun `the focus pause and a repeat are not decisions`() {
+        listOf(PlaybackIntentCause.AUDIO_FOCUS, PlaybackIntentCause.REPEAT).forEach { cause ->
+            val decides = AudioFocusPolicy.pauseIsListenerDecision(
+                cause = cause,
+                owed = OwedResume.INTERRUPTION,
+                holdsFocus = false,
+            )
+            assertThat(decides).isFalse()
+        }
     }
 }

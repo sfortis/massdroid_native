@@ -10,8 +10,18 @@ package net.asksakis.massdroidv2.domain.repository
  * Both arrive as the same command, so the cause travels with the event.
  */
 enum class PlaybackIntentCause {
-    /** The listener, or anything acting on their behalf, such as a car head unit. */
+    /** The listener, through the app's own controls or its media notification. */
     LISTENER,
+
+    /**
+     * A controller outside the app: a car head unit, a watch, a Bluetooth media key or
+     * a TV remote. It counts as the listener, except that a pause arriving while an
+     * interruption already holds playback paused keeps the resume owed to that
+     * interruption. Car head units pause the media session around their own voice
+     * sessions, so that pause is not the listener's decision (see
+     * [net.asksakis.massdroidv2.playback.AudioFocusPolicy.pauseIsListenerDecision]).
+     */
+    EXTERNAL_CONTROL,
 
     /** The local output stepping aside for another app that took audio focus. */
     AUDIO_FOCUS,
