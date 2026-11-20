@@ -976,7 +976,7 @@ class MixPlaybackOrchestrator @Inject constructor(
             .groupingBy { it }
             .eachCount()
         val recencyPenaltyByKey: Map<String, Double> = recentArtistAppearances
-            .mapValues { (_, count) -> count * RECENT_ARTIST_APPEARANCE_PENALTY }
+            .mapValues { (_, count) -> recentArtistPenalty(count, RECENT_ARTIST_APPEARANCE_PENALTY) }
         val rawArtistScores = try {
             playHistoryRepository.getScoredArtists(days = 120, limit = 40)
         } catch (_: Exception) {

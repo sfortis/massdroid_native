@@ -212,6 +212,11 @@ private const val ROUTE_AGREEMENT_BONUS = 0.12
 // SMART_MIX_HISTORY_DEPTH in MixPlaybackOrchestrator.
 private const val SEED_RECENT_ARTIST_PENALTY = 0.4
 private const val SEED_RECENT_TRACK_PENALTY = 1.5
+// The artist cooldown window is 8 mixes long (RECENT_ARTIST_HISTORY_DEPTH), so
+// it lasts longer, but the penalty counts at most 4 appearances. That keeps its
+// strength at the maximum it had while the window was 4 mixes long: without the
+// cap a core artist who appears in every mix lost twice as much.
+private const val RECENT_ARTIST_PENALTY_MAX_COUNT = 4
 // One seed is enough now that a lone library seed is asked for up to
 // MA_SIMILAR_MAX_PER_SEED similars: a single-seed cluster produced a full mix in
 // testing, while refusing it dropped the user to the genre engine and 8 tracks.
@@ -667,6 +672,14 @@ internal fun shouldHopFamily(variety: Double, random: kotlin.random.Random): Boo
     random.nextDouble() < variety.coerceIn(0.0, 1.0)
 
 /**
+ * The cooldown penalty for an artist who appeared in [count] of the recent mixes:
+ * [perMix] for each appearance, counting at most [RECENT_ARTIST_PENALTY_MAX_COUNT].
+ * Used by both the seed-track engine and the genre engine.
+ */
+internal fun recentArtistPenalty(count: Int, perMix: Double): Double =
+    count.coerceIn(0, RECENT_ARTIST_PENALTY_MAX_COUNT) * perMix
+
+/**
  * The genre families a family hop moves away from: those of the
  * [HOP_FAMILY_AVOID_DEPTH] newest clusters in [recentClusters], which is ordered
  * oldest first. Older clusters still count for the exact-genre rotation.
@@ -931,7 +944,10 @@ class SeedTrackMixGenerator @Inject constructor(
             }
             .map { c ->
                 val artistKey = c.track.artistNames.split(",").firstOrNull()?.trim()?.lowercase().orEmpty()
-                val artistPenalty = (recency.recentArtistCounts[artistKey] ?: 0) * SEED_RECENT_ARTIST_PENALTY
+                val artistPenalty = recentArtistPenalty(
+                    recency.recentArtistCounts[artistKey] ?: 0,
+                    SEED_RECENT_ARTIST_PENALTY
+                )
                 val trackPenalty = if (c.track.uri in recency.recentMixTrackUris) SEED_RECENT_TRACK_PENALTY else 0.0
                 CandidateTrack(
                     track = c.track,

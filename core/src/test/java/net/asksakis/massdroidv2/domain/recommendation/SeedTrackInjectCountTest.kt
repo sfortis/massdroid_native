@@ -160,4 +160,14 @@ class SeedTrackInjectCountTest {
         assertThat(hopAvoidedFamilies(emptyList())).isEmpty()
         assertThat(hopAvoidedFamilies(listOf(setOf("deep house")))).containsExactly("electronic")
     }
+
+    @Test
+    fun `the artist penalty counts at most four recent mixes`() {
+        assertThat(recentArtistPenalty(0, 0.4)).isEqualTo(0.0)
+        assertThat(recentArtistPenalty(2, 1.0)).isEqualTo(2.0)
+        assertThat(recentArtistPenalty(4, 1.0)).isEqualTo(4.0)
+        // An artist in all eight mixes of the window weighs no more than one in four.
+        assertThat(recentArtistPenalty(8, 1.0)).isEqualTo(4.0)
+        assertThat(recentArtistPenalty(8, 0.4)).isWithin(1e-9).of(1.6)
+    }
 }
