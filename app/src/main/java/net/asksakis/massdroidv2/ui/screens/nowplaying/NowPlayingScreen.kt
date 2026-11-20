@@ -14,6 +14,7 @@ import androidx.compose.ui.text.TextStyle
 import net.asksakis.massdroidv2.domain.info.AboutText
 import net.asksakis.massdroidv2.ui.shared.FadingAutoScrollText
 import net.asksakis.massdroidv2.ui.shared.fadingAutoScrollTextHeight
+import net.asksakis.massdroidv2.ui.components.isTablet
 import net.asksakis.massdroidv2.ui.screens.nowplaying.components.AboutSheet
 import net.asksakis.massdroidv2.ui.screens.nowplaying.components.NowPlayingSize
 import net.asksakis.massdroidv2.ui.screens.nowplaying.components.artworkBottomInsetPx
@@ -307,8 +308,7 @@ fun NowPlayingScreen(
 
     val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     // On a tablet every control takes the large size; on a phone each keeps its own (#89).
-    val tabletSize = NowPlayingSize.Large
-        .takeIf { LocalConfiguration.current.smallestScreenWidthDp >= TABLET_MIN_SMALLEST_WIDTH_DP }
+    val tabletSize = NowPlayingSize.Large.takeIf { isTablet() }
 
     Scaffold(
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
@@ -1238,9 +1238,6 @@ private val INFO_COLUMN_MIN = 280.dp
 private val INFO_COLUMN_MAX = 360.dp
 private val INFO_COLUMN_MIN_TABLET = 400.dp
 private val INFO_COLUMN_MAX_TABLET = 440.dp
-
-/** The smallest width of a screen that gets the tablet's control size, in dp. */
-private const val TABLET_MIN_SMALLEST_WIDTH_DP = 600
 
 @Composable
 private fun extractDominantColor(imageUrl: String?, isDark: Boolean): State<Color> {

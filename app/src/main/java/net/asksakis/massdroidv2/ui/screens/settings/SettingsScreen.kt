@@ -1,5 +1,7 @@
 package net.asksakis.massdroidv2.ui.screens.settings
 
+import net.asksakis.massdroidv2.ui.components.centeredMaxWidth
+import net.asksakis.massdroidv2.ui.components.contentMaxWidth
 import net.asksakis.massdroidv2.ui.components.LabeledSlider
 import net.asksakis.massdroidv2.ui.components.OtherServerSheet
 import net.asksakis.massdroidv2.ui.components.ServerList
@@ -205,6 +207,7 @@ fun SettingsScreen(
     ) { paddingValues ->
         androidx.compose.animation.AnimatedContent(
             targetState = selectedCategory,
+            modifier = Modifier.centeredMaxWidth(contentMaxWidth()),
             label = "settings_nav"
         ) { category ->
             when (category) {

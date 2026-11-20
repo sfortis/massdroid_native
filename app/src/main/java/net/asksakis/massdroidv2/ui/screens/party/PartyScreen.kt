@@ -75,6 +75,8 @@ import net.asksakis.massdroidv2.domain.party.PartyIdleTimer
 import net.asksakis.massdroidv2.domain.party.PartyPlayerChoices
 import net.asksakis.massdroidv2.domain.party.PartyPlayerName
 import net.asksakis.massdroidv2.domain.party.PartyTarget
+import net.asksakis.massdroidv2.ui.components.centeredMaxWidth
+import net.asksakis.massdroidv2.ui.components.contentMaxWidth
 import net.asksakis.massdroidv2.ui.components.MdIconButton
 import net.asksakis.massdroidv2.ui.components.QrCode
 import net.asksakis.massdroidv2.ui.components.SettingsChoiceDialog
@@ -243,7 +245,7 @@ private fun PartyReady(
             Spacer(Modifier.height(QR_GAP + extraGap))
             Column(
                 modifier = Modifier
-                    .fillMaxWidth()
+                    .centeredMaxWidth(contentMaxWidth())
                     // Measured without the extra gaps inside it, so the fit never feeds itself.
                     .onSizeChanged { below = with(density) { it.height.toDp() } - extraGap * INNER_GAPS },
                 horizontalAlignment = Alignment.CenterHorizontally,
@@ -580,7 +582,11 @@ private fun PartyNotice(
                 .verticalScroll(rememberScrollState())
                 .padding(start = SIDE_PADDING, end = SIDE_PADDING, top = fit.topDp.dp, bottom = BOTTOM_PADDING)
         ) {
-            Box(modifier = Modifier.onSizeChanged { content = with(density) { it.height.toDp() } }) {
+            Box(
+                modifier = Modifier
+                    .centeredMaxWidth(contentMaxWidth())
+                    .onSizeChanged { content = with(density) { it.height.toDp() } }
+            ) {
                 PartyCard(isDark) {
                     PartyCardRow(icon = Icons.Default.Celebration) {
                         Text(text = notice.title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
