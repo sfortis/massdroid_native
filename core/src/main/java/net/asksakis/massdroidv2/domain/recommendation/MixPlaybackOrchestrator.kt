@@ -274,6 +274,8 @@ class MixPlaybackOrchestrator @Inject constructor(
 
     // ---- BLL / decade scoring (self-loaded from local DB, cached) ----
     private var bllArtistScoreMap = emptyMap<String, Double>()
+    /** The artist names of the rows [bllArtistScoreMap] was built from, by URI, for the artist cooldown. */
+    private var bllArtistNames = emptyMap<String, String>()
     private var artistDominantDecades = emptyMap<String, Int>()
 
     // ---- Smart-filter snapshot (refreshed per build) ----
@@ -346,6 +348,7 @@ class MixPlaybackOrchestrator @Inject constructor(
         selfLoadedContextAtMs = 0L
         selfLoadedExcluded = emptySet()
         bllArtistScoreMap = emptyMap()
+        bllArtistNames = emptyMap()
         artistDominantDecades = emptyMap()
         smartArtistScoreMap = emptyMap()
         excludedArtistUris = emptySet()
@@ -580,12 +583,13 @@ class MixPlaybackOrchestrator @Inject constructor(
 
     private suspend fun ensureBllArtistScoresLoaded() {
         if (bllArtistScoreMap.isNotEmpty()) return
-        bllArtistScoreMap = try {
+        val rows = try {
             playHistoryRepository.getScoredArtists(days = 90, limit = BLL_ARTIST_SCORE_LIMIT)
-                .toScoreMap()
         } catch (_: Exception) {
-            emptyMap()
+            emptyList()
         }
+        bllArtistScoreMap = rows.toScoreMap()
+        bllArtistNames = rows.associate { it.artistUri to it.artistName }
     }
 
     private suspend fun ensureArtistDecadesLoaded() {
@@ -918,7 +922,7 @@ class MixPlaybackOrchestrator @Inject constructor(
         excludedTrackUris = excludedTrackUris,
         excludedTrackKeys = excludedTrackKeys,
         anchorFamilies = anchorFamiliesCache,
-        recentArtistCounts = recentSmartMixArtists.flatten().groupingBy { it }.eachCount(),
+        recentArtistWindows = recentSmartMixArtists.toList(),
         recentMixTrackUris = recentSmartMixHistory.flatten().toSet(),
         blockedArtists = blockedArtists,
         recentClusters = recentSeedClusterGenres.toList()
@@ -969,37 +973,30 @@ class MixPlaybackOrchestrator @Inject constructor(
         val random = kotlin.random.Random(mixSeed)
         val recentMixTrackUris = recentSmartMixHistory.flatten().toSet()
         val mixExcludedTrackUris = excludedTrackUris + recentMixTrackUris
-        val recentArtistAppearances = recentSmartMixArtists.flatten()
-            .groupingBy { it }
-            .eachCount()
+        val recentArtistWindows = recentSmartMixArtists.toList()
         val rawArtistScores = try {
             playHistoryRepository.getScoredArtists(days = 120, limit = 40)
         } catch (_: Exception) {
             emptyList()
         }
-        val artistScores = if (recentArtistAppearances.isEmpty()) {
+        fun cooldownPenalty(uri: String, name: String?): Double {
+            val keys = artistCooldownLookupKeys(null, uri, name) + uri
+            return recentArtistPenalty(recentArtistCount(keys, recentArtistWindows), RECENT_ARTIST_APPEARANCE_PENALTY)
+        }
+        val artistScores = if (recentArtistWindows.isEmpty()) {
             rawArtistScores
         } else {
             rawArtistScores.map { score ->
-                val keys = artistCooldownKeys(null, score.artistUri, score.artistName) + score.artistUri
-                val penalty = recentArtistPenalty(
-                    recentArtistCount(keys, recentArtistAppearances),
-                    RECENT_ARTIST_APPEARANCE_PENALTY
-                )
+                val penalty = cooldownPenalty(score.artistUri, score.artistName)
                 if (penalty == 0.0) score else score.copy(score = score.score - penalty)
             }
         }
-        val bllForMix: Map<String, Double> = if (recentArtistAppearances.isEmpty()) {
+        val bllForMix: Map<String, Double> = if (recentArtistWindows.isEmpty()) {
             bllArtistScoreMap
         } else {
-            // The BLL map carries only the URI, so the name key cannot match here.
-            bllArtistScoreMap.mapValues { (uri, score) ->
-                val keys = artistCooldownKeys(null, uri, null) + uri
-                score - recentArtistPenalty(
-                    recentArtistCount(keys, recentArtistAppearances),
-                    RECENT_ARTIST_APPEARANCE_PENALTY
-                )
-            }
+            // The BLL map holds no names, so they come from the same getScoredArtists rows,
+            // and both scores that MixEngine receives get the same penalty.
+            bllArtistScoreMap.mapValues { (uri, score) -> score - cooldownPenalty(uri, bllArtistNames[uri]) }
         }
         val genreScores = try {
             genreRepository.scoredGenres(days = 120, limit = 10)

@@ -21,13 +21,25 @@ class MixCooldownTest {
         override val rejectedUris: List<String> = emptyList()
     ) : QueueLoadResultView
 
-    private fun track(id: String, artist: String, artistUri: String? = null) = Track(
+    private fun track(
+        id: String,
+        artist: String,
+        artistUri: String? = null,
+        primaryArtistName: String = ""
+    ) = Track(
         itemId = id,
         provider = "deezer",
         name = "Track $id",
         uri = "deezer://track/$id",
         artistNames = artist,
-        artistUri = artistUri
+        artistUri = artistUri,
+        primaryArtistName = primaryArtistName
+    )
+
+    /** The seed-track engine's penalty for [candidate], with a penalty of 1.0 per mix. */
+    private fun penaltyOf(candidate: Track, windows: List<Set<String>>) = recentArtistPenalty(
+        recentArtistCount(trackArtistCooldownLookupKeys(candidate), windows),
+        perMix = 1.0
     )
 
     private val mix = listOf(
@@ -57,7 +69,7 @@ class MixCooldownTest {
 
         assertThat(consumed.trackUris).containsExactly("deezer://track/1")
         // Hammock and Alcest never reached the queue, so they stay eligible.
-        assertThat(consumed.artistKeys).containsExactly("library://artist/1", "caspian")
+        assertThat(consumed.artistKeys).containsExactly("library://artist/1", "library-name:caspian")
     }
 
     @Test
@@ -80,7 +92,7 @@ class MixCooldownTest {
         )
 
         assertThat(consumed.trackUris).containsExactly("deezer://track/10")
-        assertThat(consumed.artistKeys).containsExactly("library://artist/1", "caspian")
+        assertThat(consumed.artistKeys).containsExactly("library://artist/1", "library-name:caspian")
     }
 
     @Test
@@ -107,20 +119,17 @@ class MixCooldownTest {
         val consumed = cooldownFor(mix, Result(mix.map { it.uri }))
         val recency = SeedTrackMixGenerator.Recency(
             excludedTrackUris = emptySet(),
-            recentArtistCounts = listOf(consumed.artistKeys).flatten().groupingBy { it }.eachCount(),
+            recentArtistWindows = listOf(consumed.artistKeys),
             recentMixTrackUris = emptySet()
         )
-        fun penaltyOf(candidate: Track) = recentArtistPenalty(
-            recentArtistCount(trackArtistCooldownKeys(candidate), recency.recentArtistCounts),
-            perMix = 1.0
-        )
+        val windows = recency.recentArtistWindows
 
         // The same artist URI.
-        assertThat(penaltyOf(track("30", "Caspian", "library://artist/1"))).isEqualTo(1.0)
+        assertThat(penaltyOf(track("30", "Caspian", "library://artist/1"), windows)).isEqualTo(1.0)
         // The same name under another provider's URI.
-        assertThat(penaltyOf(track("31", "Caspian", "deezer://artist/777"))).isEqualTo(1.0)
+        assertThat(penaltyOf(track("31", "Caspian", "deezer://artist/777"), windows)).isEqualTo(1.0)
         // An artist who was not in the mix.
-        assertThat(penaltyOf(track("32", "Mogwai", "library://artist/9"))).isEqualTo(0.0)
+        assertThat(penaltyOf(track("32", "Mogwai", "library://artist/9"), windows)).isEqualTo(0.0)
     }
 
     @Test
@@ -130,9 +139,56 @@ class MixCooldownTest {
             listOf(track("40", "Caspian", "deezer://artist/777")),
             Result(listOf("deezer://track/40"))
         )
-        val counts = listOf(first.artistKeys, second.artistKeys).flatten().groupingBy { it }.eachCount()
+        val windows = listOf(first.artistKeys, second.artistKeys)
 
-        val keys = trackArtistCooldownKeys(track("41", "Caspian", "library://artist/1"))
-        assertThat(recentArtistCount(keys, counts)).isEqualTo(2)
+        val keys = trackArtistCooldownLookupKeys(track("41", "Caspian", "library://artist/1"))
+        assertThat(recentArtistCount(keys, windows)).isEqualTo(2)
+    }
+
+    @Test
+    fun `two library artists with the same name do not share a cooldown`() {
+        // Music Assistant merges all providers of one artist into one library item,
+        // so two library ids are two different artists.
+        val nirvana = listOf(track("50", "Nirvana", "library://artist/1"))
+        val windows = listOf(cooldownFor(nirvana, Result(listOf("deezer://track/50"))).artistKeys)
+
+        assertThat(penaltyOf(track("51", "Nirvana", "library://artist/2"), windows)).isEqualTo(0.0)
+        // A provider artist of the same name is still taken for the library one.
+        assertThat(penaltyOf(track("52", "Nirvana", "deezer://artist/555"), windows)).isEqualTo(1.0)
+    }
+
+    @Test
+    fun `a library artist finds a provider artist of the same name`() {
+        val deezerNirvana = listOf(track("60", "Nirvana", "deezer://artist/555"))
+        val windows = listOf(cooldownFor(deezerNirvana, Result(listOf("deezer://track/60"))).artistKeys)
+
+        assertThat(penaltyOf(track("61", "Nirvana", "library://artist/1"), windows)).isEqualTo(1.0)
+    }
+
+    @Test
+    fun `windows written by older versions still match`() {
+        // Before the library prefix every name was stored plain, and before that the
+        // window held URI keys only. Both still count, without a migration.
+        val withPlainName = setOf("library://artist/1", "nirvana")
+        val uriOnly = setOf("library://artist/1")
+
+        assertThat(penaltyOf(track("70", "Nirvana", "library://artist/1"), listOf(withPlainName, uriOnly)))
+            .isEqualTo(2.0)
+        assertThat(penaltyOf(track("71", "Nirvana", "deezer://artist/555"), listOf(withPlainName))).isEqualTo(1.0)
+    }
+
+    @Test
+    fun `the name key is the first artist's own name`() {
+        val credited = track(
+            "80",
+            "Tyler, The Creator, Frank Ocean",
+            "deezer://artist/888",
+            primaryArtistName = "Tyler, The Creator"
+        )
+        assertThat(trackArtistCooldownKeys(credited)).containsExactly("deezer://artist/888", "tyler, the creator")
+
+        // Without the artist list, the joined credits are split at the first comma.
+        val joinedOnly = track("81", "Some Band, Featured Guest", "deezer://artist/889")
+        assertThat(trackArtistCooldownKeys(joinedOnly)).containsExactly("deezer://artist/889", "some band")
     }
 }

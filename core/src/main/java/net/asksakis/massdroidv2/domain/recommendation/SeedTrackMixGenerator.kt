@@ -217,6 +217,10 @@ private const val SEED_RECENT_TRACK_PENALTY = 1.5
 // strength at the maximum it had while the window was 4 mixes long: without the
 // cap a core artist who appears in every mix lost twice as much.
 private const val RECENT_ARTIST_PENALTY_MAX_COUNT = 4
+private const val LIBRARY_ARTIST_URI_PREFIX = "library://"
+// Marks a library artist's name key in the artist cooldown (see artistCooldownKeys).
+// It contains no "://", so it cannot be read as a URI key.
+private const val LIBRARY_ARTIST_NAME_PREFIX = "library-name:"
 // One seed is enough now that a lone library seed is asked for up to
 // MA_SIMILAR_MAX_PER_SEED similars: a single-seed cluster produced a full mix in
 // testing, while refusing it dropped the user to the genre engine and 8 tracks.
@@ -682,30 +686,69 @@ internal fun recentArtistPenalty(count: Int, perMix: Double): Double =
 /**
  * The keys an artist is recorded under in the artist cooldown: the canonical
  * artist key (a URI such as library://artist/59) and the lowercased name, each
- * when present.
+ * when present. A library artist's name is recorded with
+ * [LIBRARY_ARTIST_NAME_PREFIX], every other artist's name as it is.
  *
- * Both are needed. The window used to hold only the URI key while the seed-track
- * engine looked candidates up by name, so its artist penalty never applied. A URI
- * key alone also misses the same artist under another provider (deezer:// in a
- * delivered mix, library:// in the play history); the name key catches that.
+ * The name key is there because a URI key alone misses the same artist under
+ * another provider (deezer:// in a delivered mix, library:// in the play
+ * history). The prefix keeps two library artists of the same name apart:
+ * Music Assistant merges all providers of one artist into one library item, so
+ * two library ids are two different artists. See [artistCooldownLookupKeys].
  */
-internal fun artistCooldownKeys(itemId: String?, uri: String?, name: String?): Set<String> =
-    setOfNotNull(
-        MediaIdentity.canonicalArtistKey(itemId, uri),
-        name?.trim()?.lowercase()?.takeIf { it.isNotBlank() }
-    )
+internal fun artistCooldownKeys(itemId: String?, uri: String?, name: String?): Set<String> {
+    val uriKey = MediaIdentity.canonicalArtistKey(itemId, uri)
+    val nameKey = cooldownNameKey(name) ?: return setOfNotNull(uriKey)
+    val recordedName = if (isLibraryArtistKey(uriKey)) LIBRARY_ARTIST_NAME_PREFIX + nameKey else nameKey
+    return setOfNotNull(uriKey, recordedName)
+}
+
+/**
+ * The keys to look an artist up by in the artist cooldown. A library artist
+ * matches its own URI and the plain name of a provider artist, but not the
+ * name of another library artist. Any other artist matches its URI and both
+ * forms of its name, so a provider artist still finds the library artist of
+ * the same name.
+ *
+ * A window written before the prefix existed holds a library artist's name in
+ * the plain form. It still matches, and it leaves the cooldown after
+ * RECENT_ARTIST_HISTORY_DEPTH mixes.
+ */
+internal fun artistCooldownLookupKeys(itemId: String?, uri: String?, name: String?): Set<String> {
+    val uriKey = MediaIdentity.canonicalArtistKey(itemId, uri)
+    val nameKey = cooldownNameKey(name) ?: return setOfNotNull(uriKey)
+    return if (isLibraryArtistKey(uriKey)) {
+        setOfNotNull(uriKey, nameKey)
+    } else {
+        setOfNotNull(uriKey, nameKey, LIBRARY_ARTIST_NAME_PREFIX + nameKey)
+    }
+}
 
 /** [artistCooldownKeys] of a track's first artist. */
 internal fun trackArtistCooldownKeys(track: Track): Set<String> =
-    artistCooldownKeys(track.artistItemId, track.artistUri, track.artistNames.substringBefore(","))
+    artistCooldownKeys(track.artistItemId, track.artistUri, trackFirstArtistName(track))
+
+/** [artistCooldownLookupKeys] of a track's first artist. */
+internal fun trackArtistCooldownLookupKeys(track: Track): Set<String> =
+    artistCooldownLookupKeys(track.artistItemId, track.artistUri, trackFirstArtistName(track))
 
 /**
- * How many recent mixes an artist appeared in, given its [keys]: the largest
- * count over the keys. Each mix records an artist once per key, so the largest
- * count is the number of mixes, and summing would count one appearance twice.
+ * The first artist's own name. The comma split of the joined credits is only
+ * the fallback, because it cuts a name such as "Tyler, The Creator" in two.
  */
-internal fun recentArtistCount(keys: Set<String>, counts: Map<String, Int>): Int =
-    keys.maxOfOrNull { counts[it] ?: 0 } ?: 0
+private fun trackFirstArtistName(track: Track): String =
+    track.primaryArtistName.ifBlank { track.artistNames.substringBefore(",") }
+
+private fun cooldownNameKey(name: String?): String? = name?.trim()?.lowercase()?.takeIf { it.isNotBlank() }
+
+private fun isLibraryArtistKey(uriKey: String?): Boolean = uriKey?.startsWith(LIBRARY_ARTIST_URI_PREFIX) == true
+
+/**
+ * How many of the recent mixes an artist appeared in: the [windows] (one key
+ * set per mix) that hold any of its [lookupKeys]. Counting per window counts
+ * an artist once per mix, whichever of its keys that mix recorded.
+ */
+internal fun recentArtistCount(lookupKeys: Set<String>, windows: List<Set<String>>): Int =
+    windows.count { window -> lookupKeys.any { it in window } }
 
 /**
  * The genre families a family hop moves away from: those of the
@@ -783,7 +826,8 @@ class SeedTrackMixGenerator @Inject constructor(
          * under. The catalogue holds the same song several times.
          */
         val excludedTrackKeys: Set<String> = emptySet(),
-        val recentArtistCounts: Map<String, Int>,
+        /** The artist cooldown: the keys ([artistCooldownKeys]) of each recent mix, oldest first. */
+        val recentArtistWindows: List<Set<String>>,
         val recentMixTrackUris: Set<String>,
         /** Blocked artists, excluded from seeds, candidates and injection. */
         val blockedArtists: BlockedArtists = BlockedArtists.NONE,
@@ -973,7 +1017,7 @@ class SeedTrackMixGenerator @Inject constructor(
                         .takeIf { it.isNotBlank() } in recency.excludedTrackKeys
             }
             .map { c ->
-                val artistCount = recentArtistCount(trackArtistCooldownKeys(c.track), recency.recentArtistCounts)
+                val artistCount = recentArtistCount(trackArtistCooldownLookupKeys(c.track), recency.recentArtistWindows)
                 if (artistCount > 0) {
                     penalizedArtists++
                     maxArtistCount = maxOf(maxArtistCount, artistCount)
