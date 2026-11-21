@@ -743,6 +743,26 @@ private fun cooldownNameKey(name: String?): String? = name?.trim()?.lowercase()?
 private fun isLibraryArtistKey(uriKey: String?): Boolean = uriKey?.startsWith(LIBRARY_ARTIST_URI_PREFIX) == true
 
 /**
+ * The track a loved-track injection puts in the mix. It carries the artist's URI
+ * and own name, so the artist cooldown records an injected library artist the
+ * same way as any other (see [artistCooldownKeys]); with the name alone, two
+ * library artists of the same name would share a cooldown again.
+ */
+internal fun lovedInjectionTrack(seed: SeedTrack): Track {
+    val uri = seed.trackUri
+    val sep = uri.indexOf("://")
+    return Track(
+        itemId = uri.substringAfterLast("/").ifBlank { uri },
+        provider = if (sep > 0) uri.substring(0, sep) else "",
+        name = seed.trackName,
+        uri = uri,
+        artistNames = seed.artistName,
+        artistUri = seed.artistUri.ifBlank { null },
+        primaryArtistName = seed.artistName
+    )
+}
+
+/**
  * How many of the recent mixes an artist appeared in: the [windows] (one key
  * set per mix) that hold any of its [lookupKeys]. Counting per window counts
  * an artist once per mix, whichever of its keys that mix recorded.
@@ -1581,16 +1601,8 @@ class SeedTrackMixGenerator @Inject constructor(
         }
         Log.d(TAG, "loved-inject: want=$count scanned=$scanned/${shuffled.size} -> injected ${picked.size}")
         return picked.map { seed ->
-            val uri = seed.trackUri
-            val sep = uri.indexOf("://")
             CandidateTrack(
-                track = Track(
-                    itemId = uri.substringAfterLast("/").ifBlank { uri },
-                    provider = if (sep > 0) uri.substring(0, sep) else "",
-                    name = seed.trackName,
-                    uri = uri,
-                    artistNames = seed.artistName
-                ),
+                track = lovedInjectionTrack(seed),
                 score = OWN_INJECT_SCORE,
                 source = CandidateSource.OWN_LOVED
             )

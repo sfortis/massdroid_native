@@ -2,6 +2,7 @@ package net.asksakis.massdroidv2.domain.recommendation
 
 import com.google.common.truth.Truth.assertThat
 import net.asksakis.massdroidv2.domain.model.Track
+import net.asksakis.massdroidv2.domain.repository.SeedTrack
 import org.junit.Test
 
 /**
@@ -155,6 +156,23 @@ class MixCooldownTest {
         assertThat(penaltyOf(track("51", "Nirvana", "library://artist/2"), windows)).isEqualTo(0.0)
         // A provider artist of the same name is still taken for the library one.
         assertThat(penaltyOf(track("52", "Nirvana", "deezer://artist/555"), windows)).isEqualTo(1.0)
+    }
+
+    @Test
+    fun `an injected loved track keeps same-name library artists apart`() {
+        val injected = lovedInjectionTrack(
+            SeedTrack(
+                trackUri = "library://track/90",
+                trackName = "Lithium",
+                artistName = "Nirvana",
+                artistUri = "library://artist/1",
+                lastPlayedAt = 0L
+            )
+        )
+        val windows = listOf(cooldownFor(listOf(injected), Result(listOf(injected.uri))).artistKeys)
+
+        assertThat(penaltyOf(track("91", "Nirvana", "library://artist/1"), windows)).isEqualTo(1.0)
+        assertThat(penaltyOf(track("92", "Nirvana", "library://artist/2"), windows)).isEqualTo(0.0)
     }
 
     @Test
