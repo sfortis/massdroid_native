@@ -481,7 +481,10 @@ internal fun mergeRoutes(
             // Reached from both directions. `existing` can only come from the artist
             // route here, since each route is deduplicated on its own.
             if (uri in seenInArtists) agreed += uri
-            if (c.score > existing.score) best[uri] = c
+            // The better score wins, but either copy may open the mix: an inherited
+            // copy from the track route scores at full scale and is unverified, and
+            // it must not take the opener flag from the artist route's on-family copy.
+            if (c.score > existing.score) best[uri] = c.copy(verified = existing.verified || c.verified)
         }
     }
     if (agreed.isEmpty()) return best.values.toList()
@@ -787,6 +790,31 @@ internal fun isPrimaryArtistOf(track: Track, artistUri: String, artistName: Stri
     val firstName = trackFirstArtistName(track).trim()
     if (firstName.isEmpty()) return track.artistUri == null
     return normalizeArtistKey(firstName) == normalizeArtistKey(artistName)
+}
+
+/**
+ * How a candidate of a given family match is used: [scale] multiplies its score,
+ * [verified] lets it open the mix, and [priority] orders who is fetched and taken
+ * first (lower first).
+ */
+internal data class CandidateFit(val scale: Double, val verified: Boolean, val priority: Int)
+
+/**
+ * The use of a candidate whose genres matched the mix as [match].
+ *
+ * An undescribable candidate ([FamilyMatch.UNKNOWN], or no match at all) was
+ * found from one of the mix's seeds, so it takes that seed's family: it is scored
+ * like an on-family candidate, without [OFF_FAMILY_SCALE]. Its genre is still
+ * unknown, so it may sit in the mix but never open it, and it is taken after the
+ * on-family candidates and before the off-family ones.
+ *
+ * Inherited and off-family candidates share one cap in [MixEngine.buildFromCandidates],
+ * because both are unverified. Inherited ones score higher, so they fill that cap first.
+ */
+internal fun candidateFit(match: FamilyMatch?): CandidateFit = when (match) {
+    FamilyMatch.ON -> CandidateFit(scale = 1.0, verified = true, priority = 0)
+    FamilyMatch.OFF -> CandidateFit(scale = OFF_FAMILY_SCALE, verified = false, priority = 2)
+    FamilyMatch.UNKNOWN, null -> CandidateFit(scale = 1.0, verified = false, priority = 1)
 }
 
 /** What [ownTopTracks] removed, for the build's debug line. */
@@ -1279,8 +1307,8 @@ class SeedTrackMixGenerator @Inject constructor(
         )
         val genresByArtist = HashMap<String, List<String>>(pool.size)
         for (art in pool.values) genresByArtist[art.uri] = genresFor(art, dbGenres)
-        // Family is a RANKING signal, not a veto - except for the undescribable,
-        // which stay out. See [FamilyMatch] for the evidence behind each case.
+        // Family is a RANKING signal, not a veto. See [FamilyMatch] for the
+        // evidence behind each case and [candidateFit] for how each is used.
         //
         // This used to drop every candidate whose family disagreed, and that is
         // what let unrelated tracks in rather than keeping them out. Measured over
@@ -1297,13 +1325,17 @@ class SeedTrackMixGenerator @Inject constructor(
         for (art in pool.values) {
             familyMatch[art.uri] = classifyFamily(genresByArtist[art.uri].orEmpty(), coreFamilies)
         }
-        val gated = pool.values.filter { familyMatch[it.uri] != FamilyMatch.UNKNOWN }
+        // An artist with no resolvable genre takes the family of the seed that
+        // found it (see [candidateFit]). Dropping them, as this route used to,
+        // removed mostly small artists and left the mix to the well-known ones.
+        val gated = pool.values.toList()
         val offFamily = gated.count { familyMatch[it.uri] == FamilyMatch.OFF }
+        val inherited = gated.count { familyMatch[it.uri] == FamilyMatch.UNKNOWN }
         Log.d(
             TAG,
-            "MA pool: ${pool.size} similar artists, ${gated.size} usable " +
+            "MA pool: ${pool.size} similar artists " +
                 "($offFamily off-family, kept at $OFF_FAMILY_SCALE; " +
-                "${pool.size - gated.size} dropped as undescribable)"
+                "$inherited inherited the seed's family)"
         )
         // Whatever we still cannot describe is left to LibraryGenreEnricher's
         // discovery phase, which walks the same similar-artist cache outside any
@@ -1340,7 +1372,7 @@ class SeedTrackMixGenerator @Inject constructor(
         // opposite of what OFF_FAMILY_SCALE means downstream.
         val byCloseness = gated.sortedWith(
             compareBy(
-                { familyMatch[it.uri] != FamilyMatch.ON },
+                { candidateFit(familyMatch[it.uri]).priority },
                 { rankByArtist[it.uri] ?: Int.MAX_VALUE }
             )
         )
@@ -1393,7 +1425,7 @@ class SeedTrackMixGenerator @Inject constructor(
         // which candidates make the cut instead of how well they fit.
         val trackLists = collected.sortedWith(
             compareBy(
-                { (art, _) -> familyMatch[art.uri] != FamilyMatch.ON },
+                { (art, _) -> candidateFit(familyMatch[art.uri]).priority },
                 { (art, _) -> rankByArtist[art.uri] ?: Int.MAX_VALUE }
             )
         )
@@ -1403,6 +1435,7 @@ class SeedTrackMixGenerator @Inject constructor(
 
         val out = mutableListOf<CandidateTrack>()
         val seenTitles = mutableSetOf<String>()
+        var inheritedOut = 0
         for ((art, tracks) in trackLists) {
             if (out.size >= wanted) break
             // What a candidate is worth: how similar the server said the artist is
@@ -1410,12 +1443,14 @@ class SeedTrackMixGenerator @Inject constructor(
             // the mix is anchored on.
             val rank = rankByArtist[art.uri] ?: MA_SIMILAR_MAX_PER_SEED
             val closeness = 1.0 - (rank.toDouble() / MA_SIMILAR_MAX_PER_SEED).coerceIn(0.0, 1.0)
-            val onFamily = familyMatch[art.uri] == FamilyMatch.ON
             // `verified` gates who may OPEN a mix, so it means "fits this mix",
-            // not merely "we can describe them". An off-family candidate is worth
-            // keeping in the tail but must never be the first thing the user hears.
-            val verified = onFamily
-            val artistScore = if (onFamily) closeness else closeness * OFF_FAMILY_SCALE
+            // not merely "we can describe them". An off-family or inherited
+            // candidate is worth keeping but must never be the first thing the
+            // user hears.
+            val fit = candidateFit(familyMatch[art.uri])
+            val verified = fit.verified
+            val inheritedFamily = familyMatch[art.uri].let { it == null || it == FamilyMatch.UNKNOWN }
+            val artistScore = closeness * fit.scale
             var taken = 0
             for (t in ownTopTracks(tracks, art.uri, art.name, creditCounts)) {
                 if (taken >= MA_TRACKS_PER_ARTIST) break
@@ -1430,6 +1465,7 @@ class SeedTrackMixGenerator @Inject constructor(
                     score = artistScore - taken * MA_RANK_DECAY,
                     verified = verified
                 )
+                if (inheritedFamily) inheritedOut++
                 taken++
             }
         }
@@ -1437,7 +1473,8 @@ class SeedTrackMixGenerator @Inject constructor(
         Log.d(
             TAG,
             "artist route: ${out.size} playable tracks from ${trackLists.size} artists " +
-                "(on-family=$onFamilyOut, off-family=${out.size - onFamilyOut})"
+                "(on-family=$onFamilyOut, off-family=${out.size - onFamilyOut - inheritedOut}, " +
+                "$inheritedOut inherited the seed's family)"
         )
         return out
     }
@@ -1525,7 +1562,7 @@ class SeedTrackMixGenerator @Inject constructor(
         }
         val kept = mutableListOf<CandidateTrack>()
         val seen = mutableSetOf<String>()
-        var dropped = 0
+        var inherited = 0
         var offFamily = 0
         // The same three-way family judgement the artist route uses, and this route
         // needs it at least as much: track-similarity follows one song's neighbours
@@ -1535,9 +1572,9 @@ class SeedTrackMixGenerator @Inject constructor(
         // indie-rock one.
         //
         // What changed is that a describable disagreement is now demoted instead of
-        // dropped. Dropping it was throwing away the good part of a coarse label:
-        // 44% of what this route returns has no resolvable family at all, and those
-        // still stay out.
+        // dropped. Dropping it was throwing away the good part of a coarse label.
+        // The 44% of what this route returns that has no resolvable family takes
+        // the seed track's family (see [candidateFit]).
         val dbGenres = playHistoryRepository.getArtistGenreMap(
             lists.flatten().mapNotNull { it.artistUri }.distinct()
         )
@@ -1553,28 +1590,25 @@ class SeedTrackMixGenerator @Inject constructor(
                 }
                 val genres = trackCandidateGenres(track, dbGenres)
                 val match = classifyFamily(genres, coreFamilies)
-                if (match == FamilyMatch.UNKNOWN) {
-                    dropped++
-                    return@forEachIndexed
-                }
+                // A track with no resolvable genre takes the seed track's family.
+                if (match == FamilyMatch.UNKNOWN) inherited++
                 if (match == FamilyMatch.OFF) offFamily++
                 val closeness = 1.0 - (rank.toDouble() / perSeed).coerceIn(0.0, 1.0)
-                val onFamily = match == FamilyMatch.ON
-                val familyScale = if (onFamily) 1.0 else OFF_FAMILY_SCALE
+                val fit = candidateFit(match)
                 kept += CandidateTrack(
                     track = track,
-                    score = closeness * SIMILAR_TRACK_SCALE * familyScale,
+                    score = closeness * SIMILAR_TRACK_SCALE * fit.scale,
                     // Only an on-family candidate may open a mix; see the artist route.
-                    verified = onFamily
+                    verified = fit.verified
                 )
             }
         }
-        if (kept.isNotEmpty() || dropped > 0) {
+        if (kept.isNotEmpty()) {
             Log.d(
                 TAG,
                 "track route: ${kept.size} candidates from ${refs.size} seeds " +
-                    "(on-family=${kept.size - offFamily}, off-family=$offFamily, " +
-                    "$dropped dropped as undescribable)"
+                    "(on-family=${kept.size - offFamily - inherited}, off-family=$offFamily, " +
+                    "$inherited inherited the seed's family)"
             )
         }
         return kept

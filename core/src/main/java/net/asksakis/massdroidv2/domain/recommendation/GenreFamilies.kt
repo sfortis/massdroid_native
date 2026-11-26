@@ -208,9 +208,11 @@ internal fun dominantFamily(genres: Iterable<String>): String? =
  * what disagrees, so dropping them left the mix to fill from other seeds'
  * unrelated neighbourhoods instead.
  *
- * [UNKNOWN] is a worse bet and stays excluded: of 2742 similars whose genres
- * resolve to nothing the listener had ever played 592 (22%), against 3952 of
- * 6287 describable ones (63%) at the same average similarity rank.
+ * [UNKNOWN] is a worse bet: of 2742 similars whose genres resolve to nothing
+ * the listener had ever played 592 (22%), against 3952 of 6287 describable ones
+ * (63%) at the same average similarity rank. It used to be excluded, which left
+ * mixes to well-known artists, so it now takes the family of the seed that found
+ * it and may not open a mix (see `candidateFit` in SeedTrackMixGenerator).
  */
 internal enum class FamilyMatch { ON, OFF, UNKNOWN }
 

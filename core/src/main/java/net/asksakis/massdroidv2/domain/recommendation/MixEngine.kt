@@ -357,7 +357,11 @@ class MixEngine @Inject constructor() {
             deduped
         } else {
             // `deduped` is score-ordered, so this keeps the best off-family ones.
-            Log.d(TAG, "off-family capped: ${offFamily.size} -> $offFamilyCap (on-family ${onFamily.size})")
+            Log.d(
+                TAG,
+                "unverified (off-family and inherited) capped: ${offFamily.size} -> $offFamilyCap " +
+                    "(on-family ${onFamily.size})"
+            )
             onFamily + offFamily.take(offFamilyCap)
         }
         val scored = discoveryWeightedOrder(pool, discovery, random)
