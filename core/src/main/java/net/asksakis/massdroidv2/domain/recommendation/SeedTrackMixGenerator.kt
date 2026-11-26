@@ -105,7 +105,11 @@ private const val MA_SIMILAR_PER_SEED = 25
 // seeds to expand from. Above this the server cost stops being worth it (100
 // takes 4.9s against 0.3s for 25, measured).
 private const val MA_SIMILAR_MAX_PER_SEED = 100
-private const val MA_TOP_TRACKS_PER_ARTIST = 5
+// How many top tracks one top_tracks call asks for, and the window the artist
+// route draws its tracks from (see pickTopTracks). It is the same single call
+// whether it asks for 5 or 10.
+private const val MA_TOP_TRACKS_PER_ARTIST = 10
+private const val TOP_TRACK_PICK_WINDOW = 10
 private const val MA_TRACKS_PER_ARTIST = 2
 private const val MA_POOL_FACTOR = 1.6
 private const val MA_RANK_DECAY = 0.001
@@ -876,6 +880,19 @@ private fun familyNote(match: FamilyMatch?): String = when (match) {
     FamilyMatch.UNKNOWN, null -> ", inherited family"
 }
 
+/**
+ * [count] of an artist's [accepted] top tracks, drawn at random from the first
+ * [TOP_TRACK_PICK_WINDOW] and kept in the provider's order. Taking the first two
+ * every time filled mixes with each artist's best-known hits. [random] is seeded
+ * from the mix, so one build is reproducible. A shorter list (an old cached
+ * answer of 5) is drawn from as it is.
+ */
+internal fun pickTopTracks(accepted: List<Track>, count: Int, random: kotlin.random.Random): List<Track> {
+    val window = accepted.take(TOP_TRACK_PICK_WINDOW)
+    if (window.size <= count) return window
+    return window.indices.shuffled(random).take(count).sorted().map { window[it] }
+}
+
 /** What [ownTopTracks] removed, for the build's debug line. */
 internal class CreditFilterCounts {
     var notPrimary = 0
@@ -1532,13 +1549,20 @@ class SeedTrackMixGenerator @Inject constructor(
             val origin = "artist route: ${art.name} (seed ${seedOfArtist[art.uri]?.artistName.orEmpty()})" +
                 familyNote(familyMatch[art.uri])
             var taken = 0
-            for (t in ownTopTracks(tracks, art.uri, art.name, creditCounts)) {
-                if (taken >= MA_TRACKS_PER_ARTIST) break
-                // MA can return the same recording twice (album + single/remaster).
-                val titleKey = "${art.name.lowercase()}|${normalizeGenre(t.name)}"
-                if (t.uri.isBlank() || !seenTitles.add(titleKey)) continue
-                // A top track of an allowed artist can still credit a blocked one.
-                if (blocked.blocksAnyArtistOf(t)) continue
+            // MA can return the same recording twice (album + single/remaster), and
+            // a top track of an allowed artist can still credit a blocked one. Both
+            // are removed before the draw, so they cannot use one of its slots.
+            val eligible = ownTopTracks(tracks, art.uri, art.name, creditCounts)
+                .filter { t -> t.uri.isNotBlank() && !blocked.blocksAnyArtistOf(t) }
+                .filter { t -> "${art.name.lowercase()}|${normalizeGenre(t.name)}" !in seenTitles }
+                .distinctBy { t -> normalizeGenre(t.name) }
+            val drawn = pickTopTracks(
+                eligible,
+                MA_TRACKS_PER_ARTIST,
+                kotlin.random.Random(mixSeed + art.uri.hashCode())
+            )
+            for (t in drawn) {
+                seenTitles += "${art.name.lowercase()}|${normalizeGenre(t.name)}"
                 // Second track of an artist ranks just below the first.
                 out += CandidateTrack(
                     track = t,
