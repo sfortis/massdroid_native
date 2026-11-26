@@ -549,6 +549,17 @@ class PlayHistoryRepositoryImpl @Inject constructor(
             .groupBy({ it.artistUri }, { it.genre })
     }
 
+    override suspend fun getArtistGenreMapByName(artistNames: Collection<String>): Map<String, List<String>> {
+        val names = artistNames.filter { it.isNotBlank() }.distinct()
+        if (names.isEmpty()) return emptyMap()
+        val wanted = names.toSet()
+        return names.chunked(SQL_IN_CHUNK)
+            .flatMap { dao.getGenresForArtistNames(it) }
+            .filter { it.artistName in wanted }
+            .groupBy({ it.artistName }, { it.genre })
+            .mapValues { (_, genres) -> genres.distinct() }
+    }
+
     override suspend fun getArtistsByGenre(genre: String): List<Pair<String, String>> =
         dao.getArtistsByGenre(genreSpellings.spellingToQuery(genre)).map { it.name to it.uri }
 

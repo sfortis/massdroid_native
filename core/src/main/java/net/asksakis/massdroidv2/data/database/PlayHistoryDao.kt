@@ -56,6 +56,20 @@ interface PlayHistoryDao {
     suspend fun getGenresForArtists(artistUris: List<String>): List<ArtistGenreRow>
 
     /**
+     * Genres stored under ANY uri of the artists named exactly [artistNames].
+     * A Smart Mix candidate often carries a provider uri that has no row of its own
+     * while the same artist's library uri holds the genres. The exact name is what
+     * `backfillArtistGenres` links them by too, and it uses the index on `name`.
+     */
+    @Query("""
+        SELECT a.name AS artistName, ag.genre_name AS genre
+        FROM artist_genres ag
+        JOIN artists a ON a.uri = ag.artist_uri
+        WHERE a.name IN (:artistNames)
+    """)
+    suspend fun getGenresForArtistNames(artistNames: List<String>): List<ArtistNameGenreRow>
+
+    /**
      * Write the id to every uri the artist is stored under, not just the library
      * one, because playback records tracks against whichever provider uri the
      * server sent and the seed queries read that row. Matching by name is the
@@ -1544,6 +1558,11 @@ data class ArtistNeedingGenres(
 
 data class ArtistGenreRow(
     val artistUri: String,
+    val genre: String
+)
+
+data class ArtistNameGenreRow(
+    val artistName: String,
     val genre: String
 )
 

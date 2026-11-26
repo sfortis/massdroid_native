@@ -235,6 +235,13 @@ interface PlayHistoryRepository {
      * candidate pool at once.
      */
     suspend fun getArtistGenreMap(artistUris: List<String>): Map<String, List<String>>
+
+    /**
+     * Stored genres of the artists named exactly [artistNames], across every uri
+     * they are stored under, keyed by the name. A name that differs in case or
+     * accents is not found here. Batched like [getArtistGenreMap].
+     */
+    suspend fun getArtistGenreMapByName(artistNames: Collection<String>): Map<String, List<String>>
     /** [genre] may be any spelling: it is matched to the stored name by `genreKey`. */
     suspend fun getArtistsByGenre(genre: String): List<Pair<String, String>>
     suspend fun searchArtistUrisByGenre(query: String): List<String>

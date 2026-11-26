@@ -1378,8 +1378,13 @@ class SeedTrackMixGenerator @Inject constructor(
         val dbGenres = playHistoryRepository.getArtistGenreMap(
             pool.values.filter { it.genres.isEmpty() }.map { it.uri }
         )
+        // Artists whose own uri holds no genre are looked up by name, once for the
+        // whole pool (see [genresByName]).
+        val byName = genresByName(
+            pool.values.filter { it.genres.isEmpty() && dbGenres[it.uri].isNullOrEmpty() }.map { it.name }
+        )
         val genresByArtist = HashMap<String, List<String>>(pool.size)
-        for (art in pool.values) genresByArtist[art.uri] = genresFor(art, dbGenres)
+        for (art in pool.values) genresByArtist[art.uri] = genresFor(art, dbGenres, byName)
         // Family is a RANKING signal, not a veto. See [FamilyMatch] for the
         // evidence behind each case and [candidateFit] for how each is used.
         //
@@ -1655,6 +1660,13 @@ class SeedTrackMixGenerator @Inject constructor(
         val dbGenres = playHistoryRepository.getArtistGenreMap(
             lists.flatMap { it.second }.mapNotNull { it.artistUri }.distinct()
         )
+        // Tracks with no genre of their own and none under their artist's uri are
+        // looked up by the artist's name, once for the whole route.
+        val byName = genresByName(
+            lists.flatMap { it.second }
+                .filter { t -> t.genres.isEmpty() && t.artistUri?.let { dbGenres[it] }.isNullOrEmpty() }
+                .map { trackFirstArtistName(it) }
+        )
         for ((seed, list) in lists) {
             list.forEachIndexed { rank, track ->
                 // The seed track itself always comes back first.
@@ -1665,7 +1677,7 @@ class SeedTrackMixGenerator @Inject constructor(
                     creditCounts.compilation++
                     return@forEachIndexed
                 }
-                val genres = trackCandidateGenres(track, dbGenres)
+                val genres = trackCandidateGenres(track, dbGenres, byName)
                 val match = classifyFamily(genres, coreFamilies)
                 // A track with no resolvable genre takes the seed track's family.
                 if (match == FamilyMatch.UNKNOWN) inherited++
@@ -1697,23 +1709,55 @@ class SeedTrackMixGenerator @Inject constructor(
      * the track, then the DB's genres for its artist, then MusicBrainz. Null
      * family means unjudgeable, and those are kept but scored down.
      */
-    private suspend fun trackCandidateGenres(
+    private fun trackCandidateGenres(
         track: Track,
-        dbGenres: Map<String, List<String>>
+        dbGenres: Map<String, List<String>>,
+        byName: Map<String, List<String>>
     ): List<String> {
         track.genres.takeIf { it.isNotEmpty() }?.let { return it }
         track.artistUri?.let { uri ->
             dbGenres[uri]?.takeIf { it.isNotEmpty() }?.let { return orderByFamilyFrequency(it) }
         }
-        val name = track.artistNames.split(",").firstOrNull()?.trim().orEmpty()
+        val name = trackFirstArtistName(track).trim()
         if (name.isEmpty()) return emptyList()
+        return byName[name].orEmpty()
+    }
+
+    /**
+     * Genres of the artists named [names], keyed by the trimmed name: first what
+     * the database stores under any uri of exactly that name, then the MusicBrainz
+     * cache, which also catches a name stored in another case. One query each for
+     * the whole batch. The name is not reduced to a [genreKey], which drops Greek
+     * and Cyrillic letters and would join different artists.
+     *
+     * A candidate usually carries a provider uri with no row of its own, while the
+     * same artist's library uri holds the genres. Looking up the uri alone made
+     * MGMT and The Shins count as genre-less.
+     */
+    private suspend fun genresByName(names: List<String>): Map<String, List<String>> {
+        val wanted = names.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+        if (wanted.isEmpty()) return emptyMap()
         return try {
-            musicBrainzGenreResolver.cachedGenres(name).orEmpty()
+            val stored = playHistoryRepository.getArtistGenreMapByName(wanted)
+                .mapValues { (_, genres) -> orderByFamilyFrequency(genres) }
+            val misses = wanted.filter { it !in stored }
+            // The MusicBrainz cache is keyed by the lowercased name.
+            val cached = if (misses.isEmpty()) {
+                emptyMap()
+            } else {
+                musicBrainzGenreResolver.cachedGenresFor(misses.map { MusicBrainzGenreResolver.ArtistRef(it) })
+            }
+            val fromCache = misses.mapNotNull { name ->
+                cached[name.lowercase()]?.let { name to it }
+            }.toMap()
+            Log.d(TAG, "genres by name: ${stored.size} stored, ${fromCache.size} cached, of ${wanted.size}")
+            stored + fromCache
         } catch (e: CancellationException) {
             // A cancelled build must stop, not carry on with an empty answer.
             throw e
-        } catch (_: Exception) {
-            emptyList()
+        } catch (e: Exception) {
+            Log.w(TAG, "genres by name failed: ${e.message}")
+            emptyMap()
         }
     }
 
@@ -1731,20 +1775,14 @@ class SeedTrackMixGenerator @Inject constructor(
      * frequency before dominantFamily reads "the first tag"; MA and MusicBrainz
      * both come weight-ordered already.
      */
-    private suspend fun genresFor(
+    private fun genresFor(
         art: CachedSimilarArtist,
-        dbGenres: Map<String, List<String>>
+        dbGenres: Map<String, List<String>>,
+        byName: Map<String, List<String>>
     ): List<String> {
         art.genres.takeIf { it.isNotEmpty() }?.let { return it }
         dbGenres[art.uri]?.takeIf { it.isNotEmpty() }?.let { return orderByFamilyFrequency(it) }
-        return try {
-            musicBrainzGenreResolver.cachedGenres(art.name).orEmpty()
-        } catch (e: CancellationException) {
-            // A cancelled build must stop, not carry on with an empty answer.
-            throw e
-        } catch (_: Exception) {
-            emptyList()
-        }
+        return byName[art.name.trim()].orEmpty()
     }
 
     private data class ArtistRef(val itemId: String, val provider: String)
