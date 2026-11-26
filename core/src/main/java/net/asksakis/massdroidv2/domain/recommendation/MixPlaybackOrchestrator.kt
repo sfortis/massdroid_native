@@ -139,6 +139,10 @@ private const val GENRE_RADIO_METADATA_ERROR_CODE = 999
 // Self-loaded library context (car path) is reused within this window so a Smart
 // Mix immediately followed by a Genre Radio does not re-run the full library load.
 private const val CONTEXT_SELF_LOAD_TTL_MS = 30_000L
+// The origin label of a genre-engine track in the debug dump of the queue.
+private const val GENRE_ENGINE_ORIGIN = "genre engine"
+// The origin label of every track the Music Assistant server radio queued for a Genre Radio.
+private const val SERVER_RADIO_ORIGIN = "server radio"
 
 private data class SmartMixResult(
     val tracks: List<Track>,
@@ -148,7 +152,9 @@ private data class SmartMixResult(
      * the rotation slot is consumed only once Music Assistant has accepted the
      * queue. Empty for the genre engine, which rotates on [genre] instead.
      */
-    val clusterGenres: Set<String> = emptySet()
+    val clusterGenres: Set<String> = emptySet(),
+    /** Where each track came from, by uri; empty for the genre engine. */
+    val origins: Map<String, String> = emptyMap()
 )
 
 /**
@@ -390,7 +396,8 @@ class MixPlaybackOrchestrator @Inject constructor(
             val mixResult = buildSmartMixTracks()
             if (mixResult.tracks.size < SMART_MIX_MIN_TRACKS) return MixResult.NotEnoughData
             playGeneratedMix(
-                queueId, mixResult.tracks, mixResult.genre, "smartMix", mixResult.clusterGenres
+                queueId, mixResult.tracks, mixResult.genre, "smartMix", mixResult.clusterGenres,
+                origins = mixResult.origins.ifEmpty { mixResult.tracks.associate { it.uri to GENRE_ENGINE_ORIGIN } }
             )
             return MixResult.Played(mixResult.tracks.size, mixResult.genre)
         } catch (e: CancellationException) {
@@ -437,11 +444,15 @@ class MixPlaybackOrchestrator @Inject constructor(
             // engine as Smart Mix, seeded from the user's in-genre tracks). Falls
             // through to the server radio when there are too few in-genre seeds.
             val seedMix = buildGenreRadioSeedMix(genre)
-            if (seedMix.size >= SMART_MIX_MIN_TRACKS) {
-                playGeneratedMix(queueId, seedMix, genre, "genreRadio[$genre]")
-                return MixResult.Played(seedMix.size, genre)
+            if (seedMix.tracks.size >= SMART_MIX_MIN_TRACKS) {
+                playGeneratedMix(queueId, seedMix.tracks, genre, "genreRadio[$genre]", origins = seedMix.origins)
+                return MixResult.Played(seedMix.tracks.size, genre)
             }
-            Log.d(TAG, "Genre radio '$genre': seed-track yielded ${seedMix.size} (<$SMART_MIX_MIN_TRACKS), using server radio")
+            Log.d(
+                TAG,
+                "Genre radio '$genre': seed-track yielded ${seedMix.tracks.size} " +
+                    "(<$SMART_MIX_MIN_TRACKS), using server radio"
+            )
 
             val focusDecade = loadGenreRadioFocusDecade(genre, baseCandidateUris)
             val rankedUris = rankGenreRadioArtistUris(baseCandidateUris, focusDecade)
@@ -477,7 +488,7 @@ class MixPlaybackOrchestrator @Inject constructor(
                 return MixResult.StartTimeout
             }
             sanitizeGenreRadioQueue(queueId, genre)
-            logQueueContents(queueId, "genreRadio[$genre]", awaitQueueItems = true)
+            logQueueContents(queueId, "genreRadio[$genre]", awaitQueueItems = true) { SERVER_RADIO_ORIGIN }
             return MixResult.Started
         } catch (e: CancellationException) {
             throw e
@@ -712,7 +723,8 @@ class MixPlaybackOrchestrator @Inject constructor(
         tracks: List<Track>,
         pickedGenre: String?,
         logSource: String,
-        clusterGenres: Set<String> = emptySet()
+        clusterGenres: Set<String> = emptySet(),
+        origins: Map<String, String> = emptyMap()
     ) {
         val result = withGeneratedQueueMode(
             queueId,
@@ -725,7 +737,7 @@ class MixPlaybackOrchestrator @Inject constructor(
             )
         }
         commitMixCooldowns(tracks, result, pickedGenre, clusterGenres)
-        logQueueContents(queueId, logSource, awaitQueueItems = true)
+        logQueueContents(queueId, logSource, awaitQueueItems = true, origins = originLookup(tracks, origins))
     }
 
     /**
@@ -834,7 +846,7 @@ class MixPlaybackOrchestrator @Inject constructor(
         // Name the mix after the cluster it anchored on. This used to be null, so
         // the phone fell back to the generic "Smart mix ready" on every seed-track
         // run and only ever named a genre on the rarer genre-engine fallback.
-        return SmartMixResult(result.tracks, result.clusterLabel, clusterGenres)
+        return SmartMixResult(result.tracks, result.clusterLabel, clusterGenres, result.origins)
     }
 
     /**
@@ -913,7 +925,7 @@ class MixPlaybackOrchestrator @Inject constructor(
         }
     }
 
-    private suspend fun buildGenreRadioSeedMix(genre: String): List<Track> =
+    private suspend fun buildGenreRadioSeedMix(genre: String): SeedTrackMixGenerator.SeedMixResult =
         seedTrackMixGenerator.buildGenreRadio(genre, seedTuning(), smartMixTrackTarget(), currentRecency())
 
     private fun seedTuning() =
@@ -1912,8 +1924,30 @@ class MixPlaybackOrchestrator @Inject constructor(
     // Logging
     // ---------------------------------------------------------------------------
 
+    /**
+     * Finds a queued track's origin by its uri, or by the recording when Music
+     * Assistant queued another version than the one requested.
+     */
+    private fun originLookup(tracks: List<Track>, origins: Map<String, String>): (Track) -> String? {
+        if (origins.isEmpty()) return { null }
+        val byRecording = tracks.mapNotNull { t ->
+            val origin = origins[t.uri] ?: return@mapNotNull null
+            trackIdentityKey(t.artistNames.substringBefore(","), t.name).takeIf { it.isNotBlank() }?.let { it to origin }
+        }.toMap()
+        return { t ->
+            origins[t.uri]
+                ?: byRecording[trackIdentityKey(t.artistNames.substringBefore(","), t.name)]
+                ?: "origin unknown"
+        }
+    }
+
     @Suppress("TooGenericExceptionCaught")
-    private suspend fun logQueueContents(queueId: String, source: String, awaitQueueItems: Boolean = false) {
+    private suspend fun logQueueContents(
+        queueId: String,
+        source: String,
+        awaitQueueItems: Boolean = false,
+        origins: (Track) -> String? = { null }
+    ) {
         try {
             val baselineTrackUri = playerRepository.queueState.value?.currentItem?.track?.uri
                 ?: playerRepository.selectedPlayer.value?.currentMedia?.uri
@@ -1926,7 +1960,8 @@ class MixPlaybackOrchestrator @Inject constructor(
             items.forEachIndexed { i, item ->
                 val artist = item.track?.artistNames ?: ""
                 val name = item.track?.name ?: item.name
-                Log.d(TAG, "  #${i + 1}: $artist - $name")
+                val origin = item.track?.let(origins)?.let { "  [$it]" }.orEmpty()
+                Log.d(TAG, "  #${i + 1}: $artist - $name$origin")
             }
         } catch (e: Exception) {
             Log.w(TAG, "logQueueContents failed: ${e.message}")

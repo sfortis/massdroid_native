@@ -817,6 +817,13 @@ internal fun candidateFit(match: FamilyMatch?): CandidateFit = when (match) {
     FamilyMatch.UNKNOWN, null -> CandidateFit(scale = 1.0, verified = false, priority = 1)
 }
 
+/** The family part of a candidate's origin label in the debug dump of the queue. */
+private fun familyNote(match: FamilyMatch?): String = when (match) {
+    FamilyMatch.ON -> ""
+    FamilyMatch.OFF -> ", off-family"
+    FamilyMatch.UNKNOWN, null -> ", inherited family"
+}
+
 /** What [ownTopTracks] removed, for the build's debug line. */
 internal class CreditFilterCounts {
     var notPrimary = 0
@@ -992,8 +999,17 @@ class SeedTrackMixGenerator @Inject constructor(
     data class SeedMixResult(
         val tracks: List<Track>,
         val clusterGenres: Set<String>,
-        val clusterLabel: String? = null
+        val clusterLabel: String? = null,
+        /** Where each track came from, by uri, for the debug dump of the queue. */
+        val origins: Map<String, String> = emptyMap()
     )
+
+    /** The tracks of a built mix with the origin of each, by uri. */
+    private data class BuiltMix(val tracks: List<Track>, val origins: Map<String, String>) {
+        companion object {
+            val EMPTY = BuiltMix(emptyList(), emptyMap())
+        }
+    }
 
     /**
      * Smart Mix: seed from a genre-coherent cluster of recent tracks (rotated per
@@ -1009,12 +1025,12 @@ class SeedTrackMixGenerator @Inject constructor(
             return SeedMixResult(emptyList(), emptySet())
         }
         Log.d(TAG, "${seeds.size} seeds -> ${seeds.joinToString { "${it.artistName} - ${it.trackName}" }}")
-        val tracks = assembleSeedTrackMix(
+        val built = assembleSeedTrackMix(
             seeds, tuning, target, mixSeed, recency,
             selection.coherentGenres, selection.coreFamilies,
             deadlineAt = mixSeed + BUILD_BUDGET_MS
         )
-        return SeedMixResult(tracks, selection.coherentGenres, selection.clusterLabel)
+        return SeedMixResult(built.tracks, selection.coherentGenres, selection.clusterLabel, built.origins)
     }
 
     /**
@@ -1022,22 +1038,23 @@ class SeedTrackMixGenerator @Inject constructor(
      * fixed, so the pool stays coherent with zero bleed. Empty if there are too
      * few in-genre seeds (caller falls back to the server radio).
      */
-    suspend fun buildGenreRadio(genre: String, tuning: Tuning, target: Int, recency: Recency): List<Track> {
+    suspend fun buildGenreRadio(genre: String, tuning: Tuning, target: Int, recency: Recency): SeedMixResult {
         val mixSeed = System.currentTimeMillis()
         val random = kotlin.random.Random(mixSeed)
         val seeds = selectGenreSeedTracks(genre, tuning, random)
         if (seeds.size < MIN_SEEDS) {
             Log.d(TAG, "genre '$genre': only ${seeds.size} in-genre seeds, deferring to server radio")
-            return emptyList()
+            return SeedMixResult(emptyList(), emptySet())
         }
         Log.d(TAG, "genre '$genre': ${seeds.size} seeds -> ${seeds.joinToString { it.artistName }}")
         // Tight coherence: inject only loved tracks tagged with the chosen genre,
         // and gate candidates on that genre's own family.
         val genreSet = setOf(normalizeGenre(genre))
-        return assembleSeedTrackMix(
+        val built = assembleSeedTrackMix(
             seeds, tuning, target, mixSeed, recency, genreSet, genreFamilies(genreSet),
             deadlineAt = mixSeed + BUILD_BUDGET_MS
         )
+        return SeedMixResult(built.tracks, genreSet, origins = built.origins)
     }
 
     /**
@@ -1066,12 +1083,12 @@ class SeedTrackMixGenerator @Inject constructor(
         coherentGenres: Set<String>,
         coreFamilies: Set<String>,
         deadlineAt: Long
-    ): List<Track> {
+    ): BuiltMix {
         // Blocked artists are excluded everywhere: as seeds, as similar
         // candidates, and from loved injection.
         val blocked = recency.blockedArtists
         val activeSeeds = seeds.filterNot { blocked.blocksArtist(it.artistUri, it.artistName) }
-        if (activeSeeds.isEmpty()) return emptyList()
+        if (activeSeeds.isEmpty()) return BuiltMix.EMPTY
 
         // Two independent routes, run together rather than one as the other's
         // fallback.
@@ -1129,7 +1146,7 @@ class SeedTrackMixGenerator @Inject constructor(
         )
         if (candidates.isEmpty()) {
             Log.d(TAG, "MA returned no candidates for this cluster")
-            return emptyList()
+            return BuiltMix.EMPTY
         }
         // Recent-mix cool-down: tracks that appeared in the last few mixes, and
         // artists that recurred, are softly penalised (not excluded) so back-to-
@@ -1150,7 +1167,7 @@ class SeedTrackMixGenerator @Inject constructor(
         recency: Recency,
         coherentGenres: Set<String>,
         coreFamilies: Set<String>
-    ): List<Track> {
+    ): BuiltMix {
         var penalizedArtists = 0
         var maxArtistCount = 0
         val candidates = resolved
@@ -1163,18 +1180,14 @@ class SeedTrackMixGenerator @Inject constructor(
                 }
                 val artistPenalty = recentArtistPenalty(artistCount, SEED_RECENT_ARTIST_PENALTY)
                 val trackPenalty = if (c.track.uri in recency.recentMixTrackUris) SEED_RECENT_TRACK_PENALTY else 0.0
-                CandidateTrack(
-                    track = c.track,
-                    score = c.score - artistPenalty - trackPenalty,
-                    verified = c.verified
-                )
+                c.copy(score = c.score - artistPenalty - trackPenalty)
             }
         Log.d(
             TAG,
             "artist cooldown: $penalizedArtists/${candidates.size} candidates penalized, " +
                 "max count $maxArtistCount"
         )
-        if (candidates.isEmpty()) return emptyList()
+        if (candidates.isEmpty()) return BuiltMix.EMPTY
 
         // Loved-track injection (comfort anchor): low Discovery reserves a slice
         // of the mix for the user's OWN loved tracks (not similars), genre-
@@ -1194,7 +1207,10 @@ class SeedTrackMixGenerator @Inject constructor(
 
         val mix = mixEngine.buildFromCandidates(allCandidates, target, mixSeed, tuning.discovery)
         Log.d(TAG, "built ${mix.size} tracks (target $target) from ${candidates.size} discovery + ${injected.size} loved-injected")
-        return mix
+        // The first candidate of a uri wins, the same order the engine dedupes in.
+        val originByUri = HashMap<String, String>(allCandidates.size)
+        for (c in allCandidates) originByUri.putIfAbsent(c.track.uri, c.origin)
+        return BuiltMix(mix, mix.associate { it.uri to originByUri[it.uri].orEmpty() })
     }
 
     /**
@@ -1291,13 +1307,18 @@ class SeedTrackMixGenerator @Inject constructor(
         val seedNames = activeSeeds.mapTo(mutableSetOf()) { it.artistName.trim().lowercase() }
         val pool = LinkedHashMap<String, CachedSimilarArtist>()
         val rankByArtist = HashMap<String, Int>()
-        for (list in similarArtists) {
+        // The seed whose list ranked the artist best, for the debug dump of the queue.
+        val seedOfArtist = HashMap<String, SeedTrack>()
+        similarArtists.forEachIndexed { seedIndex, list ->
             list.forEachIndexed { rank, art ->
                 val key = art.name.trim().lowercase()
                 if (key.isEmpty() || key in seedNames) return@forEachIndexed
                 if (blocked.blocksArtist(art.uri, art.name)) return@forEachIndexed
                 pool.putIfAbsent(key, art)
-                rankByArtist[art.uri] = minOf(rankByArtist[art.uri] ?: Int.MAX_VALUE, rank)
+                if (rank < (rankByArtist[art.uri] ?: Int.MAX_VALUE)) {
+                    rankByArtist[art.uri] = rank
+                    seedOfArtist[art.uri] = seedRefs[seedIndex].first
+                }
             }
         }
         if (pool.isEmpty()) return emptyList()
@@ -1451,6 +1472,8 @@ class SeedTrackMixGenerator @Inject constructor(
             val verified = fit.verified
             val inheritedFamily = familyMatch[art.uri].let { it == null || it == FamilyMatch.UNKNOWN }
             val artistScore = closeness * fit.scale
+            val origin = "artist route: ${art.name} (seed ${seedOfArtist[art.uri]?.artistName.orEmpty()})" +
+                familyNote(familyMatch[art.uri])
             var taken = 0
             for (t in ownTopTracks(tracks, art.uri, art.name, creditCounts)) {
                 if (taken >= MA_TRACKS_PER_ARTIST) break
@@ -1463,7 +1486,8 @@ class SeedTrackMixGenerator @Inject constructor(
                 out += CandidateTrack(
                     track = t,
                     score = artistScore - taken * MA_RANK_DECAY,
-                    verified = verified
+                    verified = verified,
+                    origin = origin
                 )
                 if (inheritedFamily) inheritedOut++
                 taken++
@@ -1556,7 +1580,8 @@ class SeedTrackMixGenerator @Inject constructor(
         // Back into seed order: `landed` is in order of arrival, and a candidate's
         // score comes from its RANK within its seed's list, so the ordering below
         // must not depend on which provider answered first.
-        val lists = landed.sortedBy { (index, _) -> index }.map { (_, tracks) -> tracks }
+        val lists = landed.sortedBy { (index, _) -> index }
+            .map { (index, tracks) -> refs[index].first to tracks }
         if (!finishedInTime) {
             Log.d(TAG, "track route budget spent: kept ${lists.size}/${refs.size} seeds")
         }
@@ -1576,9 +1601,9 @@ class SeedTrackMixGenerator @Inject constructor(
         // The 44% of what this route returns that has no resolvable family takes
         // the seed track's family (see [candidateFit]).
         val dbGenres = playHistoryRepository.getArtistGenreMap(
-            lists.flatten().mapNotNull { it.artistUri }.distinct()
+            lists.flatMap { it.second }.mapNotNull { it.artistUri }.distinct()
         )
-        for (list in lists) {
+        for ((seed, list) in lists) {
             list.forEachIndexed { rank, track ->
                 // The seed track itself always comes back first.
                 if (track.uri.isBlank() || track.uri in seedTrackUris) return@forEachIndexed
@@ -1599,7 +1624,8 @@ class SeedTrackMixGenerator @Inject constructor(
                     track = track,
                     score = closeness * SIMILAR_TRACK_SCALE * fit.scale,
                     // Only an on-family candidate may open a mix; see the artist route.
-                    verified = fit.verified
+                    verified = fit.verified,
+                    origin = "track route: seed ${seed.artistName} - ${seed.trackName}" + familyNote(match)
                 )
             }
         }
@@ -1737,7 +1763,8 @@ class SeedTrackMixGenerator @Inject constructor(
             CandidateTrack(
                 track = lovedInjectionTrack(seed),
                 score = OWN_INJECT_SCORE,
-                source = CandidateSource.OWN_LOVED
+                source = CandidateSource.OWN_LOVED,
+                origin = "loved injection"
             )
         }
     }

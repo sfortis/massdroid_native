@@ -97,7 +97,9 @@ data class CandidateTrack(
      */
     val verified: Boolean = true,
     /** Where the candidate came from; decides who may close the mix (see [orderAutoplaySeedTail]). */
-    val source: CandidateSource = CandidateSource.DISCOVERY
+    val source: CandidateSource = CandidateSource.DISCOVERY,
+    /** Which route and seed found the candidate, for the debug dump of the queue only. */
+    val origin: String = ""
 )
 
 /** Origin of a [CandidateTrack]. */
