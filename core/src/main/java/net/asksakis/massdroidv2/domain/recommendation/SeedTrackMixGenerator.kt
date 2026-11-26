@@ -500,7 +500,7 @@ internal fun mergeRoutes(
  * comparing them raw would treat the same scene as two. [genreKey] is Music
  * Assistant's own rule, so it also joins `postrock` and accented variants.
  */
-private fun genreKeys(genres: Iterable<String>): Set<String> =
+internal fun genreKeys(genres: Iterable<String>): Set<String> =
     genres.mapTo(mutableSetOf()) { genreKey(it) }
 
 /**
@@ -529,6 +529,39 @@ internal fun partitionByExactGenre(
     val primaryKeys = genreKeys(primaryGenres)
     if (primaryKeys.isEmpty()) return emptyList<SeedTrack>() to seeds
     return seeds.partition { seed -> genreKeys(genresOf(seed)).any { it in primaryKeys } }
+}
+
+/**
+ * The genre adjacency map with every genre, key and neighbour alike, reduced to
+ * its [genreKey], so seed genres from MusicBrainz and stored genres compare.
+ */
+internal fun adjacencyByKey(adjacency: Map<String, Set<String>>): Map<String, Set<String>> {
+    val out = HashMap<String, MutableSet<String>>()
+    for ((genre, neighbours) in adjacency) {
+        out.getOrPut(genreKey(genre)) { mutableSetOf() }.addAll(neighbours.map(::genreKey))
+    }
+    return out
+}
+
+/**
+ * Whether a seed that shares only the broad family with the primary is still
+ * close enough to seat in its cluster: it shares an exact genre with the primary,
+ * or one of its genres is adjacent to one of the primary's in [adjacencyKeys]
+ * (see [adjacencyByKey]). [primaryKeys] are the primary's [genreKeys], computed
+ * once by the caller rather than once per seed.
+ *
+ * The family alone was too broad. Anchored on Toundra (post-rock, post-metal),
+ * the "metal" family seated Nachtmystium (black metal), and the mix filled with
+ * black metal that the listener skipped.
+ */
+internal fun seedNearPrimaryGenre(
+    seedGenres: List<String>,
+    primaryKeys: Set<String>,
+    adjacencyKeys: Map<String, Set<String>>
+): Boolean {
+    val seedKeys = genreKeys(seedGenres)
+    if (seedKeys.any { it in primaryKeys }) return true
+    return seedKeys.any { key -> adjacencyKeys[key].orEmpty().any { it in primaryKeys } }
 }
 
 /**
@@ -2028,15 +2061,24 @@ class SeedTrackMixGenerator @Inject constructor(
         val (sameGenre, widerFamily) = partitionByExactGenre(others, primaryGenres) {
             genresBySeed[it.trackUri].orEmpty()
         }
+        // A family-only seed is seated only when one of its genres is adjacent to
+        // one of the primary's; the rest stay out even when the cluster ends up
+        // short of SEED_COUNT (see [seedNearPrimaryGenre]).
+        val adjacencyKeys = genreAdjacencyKeys()
+        val primaryKeys = genreKeys(primaryGenres)
+        val (adjacentFamily, refused) = widerFamily.partition { seed ->
+            seedNearPrimaryGenre(genresBySeed[seed.trackUri].orEmpty(), primaryKeys, adjacencyKeys)
+        }
         fun seated(list: List<SeedTrack>) =
             productiveFirst(strictnessWeightedOrder(list, tuning.strictness, random))
-        val ordered = listOf(primary) + seated(sameGenre) + seated(widerFamily)
+        val ordered = listOf(primary) + seated(sameGenre) + seated(adjacentFamily)
         val result = ordered.take(SEED_COUNT)
         Log.d(
             TAG,
             "cluster around '${primary.artistName}' (${primaryGenres.joinToString("/")}" +
                 "${primaryFamily?.let { " -> $it" }.orEmpty()}): ${result.size} seeds " +
-                "(${sameGenre.size} share its genre, ${widerFamily.size} only its family; " +
+                "(${sameGenre.size} share its genre, ${adjacentFamily.size} adjacent, " +
+                "${refused.size} family-only refused; " +
                 "hop=$hop preferred=${preferred.size} exactFresh=${exactFresh.size} " +
                 "pool=${primaryPool.size} -> picked from ${freshPool.size})"
         )
@@ -2049,6 +2091,17 @@ class SeedTrackMixGenerator @Inject constructor(
             setOfNotNull(primaryFamily),
             mixLabel(result.map { genresBySeed[it.trackUri].orEmpty() }, primaryFamily)
         )
+    }
+
+    /** The genre adjacency map by [genreKey]; empty when it cannot be read. */
+    private suspend fun genreAdjacencyKeys(): Map<String, Set<String>> = try {
+        adjacencyByKey(playHistoryRepository.getGenreAdjacencyMap())
+    } catch (e: CancellationException) {
+        // A cancelled build must stop, not carry on with an empty answer.
+        throw e
+    } catch (e: Exception) {
+        Log.w(TAG, "genre adjacency failed: ${e.message}")
+        emptyMap()
     }
 
     /**
