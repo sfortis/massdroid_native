@@ -249,6 +249,15 @@ private const val MIN_SEEDS = 1
 // at first, it threw away valid hops: a mix asking for a different family had
 // four candidates, lost them to the net, and landed on the recent family again.
 private const val PRIMARY_PREFERENCE_MIN = 2
+// The fewest coherent seeds (the primary, the seeds sharing its genre and the
+// adjacent ones) a primary needs before a mix is built around it. A primary below
+// it is passed over for the next one in the drawn order. On the S25 on 2026-11-25
+// and 26, coherent clusters held either at most 2 seeds (Toundra, The Cinematic
+// Orchestra, whose mix fell back to loved injections and off-family tracks) or 6
+// and more, so any floor from 3 to 6 separates them.
+internal const val MIN_COHERENT_SEEDS = 4
+// How many passed-over primaries the coherence floor log names.
+private const val LOGGED_REJECTED_PRIMARIES = 5
 // How many of the newest clusters a family hop moves away from. It was the whole
 // six-mix rotation window, which nearly always held every large family (rock,
 // electronic), so a hop could only land on the one or two small families left.
@@ -566,6 +575,36 @@ internal fun seedNearPrimaryGenre(
     val seedKeys = genreKeys(seedGenres)
     if (seedKeys.any { it in primaryKeys }) return true
     return seedKeys.any { key -> adjacencyKeys[key].orEmpty().any { it in primaryKeys } }
+}
+
+/**
+ * The chosen primary with its cluster, and the candidates passed over with their
+ * coherent seed counts.
+ */
+internal data class PrimaryPick<T, C>(val primary: T, val cluster: C, val rejected: List<Pair<T, Int>>)
+
+/**
+ * Takes the first of [candidates], in their drawn order, whose cluster
+ * ([clusterOf]) holds at least [minSeeds] coherent seeds ([coherentSeeds]). When
+ * none reaches it, the one with the most coherent seeds is taken, the earliest on
+ * a tie, so a library with only small scenes still gets a mix. Each cluster is
+ * built once. [candidates] must not be empty.
+ */
+internal fun <T, C> pickCoherentPrimary(
+    candidates: List<T>,
+    minSeeds: Int,
+    clusterOf: (T) -> C,
+    coherentSeeds: (C) -> Int
+): PrimaryPick<T, C> {
+    val tried = mutableListOf<Triple<T, C, Int>>()
+    for (candidate in candidates) {
+        val cluster = clusterOf(candidate)
+        val count = coherentSeeds(cluster)
+        if (count >= minSeeds) return PrimaryPick(candidate, cluster, tried.map { it.first to it.third })
+        tried += Triple(candidate, cluster, count)
+    }
+    val best = tried.maxBy { it.third }
+    return PrimaryPick(best.first, best.second, tried.filter { it !== best }.map { it.first to it.third })
 }
 
 /**
@@ -2098,39 +2137,36 @@ class SeedTrackMixGenerator @Inject constructor(
             exactFresh.size >= PRIMARY_PREFERENCE_MIN -> exactFresh
             else -> primaryPool
         }
-        val primary = freshPool.ifEmpty { primaryPool }.shuffled(random).first()
-        val primaryGenres = genresBySeed[primary.trackUri].orEmpty()
-        val primaryFamily = dominantFamily(primaryGenres)
-        val cluster = byArtist.filter { seed ->
-            seed.trackUri == primary.trackUri ||
-                seedJoinsCluster(genresBySeed[seed.trackUri].orEmpty(), primaryGenres, primaryFamily)
+        // The primaries are tried in the drawn order: the first whose coherent
+        // cluster reaches MIN_COHERENT_SEEDS anchors the mix (see pickCoherentPrimary).
+        val adjacencyKeys = genreAdjacencyKeys()
+        val pick = pickCoherentPrimary(
+            freshPool.ifEmpty { primaryPool }.shuffled(random),
+            MIN_COHERENT_SEEDS,
+            clusterOf = { clusterAround(it, byArtist, genresBySeed, adjacencyKeys) },
+            coherentSeeds = { it.coherentSeeds }
+        )
+        if (pick.rejected.isNotEmpty()) {
+            Log.d(
+                TAG,
+                "coherence floor: ${pick.rejected.size} primaries under $MIN_COHERENT_SEEDS seeds passed over (" +
+                    pick.rejected.take(LOGGED_REJECTED_PRIMARIES)
+                        .joinToString { (seed, n) -> "'${seed.artistName}' $n" } + ")"
+            )
         }
+        val primary = pick.primary
+        val cluster = pick.cluster
+        val primaryGenres = cluster.primaryGenres
+        val primaryFamily = cluster.primaryFamily
+        val sameGenre = cluster.sameGenre
+        val adjacentFamily = cluster.adjacentFamily
+        val refused = cluster.refused
         // The primary keeps its uniform draw from the (already score-ranked and
         // variety-windowed) freshPool, because rotating the anchor is the whole
         // point of Variety. The remaining seeds are where Strictness had no say
         // at all, so they are drawn score-weighted instead of plain-shuffled,
         // then ordered so the ones that can actually produce candidates come
         // first (see productiveFirst).
-        //
-        // Seeds sharing the primary's exact GENRE are seated before the ones that
-        // only share its family, because only eight seeds survive `take` and the
-        // family is far too broad to spend them on: an anchor on post rock filled
-        // seven of its eight seats with indie and produced a mix with two
-        // post-rock tracks in it. Both groups keep the score-weighted,
-        // productive-first ordering, so this changes WHICH seeds are seated, not
-        // how each group is ranked.
-        val others = cluster.filter { it.trackUri != primary.trackUri }
-        val (sameGenre, widerFamily) = partitionByExactGenre(others, primaryGenres) {
-            genresBySeed[it.trackUri].orEmpty()
-        }
-        // A family-only seed is seated only when one of its genres is adjacent to
-        // one of the primary's; the rest stay out even when the cluster ends up
-        // short of SEED_COUNT (see [seedNearPrimaryGenre]).
-        val adjacencyKeys = genreAdjacencyKeys()
-        val primaryKeys = genreKeys(primaryGenres)
-        val (adjacentFamily, refused) = widerFamily.partition { seed ->
-            seedNearPrimaryGenre(genresBySeed[seed.trackUri].orEmpty(), primaryKeys, adjacencyKeys)
-        }
         fun seated(list: List<SeedTrack>) =
             productiveFirst(strictnessWeightedOrder(list, tuning.strictness, random))
         val ordered = listOf(primary) + seated(sameGenre) + seated(adjacentFamily)
@@ -2153,6 +2189,51 @@ class SeedTrackMixGenerator @Inject constructor(
             setOfNotNull(primaryFamily),
             mixLabel(result.map { genresBySeed[it.trackUri].orEmpty() }, primaryFamily)
         )
+    }
+
+    /**
+     * The seeds of [byArtist] that may join a cluster around [primary], split as the
+     * mix seats them.
+     *
+     * Seeds sharing the primary's exact genre are seated before the ones that only
+     * share its family, because only eight seeds survive and the family is far too
+     * broad to spend them on: an anchor on post rock filled seven of its eight seats
+     * with indie and produced a mix with two post-rock tracks in it. A family-only
+     * seed is seated only when one of its genres is adjacent to one of the
+     * primary's; the rest are refused even when the cluster ends up short of
+     * SEED_COUNT (see [seedNearPrimaryGenre]).
+     */
+    private fun clusterAround(
+        primary: SeedTrack,
+        byArtist: List<SeedTrack>,
+        genresBySeed: Map<String, List<String>>,
+        adjacencyKeys: Map<String, Set<String>>
+    ): SeedCluster {
+        val primaryGenres = genresBySeed[primary.trackUri].orEmpty()
+        val primaryFamily = dominantFamily(primaryGenres)
+        val others = byArtist.filter { seed ->
+            seed.trackUri != primary.trackUri &&
+                seedJoinsCluster(genresBySeed[seed.trackUri].orEmpty(), primaryGenres, primaryFamily)
+        }
+        val (sameGenre, widerFamily) = partitionByExactGenre(others, primaryGenres) {
+            genresBySeed[it.trackUri].orEmpty()
+        }
+        val primaryKeys = genreKeys(primaryGenres)
+        val (adjacentFamily, refused) = widerFamily.partition { seed ->
+            seedNearPrimaryGenre(genresBySeed[seed.trackUri].orEmpty(), primaryKeys, adjacencyKeys)
+        }
+        return SeedCluster(primaryGenres, primaryFamily, sameGenre, adjacentFamily, refused)
+    }
+
+    private class SeedCluster(
+        val primaryGenres: List<String>,
+        val primaryFamily: String?,
+        val sameGenre: List<SeedTrack>,
+        val adjacentFamily: List<SeedTrack>,
+        val refused: List<SeedTrack>
+    ) {
+        /** The primary plus the seeds that may be seated around it. */
+        val coherentSeeds: Int get() = 1 + sameGenre.size + adjacentFamily.size
     }
 
     /** The genre adjacency map by [genreKey]; empty when it cannot be read. */
