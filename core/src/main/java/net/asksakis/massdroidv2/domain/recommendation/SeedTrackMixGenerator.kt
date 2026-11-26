@@ -221,6 +221,12 @@ private const val LIBRARY_ARTIST_URI_PREFIX = "library://"
 // Marks a library artist's name key in the artist cooldown (see artistCooldownKeys).
 // It contains no "://", so it cannot be read as a URI key.
 private const val LIBRARY_ARTIST_NAME_PREFIX = "library-name:"
+// A track that credits more artists than this is a compilation or charity
+// recording ("Pavarotti and Friends" credits 10), not one artist's song, and is
+// kept out of both routes. Duets and features credit 2 or 3 and still pass.
+internal const val MAX_CREDITED_ARTISTS = 4
+// The separator MusicRepositoryImpl joins Track.artistNames with.
+private const val ARTIST_NAMES_SEPARATOR = ", "
 // One seed is enough now that a lone library seed is asked for up to
 // MA_SIMILAR_MAX_PER_SEED similars: a single-seed cluster produced a full mix in
 // testing, while refusing it dropped the user to the genre engine and 8 tracks.
@@ -738,6 +744,65 @@ internal fun trackArtistCooldownLookupKeys(track: Track): Set<String> =
 private fun trackFirstArtistName(track: Track): String =
     track.primaryArtistName.ifBlank { track.artistNames.substringBefore(",") }
 
+/**
+ * How many artists [track] credits: its artist refs, or the joined names when a
+ * cached track carries no refs.
+ */
+internal fun creditedArtistCount(track: Track): Int =
+    track.artistUris.size.takeIf { it > 0 }
+        ?: track.artistNames.split(ARTIST_NAMES_SEPARATOR).count { it.isNotBlank() }
+
+/** True when [track] credits more than [MAX_CREDITED_ARTISTS] artists. */
+internal fun isCompilationCredit(track: Track): Boolean = creditedArtistCount(track) > MAX_CREDITED_ARTISTS
+
+/**
+ * True when the artist of [artistUri] and [artistName] is the first credited
+ * artist of [track]. A provider lists a track among an artist's top tracks when
+ * the artist is only a guest on it, so the artist route has to check.
+ *
+ * The URI decides when it matches. Otherwise the names are compared by
+ * [normalizeArtistKey], because a library artist's top tracks can carry the
+ * provider URI of the same artist. That key keeps Greek and Cyrillic letters,
+ * which [genreKey] drops. A track that names no artist at all is accepted, since
+ * nothing shows it belongs to someone else.
+ */
+internal fun isPrimaryArtistOf(track: Track, artistUri: String, artistName: String): Boolean {
+    if (track.artistUri != null && track.artistUri == artistUri) return true
+    val firstName = trackFirstArtistName(track).trim()
+    if (firstName.isEmpty()) return track.artistUri == null
+    return normalizeArtistKey(firstName) == normalizeArtistKey(artistName)
+}
+
+/** What [ownTopTracks] removed, for the build's debug line. */
+internal class CreditFilterCounts {
+    var notPrimary = 0
+    var compilation = 0
+}
+
+/**
+ * The tracks of [tracks] that belong to the expanded artist: those where the
+ * artist is the primary one and that are not compilation credits. Filtering
+ * happens before the per-artist budget, so a rejected track does not use a slot.
+ */
+internal fun ownTopTracks(
+    tracks: List<Track>,
+    artistUri: String,
+    artistName: String,
+    counts: CreditFilterCounts
+): List<Track> = tracks.filter { t ->
+    when {
+        !isPrimaryArtistOf(t, artistUri, artistName) -> {
+            counts.notPrimary++
+            false
+        }
+        isCompilationCredit(t) -> {
+            counts.compilation++
+            false
+        }
+        else -> true
+    }
+}
+
 private fun cooldownNameKey(name: String?): String? = name?.trim()?.lowercase()?.takeIf { it.isNotBlank() }
 
 private fun isLibraryArtistKey(uriKey: String?): Boolean = uriKey?.startsWith(LIBRARY_ARTIST_URI_PREFIX) == true
@@ -987,21 +1052,30 @@ class SeedTrackMixGenerator @Inject constructor(
         // shared gate the two routes queue fairly and neither can crowd the other
         // out.
         val serverGate = Semaphore(MA_TRACK_FETCH_CONCURRENCY)
+        // One set of counts per route, so the two concurrent routes never write the
+        // same counter. Both are read only after both routes have finished.
+        val artistCredits = CreditFilterCounts()
+        val trackCredits = CreditFilterCounts()
         val candidates = coroutineScope {
             val artistRoute = async {
                 gatherFromMa(
                     activeSeeds, blocked, coreFamilies, target,
-                    tuning.discovery, mixSeed, deadlineAt, serverGate
+                    tuning.discovery, mixSeed, deadlineAt, serverGate, artistCredits
                 )
             }
             val trackRoute = async {
                 gatherSimilarTracks(
                     activeSeeds, blocked, coreFamilies,
-                    SIMILAR_TRACKS_PER_SEED, deadlineAt, serverGate
+                    SIMILAR_TRACKS_PER_SEED, deadlineAt, serverGate, trackCredits
                 )
             }
             mergeRoutes(artistRoute.await(), trackRoute.await())
         }
+        Log.d(
+            TAG,
+            "credit filter: artist route removed ${artistCredits.notPrimary} not by the artist, " +
+                "${artistCredits.compilation} compilation; track route removed ${trackCredits.compilation} compilation"
+        )
         if (candidates.isEmpty()) {
             Log.d(TAG, "MA returned no candidates for this cluster")
             return emptyList()
@@ -1098,7 +1172,8 @@ class SeedTrackMixGenerator @Inject constructor(
         discovery: Double,
         mixSeed: Long,
         deadlineAt: Long,
-        serverGate: Semaphore
+        serverGate: Semaphore,
+        creditCounts: CreditFilterCounts
     ): List<CandidateTrack> {
         val seedRefs = activeSeeds
             .filter { it.artistUri.startsWith(LIBRARY_URI_PREFIX) }
@@ -1325,7 +1400,7 @@ class SeedTrackMixGenerator @Inject constructor(
             val verified = onFamily
             val artistScore = if (onFamily) closeness else closeness * OFF_FAMILY_SCALE
             var taken = 0
-            for (t in tracks) {
+            for (t in ownTopTracks(tracks, art.uri, art.name, creditCounts)) {
                 if (taken >= MA_TRACKS_PER_ARTIST) break
                 // MA can return the same recording twice (album + single/remaster).
                 val titleKey = "${art.name.lowercase()}|${normalizeGenre(t.name)}"
@@ -1372,7 +1447,8 @@ class SeedTrackMixGenerator @Inject constructor(
         coreFamilies: Set<String>,
         perSeed: Int,
         deadlineAt: Long,
-        serverGate: Semaphore
+        serverGate: Semaphore,
+        creditCounts: CreditFilterCounts
     ): List<CandidateTrack> {
         val refs = seeds.take(SIMILAR_TRACK_SEED_LIMIT)
             .mapNotNull { seed -> parseArtistRef(seed.trackUri)?.let { seed to it } }
@@ -1454,6 +1530,10 @@ class SeedTrackMixGenerator @Inject constructor(
                 if (track.uri.isBlank() || track.uri in seedTrackUris) return@forEachIndexed
                 if (blocked.blocksAnyArtistOf(track)) return@forEachIndexed
                 if (!seen.add(track.uri)) return@forEachIndexed
+                if (isCompilationCredit(track)) {
+                    creditCounts.compilation++
+                    return@forEachIndexed
+                }
                 val genres = trackCandidateGenres(track, dbGenres)
                 val match = classifyFamily(genres, coreFamilies)
                 if (match == FamilyMatch.UNKNOWN) {
