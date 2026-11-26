@@ -817,6 +817,25 @@ internal fun candidateFit(match: FamilyMatch?): CandidateFit = when (match) {
     FamilyMatch.UNKNOWN, null -> CandidateFit(scale = 1.0, verified = false, priority = 1)
 }
 
+/**
+ * The recordings of a mix's seeds. A seed's `similar_tracks` answer starts with the
+ * seed itself, often under another uri (another provider or release), so matching
+ * the uri alone let the seed back into its own mix: First Aid Kit's "My Silver
+ * Lining" from a First Aid Kit seed, Nachtmystium's "Epitaph for a Dying Star"
+ * credited with a guest.
+ */
+internal class SeedRecordings(seeds: List<SeedTrack>) {
+    private val uris = seeds.mapTo(mutableSetOf()) { it.trackUri }
+    private val keys = seeds.mapNotNullTo(mutableSetOf()) { seed ->
+        trackIdentityKey(seed.artistName, seed.trackName).takeIf { it.isNotBlank() }
+    }
+
+    /** True when [track] is one of the seeds, by uri or by lead artist and title. */
+    fun contains(track: Track): Boolean =
+        track.uri in uris ||
+            trackIdentityKey(trackFirstArtistName(track), track.name).let { it.isNotBlank() && it in keys }
+}
+
 /** The family part of a candidate's origin label in the debug dump of the queue. */
 private fun familyNote(match: FamilyMatch?): String = when (match) {
     FamilyMatch.ON -> ""
@@ -1531,7 +1550,7 @@ class SeedTrackMixGenerator @Inject constructor(
         val refs = seeds.take(SIMILAR_TRACK_SEED_LIMIT)
             .mapNotNull { seed -> parseArtistRef(seed.trackUri)?.let { seed to it } }
         if (refs.isEmpty()) return emptyList()
-        val seedTrackUris = seeds.mapTo(mutableSetOf()) { it.trackUri }
+        val seedRecordings = SeedRecordings(seeds)
         // Bounded by the same build budget as the artist route, and collected AS
         // RESULTS LAND rather than with awaitAll. This route runs on every build
         // now instead of only as a fallback, so one provider that never answers
@@ -1606,7 +1625,7 @@ class SeedTrackMixGenerator @Inject constructor(
         for ((seed, list) in lists) {
             list.forEachIndexed { rank, track ->
                 // The seed track itself always comes back first.
-                if (track.uri.isBlank() || track.uri in seedTrackUris) return@forEachIndexed
+                if (track.uri.isBlank() || seedRecordings.contains(track)) return@forEachIndexed
                 if (blocked.blocksAnyArtistOf(track)) return@forEachIndexed
                 if (!seen.add(track.uri)) return@forEachIndexed
                 if (isCompilationCredit(track)) {
