@@ -727,8 +727,13 @@ interface PlayHistoryDao {
     /**
      * Tracks that MAY be suppressed, with what the decision needs and enough to
      * identify the RECORDING, not just the row. The caller decides with
-     * `isTrackSuppressed` on the effective score, since the decay cannot be
-     * computed in SQL.
+     * `isTrackExcludedFromMixes` on the effective score, since the decay cannot be
+     * computed in SQL. Tracks with a real skip after [skippedSince] are candidates
+     * too, with the time of their latest real skip and of their latest like or
+     * full listen (a listen whose stored signal is one of [fullListenSignals]).
+     *
+     * A real skip is one whose stored signal is at or below [realSkipSignal]: the
+     * listener left before half of the track. A skip later than that does not count.
      *
      * Filtering on the stored score is exact as a prefilter: fading only moves a
      * score toward zero, so a track whose stored score is not below
@@ -747,14 +752,28 @@ interface PlayHistoryDao {
      */
     @Query("""
         SELECT t.uri AS uri, t.name AS trackName, GROUP_CONCAT(a.name, char(31)) AS artistNames,
-               t.score AS score, t.score_updated_at AS scoreUpdatedAt, t.disliked_at AS dislikedAt
+               t.score AS score, t.score_updated_at AS scoreUpdatedAt, t.disliked_at AS dislikedAt,
+               (SELECT MAX(f.created_at) FROM smart_feedback f
+                WHERE f.track_uri = t.uri AND f.action = 'skip'
+                  AND f.signal <= :realSkipSignal) AS lastSkippedAt,
+               (SELECT MAX(f.created_at) FROM smart_feedback f
+                WHERE f.track_uri = t.uri
+                  AND (f.action = 'like'
+                       OR (f.action = 'listen' AND f.signal IN (:fullListenSignals)))) AS lastPositiveAt
         FROM tracks t
         LEFT JOIN track_artists ta ON ta.track_uri = t.uri
         LEFT JOIN artists a ON a.uri = ta.artist_uri
         WHERE t.score < :storedThreshold OR t.disliked_at IS NOT NULL
+           OR t.uri IN (SELECT track_uri FROM smart_feedback
+                        WHERE action = 'skip' AND signal <= :realSkipSignal AND created_at > :skippedSince)
         GROUP BY t.uri
     """)
-    suspend fun getSuppressionCandidates(storedThreshold: Double): List<SuppressedTrackRow>
+    suspend fun getSuppressionCandidates(
+        storedThreshold: Double,
+        skippedSince: Long,
+        realSkipSignal: Double,
+        fullListenSignals: List<Double>
+    ): List<SuppressedTrackRow>
 
     @Query(
         """
@@ -1389,7 +1408,11 @@ data class SuppressedTrackRow(
     val artistNames: String?,
     val score: Double,
     val scoreUpdatedAt: Long,
-    val dislikedAt: Long?
+    val dislikedAt: Long?,
+    /** When the track was last skipped before half of it was heard, or null. */
+    val lastSkippedAt: Long? = null,
+    /** When the track was last liked or listened to in full, or null. */
+    val lastPositiveAt: Long? = null
 )
 
 /** A track's uri with its stored score, for decisions on the faded score. */

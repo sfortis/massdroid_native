@@ -4,10 +4,10 @@ import com.google.common.truth.Truth.assertThat
 import org.junit.Test
 
 /**
- * Pins the time-faded track score and the suppression rule built on it.
+ * Pins the time-faded track score and the mix exclusion rule built on it.
  *
- * The score used to be a running sum with no time in it, and the suppression line
- * sat at -0.15. Measured on a real database on 2026-10-05, that combination had
+ * The score used to be a running sum with no time in it, so a track below the
+ * line at that time (-0.15) stayed out of mixes for good. Measured on a real database on 2026-10-05, that combination had
  * kept 530 tracks out of mixes on a single skip and 1158 more whose feedback had
  * long been pruned, 11% of the library in all. These tests assert exact values so
  * a wrong half-life, a wrong threshold or a sign error in the decay turns them red.
@@ -49,56 +49,76 @@ class TrackScoreDecayTest {
     }
 
     @Test
-    fun `one hard skip never suppresses a track`() {
-        val afterSkip = addTrackSignal(stored = 0.0, updatedAt = 0L, delta = HARD_SKIP, now = T0)
-        assertThat(afterSkip).isWithin(TOLERANCE).of(-0.6)
-        assertThat(isTrackSuppressed(effectiveTrackScore(afterSkip, T0, T0), dislikedAt = null)).isFalse()
-    }
-
-    @Test
-    fun `two hard skips on the same day suppress a track`() {
+    fun `two hard skips add up on the same day`() {
         val first = addTrackSignal(stored = 0.0, updatedAt = 0L, delta = HARD_SKIP, now = T0)
+        assertThat(first).isWithin(TOLERANCE).of(-0.6)
         val second = addTrackSignal(stored = first, updatedAt = T0, delta = HARD_SKIP, now = T0)
         assertThat(second).isWithin(TOLERANCE).of(-1.2)
-        assertThat(isTrackSuppressed(effectiveTrackScore(second, T0, T0), dislikedAt = null)).isTrue()
     }
 
     @Test
-    fun `two hard skips 120 days apart do not suppress a track`() {
-        // The first skip has faded to a quarter (-0.15), so the pair lands exactly
-        // on the line and the strict comparison keeps the track in.
+    fun `the first of two hard skips has faded when the second arrives`() {
+        // -0.6 * 0.5^1.5 - 0.6 = -0.8121... after 90 days, -0.75 after 120.
         val first = addTrackSignal(stored = 0.0, updatedAt = 0L, delta = HARD_SKIP, now = T0)
-        val secondAt = T0 + days(120)
-        val second = addTrackSignal(stored = first, updatedAt = T0, delta = HARD_SKIP, now = secondAt)
-        assertThat(second).isWithin(TOLERANCE).of(-0.75)
-        assertThat(isTrackSuppressed(effectiveTrackScore(second, secondAt, secondAt), dislikedAt = null)).isFalse()
+        val after90 = addTrackSignal(stored = first, updatedAt = T0, delta = HARD_SKIP, now = T0 + days(90))
+        val after120 = addTrackSignal(stored = first, updatedAt = T0, delta = HARD_SKIP, now = T0 + days(120))
+        assertThat(after90).isWithin(1e-6).of(-0.812132)
+        assertThat(after120).isWithin(TOLERANCE).of(-0.75)
     }
 
     @Test
-    fun `two hard skips 90 days apart still suppress a track`() {
-        // Inside the window: -0.6 * 0.5^1.5 - 0.6 = -0.8121...
-        val first = addTrackSignal(stored = 0.0, updatedAt = 0L, delta = HARD_SKIP, now = T0)
-        val secondAt = T0 + days(90)
-        val second = addTrackSignal(stored = first, updatedAt = T0, delta = HARD_SKIP, now = secondAt)
-        assertThat(second).isWithin(1e-6).of(-0.812132)
-        assertThat(isTrackSuppressed(second, dislikedAt = null)).isTrue()
-    }
-
-    @Test
-    fun `a suppressed track comes back once its score has faded`() {
-        // -1.2 after two same-day skips; 60 days later it counts -0.6.
-        val faded = effectiveTrackScore(-1.2, T0, T0 + days(60))
-        assertThat(faded).isWithin(TOLERANCE).of(-0.6)
-        assertThat(isTrackSuppressed(faded, dislikedAt = null)).isFalse()
-    }
-
-    @Test
-    fun `a dislike suppresses whatever the score and however old it is`() {
-        assertThat(isTrackSuppressed(effective = 2.5, dislikedAt = T0)).isTrue()
-        assertThat(isTrackSuppressed(effective = 0.0, dislikedAt = T0 - days(3650))).isTrue()
+    fun `an old dislike keeps a track out of mixes after its score has faded`() {
         val oldDislike = effectiveTrackScore(-2.0, T0, T0 + days(3650))
-        assertThat(isTrackSuppressed(oldDislike, dislikedAt = T0)).isTrue()
+        assertThat(excluded(oldDislike, dislikedAt = T0, now = T0 + days(3650))).isTrue()
     }
+
+    @Test
+    fun `a skip within 60 days keeps a track out of mixes`() {
+        // A mild skip leaves a score that rounds to zero, so only the skip date decides.
+        assertThat(excluded(0.0, skippedAt = T0 - days(59))).isTrue()
+        assertThat(excluded(0.0, skippedAt = T0 - days(61))).isFalse()
+    }
+
+    @Test
+    fun `a like or a full listen after the last skip brings the track back, score included`() {
+        // A hard skip (-0.60) and then a full listen leave -0.32, below the score line.
+        assertThat(excluded(-0.32, skippedAt = T0 - days(30), positiveAt = T0 - days(10))).isFalse()
+        // A like or a full listen before the latest skip does not count.
+        assertThat(excluded(0.0, skippedAt = T0 - days(30), positiveAt = T0 - days(40))).isTrue()
+    }
+
+    @Test
+    fun `a dislike stays after a like`() {
+        assertThat(excluded(0.5, dislikedAt = T0 - days(1), skippedAt = T0 - days(30), positiveAt = T0)).isTrue()
+    }
+
+    @Test
+    fun `a negative score without a real skip is judged by the score alone`() {
+        assertThat(excluded(-0.5, positiveAt = T0)).isTrue()
+    }
+
+    @Test
+    fun `an effective score below -0_15 keeps a track out of mixes`() {
+        assertThat(excluded(-0.2)).isTrue()
+        assertThat(excluded(-0.1)).isFalse()
+        // A hard skip of -0.60 is back after two half-lives, about four months.
+        val hardSkip = effectiveTrackScore(-0.6, T0, T0 + days(125))
+        assertThat(excluded(hardSkip, skippedAt = T0, now = T0 + days(125))).isFalse()
+        assertThat(excluded(0.3)).isFalse()
+    }
+
+    @Test
+    fun `a dislike keeps a track out of mixes whatever its score`() {
+        assertThat(excluded(2.5, dislikedAt = T0 - days(3650))).isTrue()
+    }
+
+    private fun excluded(
+        effective: Double,
+        dislikedAt: Long? = null,
+        skippedAt: Long? = null,
+        positiveAt: Long? = null,
+        now: Long = T0
+    ) = isTrackExcludedFromMixes(effective, dislikedAt, skippedAt, positiveAt, now)
 
     @Test
     fun `a non-negative seed floor is also the stored floor`() {

@@ -9,12 +9,15 @@ import io.mockk.slot
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.runTest
 import net.asksakis.massdroidv2.data.database.PlayHistoryDao
+import net.asksakis.massdroidv2.data.database.PlayOrigin
 import net.asksakis.massdroidv2.data.database.SUPPRESSED_ARTIST_SEPARATOR
+import net.asksakis.massdroidv2.data.database.SmartFeedbackEntity
 import net.asksakis.massdroidv2.data.database.SuppressedTrackRow
 import net.asksakis.massdroidv2.data.database.TrackScoreRow
 import net.asksakis.massdroidv2.data.database.TransactionRunner
 import net.asksakis.massdroidv2.domain.model.Track
-import net.asksakis.massdroidv2.domain.recommendation.TRACK_SUPPRESSION_THRESHOLD
+import net.asksakis.massdroidv2.domain.recommendation.MIX_EXCLUSION_SCORE
+import net.asksakis.massdroidv2.domain.recommendation.MIX_SKIP_EXCLUSION_DAYS
 import net.asksakis.massdroidv2.domain.recommendation.trackIdentityKey
 import net.asksakis.massdroidv2.domain.repository.ArtistAliasLookup
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
@@ -82,36 +85,166 @@ class TrackScoreWriteTest {
     }
 
     @Test
-    fun `suppression is decided on the faded score and the dislike mark`() = runTest {
+    fun `mix exclusion is decided on the faded score, the dislike mark and the last skip`() = runTest {
         val now = System.currentTimeMillis()
-        coEvery { dao.getSuppressionCandidates(TRACK_SUPPRESSION_THRESHOLD) } returns listOf(
-            // Two hard skips today: -1.20, below the line.
+        coEvery { dao.getSuppressionCandidates(MIX_EXCLUSION_SCORE, any(), any(), any()) } returns listOf(
+            // Two hard skips today: -1.20.
             row("library://track/fresh", "Fresh", score = -1.2, updatedAt = now),
-            // The same -1.20 written 120 days ago counts -0.30: back in mixes.
+            // The same -1.20 written 120 days ago counts -0.30, still below -0.15.
             row("library://track/old", "Old", score = -1.2, updatedAt = now - 120 * MILLIS_PER_DAY),
             // "Not for me" ten years ago, score since pushed positive: still out.
             row(
                 "library://track/disliked", "Disliked", score = 0.5,
                 updatedAt = now, dislikedAt = now - 3650 * MILLIS_PER_DAY
             ),
+            // Skipped before half of it 30 days ago and not played since: out until day 60.
+            row(
+                "library://track/skipped", "Skipped", score = -0.05,
+                updatedAt = now, lastSkippedAt = now - 30 * MILLIS_PER_DAY
+            ),
+            // A hard skip (-0.60) 30 days ago, then a full listen: -0.32, below the score
+            // line, but the full listen brings it back.
+            row(
+                "library://track/listened", "Listened", score = -0.32,
+                updatedAt = now - 10 * MILLIS_PER_DAY, lastSkippedAt = now - 30 * MILLIS_PER_DAY,
+                lastPositiveAt = now - 10 * MILLIS_PER_DAY
+            ),
+            // A hard skip 30 days ago, then a 40% listen (+0.08: -0.52), which the query
+            // does not count as a full listen: still out.
+            row(
+                "library://track/partial", "Partial", score = -0.52,
+                updatedAt = now - 10 * MILLIS_PER_DAY, lastSkippedAt = now - 30 * MILLIS_PER_DAY
+            ),
+            // Skipped 30 days ago, then liked: back in mixes.
+            row(
+                "library://track/liked", "Liked", score = 0.5,
+                updatedAt = now, lastSkippedAt = now - 30 * MILLIS_PER_DAY,
+                lastPositiveAt = now - 5 * MILLIS_PER_DAY
+            ),
+            // Disliked, then liked: a dislike stays.
+            row(
+                "library://track/dislikedliked", "Disliked Liked", score = 0.5,
+                updatedAt = now, dislikedAt = now - 20 * MILLIS_PER_DAY,
+                lastSkippedAt = now - 30 * MILLIS_PER_DAY, lastPositiveAt = now - 5 * MILLIS_PER_DAY
+            ),
+            // A full listen BEFORE the latest skip does not bring it back.
+            row(
+                "library://track/relapsed", "Relapsed", score = 0.0,
+                updatedAt = now, lastSkippedAt = now - 5 * MILLIS_PER_DAY,
+                lastPositiveAt = now - 20 * MILLIS_PER_DAY
+            ),
+            // A negative score with no real skip and a like: the score rule applies.
+            row(
+                "library://track/lowscore", "Low Score", score = -0.5,
+                updatedAt = now, lastPositiveAt = now - 5 * MILLIS_PER_DAY
+            ),
+            // Skipped 90 days ago and listened back above zero: in mixes again.
+            row(
+                "library://track/forgiven", "Forgiven", score = 0.2,
+                updatedAt = now, lastSkippedAt = now - 90 * MILLIS_PER_DAY
+            ),
+            // A mild skip 90 days ago, still slightly negative: above -0.15, in mixes.
+            row(
+                "library://track/mild", "Mild", score = -0.1,
+                updatedAt = now, lastSkippedAt = now - 90 * MILLIS_PER_DAY
+            ),
         )
 
-        assertThat(repo.getSuppressedTrackUris())
-            .containsExactly("library://track/fresh", "library://track/disliked")
+        assertThat(repo.getMixExcludedTracks().uris).containsExactly(
+            "library://track/fresh",
+            "library://track/old",
+            "library://track/disliked",
+            "library://track/skipped",
+            "library://track/partial",
+            "library://track/dislikedliked",
+            "library://track/relapsed",
+            "library://track/lowscore"
+        )
+    }
+
+    @Test
+    fun `only a skip before half of the track reaches the exclusion query`() = runTest {
+        val feedback = mutableListOf<List<SmartFeedbackEntity>>()
+        coEvery { dao.insertSmartFeedback(capture(feedback)) } returns Unit
+        val realSkip = slot<Double>()
+        coEvery { dao.getSuppressionCandidates(any(), any(), capture(realSkip), any()) } returns emptyList()
+
+        // 180 s track: 40% heard is a real skip, 70% is not.
+        repo.recordSkip(track, artists, listenedMs = 72_000)
+        repo.recordSkip(track, artists, listenedMs = 126_000)
+        repo.getMixExcludedTracks()
+
+        val at40 = feedback[0].single().signal
+        val at70 = feedback[1].single().signal
+        assertThat(realSkip.captured).isEqualTo(SmartListeningRepositoryImpl.REAL_SKIP_STORED_SIGNAL)
+        assertThat(at40).isAtMost(realSkip.captured)
+        assertThat(at70).isGreaterThan(realSkip.captured)
+    }
+
+    @Test
+    fun `only a full listen counts as bringing a skipped track back`() = runTest {
+        val feedback = mutableListOf<List<SmartFeedbackEntity>>()
+        coEvery { dao.insertSmartFeedback(capture(feedback)) } returns Unit
+        val fullListen = slot<List<Double>>()
+        coEvery { dao.getSuppressionCandidates(any(), any(), any(), capture(fullListen)) } returns emptyList()
+
+        // 180 s track: a full listen, organic and from a Smart Mix, then 40% and 60%.
+        repo.recordListen(track, artists, listenedMs = 180_000, origin = PlayOrigin.ORGANIC)
+        repo.recordListen(track, artists, listenedMs = 180_000, origin = PlayOrigin.SMART_MIX)
+        repo.recordListen(track, artists, listenedMs = 72_000, origin = PlayOrigin.ORGANIC)
+        repo.recordListen(track, artists, listenedMs = 108_000, origin = PlayOrigin.ORGANIC)
+        repo.getMixExcludedTracks()
+
+        val stored = feedback.map { it.single().signal }
+        assertThat(fullListen.captured).containsExactly(stored[0], stored[1])
+        assertThat(fullListen.captured).containsNoneOf(stored[2], stored[3])
+    }
+
+    @Test
+    fun `a skipped track is keyed only when it credits one artist`() = runTest {
+        // A 20 s skip writes -0.45, so the row is out for its score as well as the skip.
+        val now = System.currentTimeMillis()
+        coEvery { dao.getSuppressionCandidates(any(), any(), any(), any()) } returns listOf(
+            row(
+                "library://track/duet", "Duet", score = -0.45, updatedAt = now,
+                artists = "Alma${SUPPRESSED_ARTIST_SEPARATOR}Zed", lastSkippedAt = now - MILLIS_PER_DAY
+            ),
+            row("library://track/solo", "Solo", score = -0.45, updatedAt = now, lastSkippedAt = now - MILLIS_PER_DAY),
+        )
+
+        val excluded = repo.getMixExcludedTracks()
+
+        assertThat(excluded.uris).containsExactly("library://track/duet", "library://track/solo")
+        assertThat(excluded.keys).containsExactly(trackIdentityKey("Some Artist", "Solo"))
+    }
+
+    @Test
+    fun `the dao is asked for skips of the last 60 days`() = runTest {
+        val since = slot<Long>()
+        coEvery { dao.getSuppressionCandidates(any(), capture(since), any(), any()) } returns emptyList()
+
+        // The repository reads its own clock, so the cutoff is bounded by the clock
+        // before and after the call rather than by a fixed tolerance.
+        val before = System.currentTimeMillis()
+        repo.getMixExcludedTracks()
+        val after = System.currentTimeMillis()
+
+        assertThat(since.captured).isAtLeast(before - MIX_SKIP_EXCLUSION_DAYS * MILLIS_PER_DAY)
+        assertThat(since.captured).isAtMost(after - MIX_SKIP_EXCLUSION_DAYS * MILLIS_PER_DAY)
     }
 
     @Test
     fun `identity keys follow the same decision`() = runTest {
         val now = System.currentTimeMillis()
-        coEvery { dao.getSuppressionCandidates(any()) } returns listOf(
+        coEvery { dao.getSuppressionCandidates(any(), any(), any(), any()) } returns listOf(
             row("library://track/fresh", "Fresh", score = -1.2, updatedAt = now),
-            row("library://track/old", "Old", score = -1.2, updatedAt = now - 120 * MILLIS_PER_DAY),
+            row("library://track/liked", "Liked", score = 0.5, updatedAt = now),
             // No title, so no identity: matched on the uri alone.
             row("library://track/untitled", "", score = -1.2, updatedAt = now),
         )
 
-        assertThat(repo.getSuppressedTrackKeys()).containsExactly(trackIdentityKey("Some Artist", "Fresh"))
-        assertThat(repo.getSuppressedTrackUris())
+        assertThat(repo.getMixExcludedTracks().keys).containsExactly(trackIdentityKey("Some Artist", "Fresh"))
+        assertThat(repo.getMixExcludedTracks().uris)
             .containsExactly("library://track/fresh", "library://track/untitled")
     }
 
@@ -120,14 +253,14 @@ class TrackScoreWriteTest {
         // The database keeps no artist order, while a mix candidate is keyed by its lead
         // artist. Keying only the alphabetically first name let "Zed feat. Alma" back in.
         val now = System.currentTimeMillis()
-        coEvery { dao.getSuppressionCandidates(any()) } returns listOf(
+        coEvery { dao.getSuppressionCandidates(any(), any(), any(), any()) } returns listOf(
             row(
                 "library://track/duet", "Duet", score = 0.0, updatedAt = now, dislikedAt = now,
                 artists = "Alma${SUPPRESSED_ARTIST_SEPARATOR}Zed"
             ),
         )
 
-        assertThat(repo.getSuppressedTrackKeys())
+        assertThat(repo.getMixExcludedTracks().keys)
             .containsExactly(trackIdentityKey("Alma", "Duet"), trackIdentityKey("Zed", "Duet"))
     }
 
@@ -138,6 +271,8 @@ class TrackScoreWriteTest {
         updatedAt: Long,
         dislikedAt: Long? = null,
         artists: String = "Some Artist",
+        lastSkippedAt: Long? = null,
+        lastPositiveAt: Long? = null,
     ) = SuppressedTrackRow(
         uri = uri,
         trackName = name,
@@ -145,6 +280,8 @@ class TrackScoreWriteTest {
         score = score,
         scoreUpdatedAt = updatedAt,
         dislikedAt = dislikedAt,
+        lastSkippedAt = lastSkippedAt,
+        lastPositiveAt = lastPositiveAt,
     )
 
     private companion object {

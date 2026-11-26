@@ -541,8 +541,9 @@ class MixPlaybackOrchestrator @Inject constructor(
             val suppressed = smartListeningRepository.getSuppressedArtistUris(days = 120)
             val metrics = smartListeningRepository.getArtistMetrics(days = 120)
             excludedArtistUris = blocked + suppressed
-            excludedTrackUris = smartListeningRepository.getSuppressedTrackUris()
-            excludedTrackKeys = smartListeningRepository.getSuppressedTrackKeys()
+            val excludedTracks = smartListeningRepository.getMixExcludedTracks()
+            excludedTrackUris = excludedTracks.uris
+            excludedTrackKeys = excludedTracks.keys
             smartArtistScoreMap = metrics.mapValues { it.value.score }
         } else {
             excludedArtistUris = blocked
@@ -1701,6 +1702,7 @@ class MixPlaybackOrchestrator @Inject constructor(
             var previousArtistKeys = emptySet<String>()
             val removeQueueItemIds = mutableListOf<String>()
             var offGenreCount = 0
+            var excludedCount = 0
 
             items.forEachIndexed { index, item ->
                 val track = item.track
@@ -1718,14 +1720,19 @@ class MixPlaybackOrchestrator @Inject constructor(
                     previousArtistKeys.isNotEmpty() &&
                     artistKeys.any { it in previousArtistKeys }
                 val blockedArtist = artistKeys.any { it in excludedArtistUris }
+                // The server radio knows nothing of the listener's skips and dislikes.
+                val excludedTrack = track != null && isExcludedFromMixes(
+                    track.uri, trackFirstArtistName(track), track.name, excludedTrackUris, excludedTrackKeys
+                )
 
                 val artistName = track?.artistNames?.split(",")?.firstOrNull()?.trim()
                 val artistGenres = artistName?.let { artistGenreMap[it.lowercase()] }
                 val offGenre = !artistGenres.isNullOrEmpty() &&
                     artistGenres.none { isGenreRelated(it, genre) }
 
-                if (duplicateTrack || consecutiveSameArtist || offGenre || blockedArtist) {
+                if (duplicateTrack || consecutiveSameArtist || offGenre || blockedArtist || excludedTrack) {
                     removeQueueItemIds += item.queueItemId
+                    if (excludedTrack) excludedCount++
                     if (offGenre) {
                         offGenreCount++
                         Log.d(TAG, "sanitize off-genre: ${track?.artistNames} - ${track?.name} genres=$artistGenres")
@@ -1742,7 +1749,8 @@ class MixPlaybackOrchestrator @Inject constructor(
             }
             Log.d(
                 TAG,
-                "sanitizeGenreRadioQueue[$genre]: removed ${removeQueueItemIds.size} items ($offGenreCount off-genre)"
+                "sanitizeGenreRadioQueue[$genre]: removed ${removeQueueItemIds.size} items " +
+                    "($offGenreCount off-genre, $excludedCount excluded)"
             )
         } catch (e: Exception) {
             Log.w(TAG, "sanitizeGenreRadioQueue failed: ${e.message}")

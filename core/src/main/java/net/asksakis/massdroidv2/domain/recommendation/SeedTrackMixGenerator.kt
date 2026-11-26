@@ -741,8 +741,24 @@ internal fun trackArtistCooldownLookupKeys(track: Track): Set<String> =
  * The first artist's own name. The comma split of the joined credits is only
  * the fallback, because it cuts a name such as "Tyler, The Creator" in two.
  */
-private fun trackFirstArtistName(track: Track): String =
+internal fun trackFirstArtistName(track: Track): String =
     track.primaryArtistName.ifBlank { track.artistNames.substringBefore(",") }
+
+/**
+ * True when the track of [uri], or the same recording by [leadArtist] and [title]
+ * under another uri, is in the mix exclusions: [excludedUris] by canonical uri,
+ * [excludedKeys] by [trackIdentityKey].
+ */
+internal fun isExcludedFromMixes(
+    uri: String,
+    leadArtist: String,
+    title: String,
+    excludedUris: Set<String>,
+    excludedKeys: Set<String>
+): Boolean =
+    (MediaIdentity.canonicalTrackKey(uri = uri) ?: uri) in excludedUris ||
+        (excludedKeys.isNotEmpty() &&
+            trackIdentityKey(leadArtist, title).takeIf { it.isNotBlank() } in excludedKeys)
 
 /**
  * How many artists [track] credits: its artist refs, or the joined names when a
@@ -928,7 +944,14 @@ class SeedTrackMixGenerator @Inject constructor(
          * history was too thin to judge and no restriction applies.
          */
         val anchorFamilies: Set<String> = emptySet()
-    )
+    ) {
+        /**
+         * True when the track of [uri], or the same recording by [leadArtist] and
+         * [title] under another uri, is excluded from mixes.
+         */
+        fun excludesTrack(uri: String, leadArtist: String, title: String): Boolean =
+            isExcludedFromMixes(uri, leadArtist, title, excludedTrackUris, excludedTrackKeys)
+    }
 
     /**
      * A built mix, the primary-cluster genres it anchored on (for the caller's
@@ -1103,13 +1126,7 @@ class SeedTrackMixGenerator @Inject constructor(
         var penalizedArtists = 0
         var maxArtistCount = 0
         val candidates = resolved
-            .filterNot { it.track.uri in recency.excludedTrackUris }
-            // Same rejection, matched on the recording rather than on one uri for it.
-            .filterNot { c ->
-                recency.excludedTrackKeys.isNotEmpty() &&
-                    trackIdentityKey(c.track.artistNames.substringBefore(","), c.track.name)
-                        .takeIf { it.isNotBlank() } in recency.excludedTrackKeys
-            }
+            .filterNot { c -> recency.excludesTrack(c.track.uri, trackFirstArtistName(c.track), c.track.name) }
             .map { c ->
                 val artistCount = recentArtistCount(trackArtistCooldownLookupKeys(c.track), recency.recentArtistWindows)
                 if (artistCount > 0) {
@@ -1654,7 +1671,9 @@ class SeedTrackMixGenerator @Inject constructor(
         val notRecent = raw.filter {
             it.trackUri.isNotBlank() &&
                 it.trackUri !in recency.recentMixTrackUris &&
-                !recency.blockedArtists.blocksArtist(it.artistUri, it.artistName)
+                !recency.blockedArtists.blocksArtist(it.artistUri, it.artistName) &&
+                // A loved track skipped lately is out too, like any other candidate.
+                !recency.excludesTrack(it.trackUri, it.artistName, it.trackName)
         }
         // Same gate as the discovery candidates, on the same data: the artist's
         // weight-ordered artist tags. Judging on the DB's track genres let an

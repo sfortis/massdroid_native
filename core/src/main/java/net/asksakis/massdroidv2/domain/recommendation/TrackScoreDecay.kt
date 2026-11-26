@@ -18,24 +18,13 @@ import kotlin.math.pow
 const val TRACK_SCORE_HALF_LIFE_DAYS = 60.0
 
 /**
- * A track whose effective score is below this is left out of generated mixes.
- *
- * The harshest single skip scores -0.60, so one skip on its own can never cross
- * this line. Two negative signals inside roughly two months do: two hard skips
- * on the same day reach -1.20, while the same two skips 120 days apart reach
- * exactly -0.75 and stay in. The old line at -0.15 sat above every skip tier but
- * the mildest, which is how one skip came to suppress a track permanently.
- */
-const val TRACK_SUPPRESSION_THRESHOLD = -0.75
-
-/**
  * Below this magnitude a faded track score no longer changes anything, so a track
  * with no plays left may be removed by the cleanup.
  *
  * The cleanup used to remove only tracks whose STORED score was exactly 0, but the
  * fading is applied on read, so a track that ever received a signal stayed in the
  * database for good, and so did its artists. 0.05 is far from every line the score
- * is compared with: the suppression line at -0.75 and the seed floor at 0.30.
+ * is compared with: the mix exclusion line at -0.15 and the seed floor at 0.30.
  */
 const val TRACK_SCORE_FORGET_THRESHOLD = 0.05
 
@@ -66,12 +55,47 @@ fun addTrackSignal(stored: Double, updatedAt: Long, delta: Double, now: Long): D
     effectiveTrackScore(stored, updatedAt, now) + delta
 
 /**
- * Whether a track is kept out of generated mixes. An explicit "Not for me"
- * ([dislikedAt] set) suppresses the track whatever its score and never fades;
- * otherwise the [effective] score decides.
+ * A track skipped before half of it was heard within this many days is left out
+ * of generated mixes, whatever its score, until a like or a full listen. One skip
+ * never reached the previous exclusion line at -0.75, so before this rule 11% of
+ * the tracks in a listener's last 38 mixes had been skipped before.
  */
-fun isTrackSuppressed(effective: Double, dislikedAt: Long?): Boolean =
-    dislikedAt != null || effective < TRACK_SUPPRESSION_THRESHOLD
+const val MIX_SKIP_EXCLUSION_DAYS = 60
+
+/**
+ * A track whose effective score is below this is left out of generated mixes.
+ * Fading moves a score toward zero, so a mild skip comes back once the skip is
+ * older than [MIX_SKIP_EXCLUSION_DAYS], and a hard skip (-0.60) after two
+ * half-lives, about four months. A line at zero would have kept every skipped
+ * track out until the cleanup forgot it.
+ */
+const val MIX_EXCLUSION_SCORE = -0.15
+
+private const val MILLIS_PER_DAY_LONG = 86_400_000L
+
+/**
+ * Whether a track is kept out of generated mixes: a "Not for me" ([dislikedAt]),
+ * an [effective] score below [MIX_EXCLUSION_SCORE], or a real skip
+ * ([lastSkippedAt], before half of the track) within the last
+ * [MIX_SKIP_EXCLUSION_DAYS] days.
+ *
+ * A like or a full listen ([lastPositiveAt]) after the last real skip brings the
+ * track back, and it lifts the score rule too: a hard skip followed by a full
+ * listen still scores -0.32, which alone would keep the track out. Only a dislike
+ * stays. A track with a low score and no real skip is judged by its score alone.
+ */
+fun isTrackExcludedFromMixes(
+    effective: Double,
+    dislikedAt: Long?,
+    lastSkippedAt: Long?,
+    lastPositiveAt: Long?,
+    now: Long
+): Boolean {
+    if (dislikedAt != null) return true
+    if (lastSkippedAt != null && lastPositiveAt != null && lastPositiveAt > lastSkippedAt) return false
+    return effective < MIX_EXCLUSION_SCORE ||
+        (lastSkippedAt != null && now - lastSkippedAt < MIX_SKIP_EXCLUSION_DAYS * MILLIS_PER_DAY_LONG)
+}
 
 /**
  * The lowest STORED score that can still have an effective score of at least

@@ -13,7 +13,7 @@ import net.asksakis.massdroidv2.data.database.SmartFeedbackEntity
 import net.asksakis.massdroidv2.data.database.TrackScoreRow
 import net.asksakis.massdroidv2.data.database.TransactionRunner
 import net.asksakis.massdroidv2.domain.model.Track
-import net.asksakis.massdroidv2.domain.recommendation.TRACK_SUPPRESSION_THRESHOLD
+import net.asksakis.massdroidv2.domain.recommendation.MIX_EXCLUSION_SCORE
 import net.asksakis.massdroidv2.domain.repository.ArtistAliasLookup
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
 import org.junit.Test
@@ -67,7 +67,7 @@ class DislikeSignalTest {
         val score = slot<Double>()
         val dislikedAt = slot<Long>()
         coVerify { dao.setTrackScore("library://track/1", capture(score), capture(dislikedAt)) }
-        assertThat(score.captured).isLessThan(TRACK_SUPPRESSION_THRESHOLD)
+        assertThat(score.captured).isLessThan(MIX_EXCLUSION_SCORE)
         assertThat(dislikedAt.captured).isEqualTo(receipt.createdAt)
         coVerify(exactly = 0) { dao.updateTrackScore(any(), any(), any()) }
     }

@@ -69,14 +69,28 @@ interface SmartListeningRepository {
     suspend fun clearBlockedArtists()
     suspend fun getArtistMetrics(days: Int = 120): Map<String, ArtistLearningMetrics>
     suspend fun getSuppressedArtistUris(days: Int = 120): Set<String>
-    suspend fun getSuppressedTrackUris(): Set<String>
 
     /**
-     * Identity keys ([trackIdentityKey]) of suppressed tracks, so a rejection follows
-     * the RECORDING rather than one uri for it. Measured on a real library: 5 of 22
-     * disliked tracks also existed under a second uri and came back through it.
+     * Tracks kept out of generated mixes, by both engines and by the Genre Radio
+     * server-radio sanitizer: disliked, an effective score below -0.15, or a skip
+     * before half of the track within the last 60 days. A like or a full listen after
+     * the last such skip brings the track back, the score rule included; a dislike
+     * stays (see `isTrackExcludedFromMixes`). Both sets come from one read of the
+     * database.
      */
-    suspend fun getSuppressedTrackKeys(): Set<String>
+    suspend fun getMixExcludedTracks(): MixExcludedTracks
+}
+
+/**
+ * The tracks kept out of generated mixes, by [uris] and by identity [keys]
+ * ([trackIdentityKey]). The keys let a rejection follow the RECORDING rather than
+ * one uri for it. Measured on a real library: 5 of 22 disliked tracks also existed
+ * under a second uri and came back through it.
+ */
+data class MixExcludedTracks(val uris: Set<String>, val keys: Set<String>) {
+    companion object {
+        val NONE = MixExcludedTracks(emptySet(), emptySet())
+    }
 }
 
 /**

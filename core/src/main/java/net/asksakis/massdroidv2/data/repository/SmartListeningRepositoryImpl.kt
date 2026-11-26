@@ -13,7 +13,6 @@ import net.asksakis.massdroidv2.data.database.BlockedArtistEntity
 import net.asksakis.massdroidv2.data.database.PlayHistoryDao
 import net.asksakis.massdroidv2.data.database.SmartFeedbackEntity
 import net.asksakis.massdroidv2.data.database.SUPPRESSED_ARTIST_SEPARATOR
-import net.asksakis.massdroidv2.data.database.SuppressedTrackRow
 import net.asksakis.massdroidv2.data.database.PlayOrigin
 import net.asksakis.massdroidv2.data.database.TrackArtistEntity
 import net.asksakis.massdroidv2.data.database.TrackEntity
@@ -23,15 +22,17 @@ import net.asksakis.massdroidv2.domain.repository.ArtistAliasLookup
 import net.asksakis.massdroidv2.domain.repository.ArtistAliasResolver
 import net.asksakis.massdroidv2.domain.repository.BlockedArtistInfo
 import net.asksakis.massdroidv2.domain.repository.DislikeReceipt
+import net.asksakis.massdroidv2.domain.repository.MixExcludedTracks
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
 import net.asksakis.massdroidv2.domain.repository.SmartListeningRepository
 import net.asksakis.massdroidv2.domain.repository.aliasesOrEmpty
 import net.asksakis.massdroidv2.domain.recommendation.MediaIdentity
 import net.asksakis.massdroidv2.domain.recommendation.genreKey
-import net.asksakis.massdroidv2.domain.recommendation.TRACK_SUPPRESSION_THRESHOLD
+import net.asksakis.massdroidv2.domain.recommendation.MIX_EXCLUSION_SCORE
+import net.asksakis.massdroidv2.domain.recommendation.MIX_SKIP_EXCLUSION_DAYS
 import net.asksakis.massdroidv2.domain.recommendation.addTrackSignal
 import net.asksakis.massdroidv2.domain.recommendation.effectiveTrackScore
-import net.asksakis.massdroidv2.domain.recommendation.isTrackSuppressed
+import net.asksakis.massdroidv2.domain.recommendation.isTrackExcludedFromMixes
 import net.asksakis.massdroidv2.domain.recommendation.trackIdentityKey
 import java.util.Locale
 import javax.inject.Inject
@@ -53,6 +54,16 @@ class SmartListeningRepositoryImpl @Inject constructor(
 
         private const val SKIP_ARTIST_SIGNAL = -0.50
         private const val SKIP_ARTIST_DAMPENING = 0.25
+        /** The [scaleSkipSignal] tier for leaving between a quarter and half of the track. */
+        private const val HALF_TRACK_SKIP_SIGNAL = -0.20
+
+        /**
+         * The stored skip signal at or below which a skip keeps a track out of mixes:
+         * the listener left before half of the track. smart_feedback stores the
+         * artist-dampened value, so the tier is dampened the same way. A skip at half
+         * of the track or later (-0.08, -0.03) does not exclude it.
+         */
+        internal const val REAL_SKIP_STORED_SIGNAL = HALF_TRACK_SKIP_SIGNAL * SKIP_ARTIST_DAMPENING
         /** Below this a skip reads as outright rejection. */
         private const val HARD_SKIP_SEC = 15.0
         /** Below this it still reads as dislike, just a milder one. */
@@ -73,6 +84,19 @@ class SmartListeningRepositoryImpl @Inject constructor(
         /** The top tier of [scaleListenSignal]: a listen past ~75% of the track. */
         private const val FULL_LISTEN_SIGNAL = 0.28
         private const val GENERATED_FULL_LISTEN_SCALE = 0.5
+
+        /**
+         * The stored signals of a full listen (the top tier of [scaleListenSignal]):
+         * organic, and from a Smart Mix or Genre Radio, which stores it at
+         * [GENERATED_FULL_LISTEN_SCALE]. A full listen after a real skip brings the
+         * track back into mixes. The 50 to 75% tier of an organic listen stores 0.18,
+         * above the mix value, so the two values are matched exactly instead of with
+         * a threshold.
+         */
+        internal val FULL_LISTEN_STORED_SIGNALS = listOf(
+            FULL_LISTEN_SIGNAL,
+            FULL_LISTEN_SIGNAL * GENERATED_FULL_LISTEN_SCALE
+        )
         private const val GENERATED_PARTIAL_LISTEN_SCALE = 0.15
 
         private const val SUPPRESS_SCORE_THRESHOLD = -1.5
@@ -359,28 +383,44 @@ class SmartListeningRepositoryImpl @Inject constructor(
             .keys
     }
 
-    override suspend fun getSuppressedTrackUris(): Set<String> =
-        suppressedTracks().mapTo(mutableSetOf()) { it.uri }
-
-    // One key per credited artist: the mix side keys a candidate by its lead artist, which the
-    // database cannot tell apart from the others, so each of them has to be able to match.
-    override suspend fun getSuppressedTrackKeys(): Set<String> =
-        suppressedTracks().flatMapTo(mutableSetOf()) { row ->
-            row.artistNames.orEmpty()
-                .split(SUPPRESSED_ARTIST_SEPARATOR)
-                .map { trackIdentityKey(it, row.trackName) }
-                .filter { it.isNotBlank() }
-        }
-
     /**
-     * The decision happens here, not in SQL: it depends on the faded score, which
-     * a query cannot compute. The DAO narrows the rows with an exact prefilter.
+     * The tracks kept out of generated mixes ([isTrackExcludedFromMixes]). The
+     * decision happens here, not in SQL: it depends on the faded score, which a
+     * query cannot compute. The DAO narrows the rows with an exact prefilter:
+     * fading only moves a score toward zero, so a stored score at or above
+     * [MIX_EXCLUSION_SCORE] can never fade below it.
+     *
+     * A disliked track gets one key per credited artist: the mix side keys a
+     * candidate by its lead artist, which the database cannot tell apart from the
+     * others, so each of them has to be able to match. A track that is out for its
+     * score or a skip gets a key only when it credits one artist, so a skipped "Zed
+     * feat. Alma" does not also keep a different "Alma" song with the same title out.
+     * Such a track with several credits is matched by its uri.
      */
-    private suspend fun suppressedTracks(): List<SuppressedTrackRow> {
+    override suspend fun getMixExcludedTracks(): MixExcludedTracks {
         val now = System.currentTimeMillis()
-        return dao.getSuppressionCandidates(TRACK_SUPPRESSION_THRESHOLD).filter { row ->
-            isTrackSuppressed(effectiveTrackScore(row.score, row.scoreUpdatedAt, now), row.dislikedAt)
+        val skippedSince = now - MIX_SKIP_EXCLUSION_DAYS * MILLIS_PER_DAY
+        val uris = mutableSetOf<String>()
+        val keys = mutableSetOf<String>()
+        val candidates = dao.getSuppressionCandidates(
+            MIX_EXCLUSION_SCORE, skippedSince, REAL_SKIP_STORED_SIGNAL, FULL_LISTEN_STORED_SIGNALS
+        )
+        for (row in candidates) {
+            val effective = effectiveTrackScore(row.score, row.scoreUpdatedAt, now)
+            val excluded = isTrackExcludedFromMixes(
+                effective = effective,
+                dislikedAt = row.dislikedAt,
+                lastSkippedAt = row.lastSkippedAt,
+                lastPositiveAt = row.lastPositiveAt,
+                now = now
+            )
+            if (!excluded) continue
+            uris += row.uri
+            val artistNames = row.artistNames.orEmpty().split(SUPPRESSED_ARTIST_SEPARATOR).filter { it.isNotBlank() }
+            if (row.dislikedAt == null && artistNames.size != 1) continue
+            artistNames.mapNotNullTo(keys) { name -> trackIdentityKey(name, row.trackName).takeIf { it.isNotBlank() } }
         }
+        return MixExcludedTracks(uris, keys)
     }
 
     @VisibleForTesting
@@ -398,7 +438,7 @@ class SmartListeningRepositoryImpl @Inject constructor(
             listenedSec < HARD_SKIP_SEC -> -0.60
             listenedSec < SOFT_SKIP_SEC -> -0.45
             ratio < 0.25 -> -0.35
-            ratio < 0.50 -> -0.20
+            ratio < 0.50 -> HALF_TRACK_SKIP_SIGNAL
             ratio < 0.75 -> -0.08
             else -> -0.03
         }
@@ -413,7 +453,7 @@ class SmartListeningRepositoryImpl @Inject constructor(
             ratio < 0.30 -> -0.05
             ratio < 0.50 -> 0.08
             ratio < 0.75 -> 0.18
-            else -> 0.28
+            else -> FULL_LISTEN_SIGNAL
         }
     }
 

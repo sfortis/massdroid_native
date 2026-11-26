@@ -730,7 +730,7 @@ class MixEngine @Inject constructor() {
 
     @VisibleForTesting
     internal fun trackDedupeKey(track: Track): String {
-        val key = trackIdentityKey(track.artistNames.substringBefore(","), track.name)
+        val key = trackIdentityKey(trackFirstArtistName(track), track.name)
         return key.ifBlank { track.uri }
     }
 
